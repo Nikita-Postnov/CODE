@@ -1,51 +1,78 @@
-# Пример игры "Крестики-нолики" с использованием библиотеки tkinter для создания графического интерфейса на Python
+# Пример игры "Крестики-нолики" против компьютера на Python с использованием библиотеки tkinter для графического интерфейса
 
 import tkinter as tk
-from tkinter import messagebox
+import random
+
+def check_winner(board, player):
+    for row in board:
+        if all(cell == player for cell in row):
+            return True
+
+    for col in range(3):
+        if all(board[row][col] == player for row in range(3)):
+            return True
+
+    if all(board[i][i] == player for i in range(3)) or all(board[i][2-i] == player for i in range(3)):
+        return True
+
+    return False
+
+def get_empty_cells(board):
+    return [(i, j) for i in range(3) for j in range(3) if board[i][j] == " "]
+
+def make_computer_move(board):
+    empty_cells = get_empty_cells(board)
+    return random.choice(empty_cells)
 
 class TicTacToe:
     def __init__(self, root):
         self.root = root
-        self.root.title("Крестики-нолики")
-        self.current_player = "X"
-        self.board = [" " for _ in range(9)]
+        self.root.title("Tic-Tac-Toe")
+        self.board = [[" " for _ in range(3)] for _ in range(3)]
+        self.create_ui()
+        self.player = "X"
+
+    def create_ui(self):
         self.buttons = []
-        self.create_board()
-
-    def create_board(self):
         for i in range(3):
+            row = []
             for j in range(3):
-                button = tk.Button(self.root, text="", font=("Arial", 20), width=5, height=2,
-                                  command=lambda i=i, j=j: self.on_button_click(i, j))
-                button.grid(row=i, column=j, padx=5, pady=5)
-                self.buttons.append(button)
+                btn = tk.Button(self.root, text="", width=10, height=3, command=lambda i=i, j=j: self.make_move(i, j))
+                btn.grid(row=i, column=j)
+                row.append(btn)
+            self.buttons.append(row)
 
-    def on_button_click(self, i, j):
-        index = i * 3 + j
-        if self.board[index] == " ":
-            self.board[index] = self.current_player
-            self.buttons[index].config(text=self.current_player)
-            if self.check_winner():
-                messagebox.showinfo("Победа!", f"Игрок {self.current_player} победил!")
+    def make_move(self, i, j):
+        if self.board[i][j] == " ":
+            self.board[i][j] = self.player
+            self.buttons[i][j].config(text=self.player)
+            if check_winner(self.board, self.player):
+                tk.messagebox.showinfo("Winner", f"Player {self.player} wins!")
                 self.reset_game()
-            elif " " not in self.board:
-                messagebox.showinfo("Ничья", "Игра окончена ничьей.")
+            elif all(all(cell != " " for cell in row) for row in self.board):
+                tk.messagebox.showinfo("Tie", "It's a tie!")
                 self.reset_game()
             else:
-                self.current_player = "O" if self.current_player == "X" else "X"
-
-    def check_winner(self):
-        winning_combinations = [[0, 1, 2], [3, 4, 5], [6, 7, 8], [0, 3, 6], [1, 4, 7], [2, 5, 8], [0, 4, 8], [2, 4, 6]]
-        for combo in winning_combinations:
-            if self.board[combo[0]] == self.board[combo[1]] == self.board[combo[2]] != " ":
-                return True
-        return False
+                self.player = "X" if self.player == "O" else "O"
+                if self.player == "O":
+                    row, col = make_computer_move(self.board)
+                    self.board[row][col] = self.player
+                    self.buttons[row][col].config(text=self.player)
+                    if check_winner(self.board, self.player):
+                        tk.messagebox.showinfo("Winner", f"Player {self.player} wins!")
+                        self.reset_game()
+                    elif all(all(cell != " " for cell in row) for row in self.board):
+                        tk.messagebox.showinfo("Tie", "It's a tie!")
+                        self.reset_game()
+                    else:
+                        self.player = "X"
 
     def reset_game(self):
-        self.board = [" " for _ in range(9)]
-        for button in self.buttons:
-            button.config(text="")
-        self.current_player = "X"
+        self.board = [[" " for _ in range(3)] for _ in range(3)]
+        for i in range(3):
+            for j in range(3):
+                self.buttons[i][j].config(text="")
+        self.player = "X"
 
 root = tk.Tk()
 game = TicTacToe(root)
