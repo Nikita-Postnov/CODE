@@ -3,47 +3,39 @@ import sys
 import time
 import random
 
-# Инициализация Pygame
 pygame.init()
 
-# Определение констант
 SCREEN_WIDTH = 600
 SCREEN_HEIGHT = 400
 GRID_SIZE = 20
 FPS = 10
 WIN_LENGTH = 5
 
-# Определение цветов
 WHITE = (255, 255, 255)
 BLACK = (0, 0, 0)
 GREEN = (0, 255, 0)
 RED = (255, 0, 0)
 
-# Создание окна игры
 screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
 pygame.display.set_caption('Snake')
 
-# Функция для рисования сетки
 def draw_grid():
     for x in range(0, SCREEN_WIDTH, GRID_SIZE):
         pygame.draw.line(screen, BLACK, (x, 0), (x, SCREEN_HEIGHT))
     for y in range(0, SCREEN_HEIGHT, GRID_SIZE):
         pygame.draw.line(screen, BLACK, (0, y), (SCREEN_WIDTH, y))
 
-# Функция для создания яблока
 def create_apple():
     apple_x = random.randint(0, (SCREEN_WIDTH - GRID_SIZE) // GRID_SIZE) * GRID_SIZE
     apple_y = random.randint(0, (SCREEN_HEIGHT - GRID_SIZE) // GRID_SIZE) * GRID_SIZE
     return apple_x, apple_y
 
-# Функция для отрисовки текста на экране
 def draw_text(text, font, color, x, y):
     text_surface = font.render(text, True, color)
     text_rect = text_surface.get_rect()
     text_rect.center = (x, y)
     screen.blit(text_surface, text_rect)
 
-# Основная функция игры
 def main():
     snake = [(100, 100)]
     direction = 'RIGHT'
