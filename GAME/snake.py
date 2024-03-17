@@ -44,15 +44,19 @@ def main():
     start_time = time.time()
 
     while True:
-        keys = pygame.key.get_pressed()
-        if keys[pygame.K_ESCAPE]:  # If Escape is pressed, toggle the menu state
-            menu_state = not menu_state
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 pygame.quit()
                 sys.exit()
+            if event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_ESCAPE:
+                    pygame.quit()
+                    sys.exit()
 
         keys = pygame.key.get_pressed()
+        if keys[pygame.K_ESCAPE]:
+
+            keys = pygame.key.get_pressed()
         if keys[pygame.K_UP] and direction != 'DOWN':
             direction = 'UP'
         elif keys[pygame.K_DOWN] and direction != 'UP':
