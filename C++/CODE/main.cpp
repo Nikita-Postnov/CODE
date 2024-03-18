@@ -3,10 +3,10 @@ using namespace std;
 
 int main() {
     
-int num = 1000;
-cout<<num;
+int num = 200;
+cout<<"num: "<<num<<endl;
 int &n = num;
-cout<<n<<endl;
+cout<<"n: "<<n<<endl;
 
     return 0;
 }
