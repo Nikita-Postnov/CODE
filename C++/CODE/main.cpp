@@ -5,7 +5,7 @@ int main() {
     
 int num = 1000;
 cout<<num;
-int &n = num*2;
+int &n = num;
 cout<<n<<endl;
 
     return 0;
