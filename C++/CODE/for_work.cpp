@@ -21,7 +21,8 @@ class LinkedList
 }
 
 
-int main(){
+int main()
+{
 
 }
 */
