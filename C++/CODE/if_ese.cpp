@@ -5,7 +5,7 @@ int main(){
 short int a, b;
 cout<<"Enter a"<<endl;
 cin>>a;
-// cout<<"Enter b"<<endl;
+// cout<<"Enter b<<endl;
 cin>>b;
 if(a>b){
     cout<<"a is greater than b"<<endl;
@@ -19,4 +19,5 @@ else
     cout<<"a and b are equal"<<endl;
 }
 return 0;
+system("PAUSE");
 }
