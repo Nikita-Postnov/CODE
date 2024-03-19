@@ -3,6 +3,7 @@ using namespace std;
 
 int main(){
 short int a, b;
+string pause;
 cout<<"Enter a"<<endl;
 cin>>a;
 // cout<<"Enter b<<endl;
@@ -19,5 +20,5 @@ else
     cout<<"a and b are equal"<<endl;
 }
 return 0;
-system("PAUSE");
+cin>>pause;
 }
