@@ -6,7 +6,7 @@ short int a, b;
 string pause;
 cout<<"Enter a"<<endl;
 cin>>a;
-// cout<<"Enter b<<endl;
+cout<<"Enter b"<<endl;
 cin>>b;
 if(a>b){
     cout<<"a is greater than b"<<endl;
