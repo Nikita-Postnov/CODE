@@ -1,0 +1,12 @@
+def QuickSort(s):
+  if len(s)<= 1:
+    return s
+  
+  
+  element = s[0]
+  left = list(filter(lambda x: x<element, s))
+  center = [i for i in s if i == element]
+  right = list(filter(lambda x: x>element, s))
+  
+  return QuickSort(left) + center + QuickSort(right)
+print(QuickSort([7,6,10,5,9,1,2,5,9,3,4]))
