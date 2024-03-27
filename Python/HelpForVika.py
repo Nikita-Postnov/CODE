@@ -1,17 +1,19 @@
-def max_blocks_to_sort(data):
-    n = len(data)
-    max_blocks = 0
-    current_block_size = 1
-    for i in range(1, n):
-        if data[i] == data[i - 1] + 1:
-            current_block_size += 1
-        else:
-            max_blocks = max(max_blocks, current_block_size)
-            current_block_size = 1
-    max_blocks = max(max_blocks, current_block_size)
-    return max_blocks
+def max_blocks(arr):
+    if n == 0:
+        return 0
+    
+    max_block_count = 0
+    max_val = 0
+    
+    for i in range(n):
+        max_val = max(max_val, arr[i])
+        if max_val == i:
+            max_block_count += 1
+            
+    return max_block_count
 
-n = int(input())
-data = list(map(int, input().split()))
-
-print(max_blocks_to_sort(data))
+if __name__ == "__main__":
+    n = int(input())
+    arr = [int(x) for x in input().split()]
+    result = max_blocks(arr)
+    print(result)
