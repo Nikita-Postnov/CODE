@@ -1,18 +1,17 @@
-def max_blocks_to_sort(array):
-    n = len(array)
-    if n == 0:
-        return 0
-    
-    sorted_array = sorted(array)
-    max_blocks = 1
-    curr_max = 0
-    
-    for i in range(n):
-        curr_max = max(curr_max, array[i])
-        if curr_max == i:
-            max_blocks += 1
-    
+def max_blocks_to_sort(data):
+    n = len(data)
+    max_blocks = 0
+    current_block_size = 1
+    for i in range(1, n):
+        if data[i] == data[i - 1] + 1:
+            current_block_size += 1
+        else:
+            max_blocks = max(max_blocks, current_block_size)
+            current_block_size = 1
+    max_blocks = max(max_blocks, current_block_size)
     return max_blocks
 
-data = [3, 1, 0, 2, 6, 5, 4, 7]
-print("Максимальное количество блоков для частичной сортировки:", max_blocks_to_sort(data))
+n = int(input())
+data = list(map(int, input().split()))
+
+print(max_blocks_to_sort(data))
