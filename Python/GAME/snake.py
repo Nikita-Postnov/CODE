@@ -19,16 +19,21 @@ RED = (255, 0, 0)
 screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
 pygame.display.set_caption('Snake')
 
+
 def draw_grid():
     for x in range(0, SCREEN_WIDTH, GRID_SIZE):
         pygame.draw.line(screen, BLACK, (x, 0), (x, SCREEN_HEIGHT))
     for y in range(0, SCREEN_HEIGHT, GRID_SIZE):
         pygame.draw.line(screen, BLACK, (0, y), (SCREEN_WIDTH, y))
 
+
 def create_apple():
-    apple_x = random.randint(0, (SCREEN_WIDTH - GRID_SIZE) // GRID_SIZE) * GRID_SIZE
-    apple_y = random.randint(0, (SCREEN_HEIGHT - GRID_SIZE) // GRID_SIZE) * GRID_SIZE
+    apple_x = random.randint(
+        0, (SCREEN_WIDTH - GRID_SIZE) // GRID_SIZE) * GRID_SIZE
+    apple_y = random.randint(
+        0, (SCREEN_HEIGHT - GRID_SIZE) // GRID_SIZE) * GRID_SIZE
     return apple_x, apple_y
+
 
 def draw_text(text, font, color, x, y):
     text_surface = font.render(text, True, color)
@@ -36,7 +41,29 @@ def draw_text(text, font, color, x, y):
     text_rect.center = (x, y)
     screen.blit(text_surface, text_rect)
 
+
+def main_menu():
+    screen.fill(WHITE)
+    draw_text('Snake Game', pygame.font.Font(None, 50),
+              BLACK, SCREEN_WIDTH // 2, SCREEN_HEIGHT // 4)
+    draw_text('Press SPACE to Start', pygame.font.Font(None, 36),
+              BLACK, SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2)
+    pygame.display.flip()
+
+    while True:
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                pygame.quit()
+                sys.exit()
+            elif event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_SPACE:
+                    return True
+
+
 def main():
+    if not main_menu():
+        return
+
     snake = [(100, 100)]
     direction = 'RIGHT'
     apple = create_apple()
@@ -55,7 +82,6 @@ def main():
 
         keys = pygame.key.get_pressed()
         if keys[pygame.K_ESCAPE]:
-
             keys = pygame.key.get_pressed()
         if keys[pygame.K_UP] and direction != 'DOWN':
             direction = 'UP'
@@ -77,7 +103,8 @@ def main():
             head_x += GRID_SIZE
 
         if head_x < 0 or head_x >= SCREEN_WIDTH or head_y < 0 or head_y >= SCREEN_HEIGHT:
-            draw_text('Game Over', pygame.font.Font(None, 36), BLACK, SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2)
+            draw_text('Game Over', pygame.font.Font(None, 36),
+                      BLACK, SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2)
             pygame.display.flip()
             time.sleep(3)
             pygame.quit()
@@ -97,14 +124,16 @@ def main():
             pygame.draw.rect(screen, RED, (*segment, GRID_SIZE, GRID_SIZE))
 
         if len(snake) >= WIN_LENGTH:
-            draw_text('You Win!', pygame.font.Font(None, 36), BLACK, SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2)
+            draw_text('You Win!', pygame.font.Font(None, 36),
+                      BLACK, SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2)
             pygame.display.flip()
             time.sleep(3)
             pygame.quit()
             sys.exit()
 
         if time.time() - start_time > 180:
-            draw_text('Game Over', pygame.font.Font(None, 36), BLACK, SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2)
+            draw_text('Game Over', pygame.font.Font(None, 36),
+                      BLACK, SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2)
             pygame.display.flip()
             time.sleep(3)
             pygame.quit()
@@ -112,6 +141,7 @@ def main():
 
         pygame.display.flip()
         pygame.time.Clock().tick(FPS)
+
 
 if __name__ == '__main__':
     main()
