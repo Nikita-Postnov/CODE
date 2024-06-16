@@ -10,7 +10,8 @@ class Clock(tk.Frame):
         self.create_widgets()
 
     def create_widgets(self):
-        self.time_label = tk.Label(self, font=('Arial', 24), fg='blue')
+        self.time_label = tk.Label(self, font=(
+            'Arial', 24), fg='black', bg='white')
         self.time_label.pack()
         self.update_time()
 
