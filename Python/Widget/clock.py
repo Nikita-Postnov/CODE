@@ -26,5 +26,8 @@ root.title("Часы")
 root.geometry("200x50")
 root.resizable(False, False)
 
+# Скрываем верхнюю панель окна
+root.overrideredirect(True)
+
 clock = Clock(root)
 clock.mainloop()
