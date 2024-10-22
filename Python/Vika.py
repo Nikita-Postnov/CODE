@@ -4,7 +4,7 @@ url = "https://api.mindbox.ru/v3/operations/sync?endpointId=hiring.Website&opera
 headers = {
     "Content-Type": "application/json; charset=utf-8",
     "Accept": "application/json",
-    "Authorization": 'Mindbox secretKey="QQ5oyl5DLBhKelRQO1A2"'
+    "Authorization": 'Mindbox secretKey="QQ5oyl5DLBhKeLrQO1A2"'
 }
 data = {
     "customer": {
