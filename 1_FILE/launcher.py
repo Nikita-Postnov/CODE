@@ -808,25 +808,6 @@ class NotesApp(QMainWindow):
         self.save_note_to_file(self.current_note)
         QMessageBox.information(self, "Удалено", "Выбранные версии удалены из истории.")
 
-    def insert_update_block(self) -> None:
-        if not self.current_note:
-            return
-
-        now = QDateTime.currentDateTime()
-        date_str = now.toString("dd.MM.yyyy")
-        cursor = self.text_edit.textCursor()
-
-        html = (
-            f"<b>UPD [{date_str}]</b><br>"
-            f"<b>Base:</b> <br>"
-            f"<b>User:</b> <br>"
-            f"<b>Result:</b> <br>"
-            f"<b>Details:</b> <br><br>"
-        )
-        cursor.insertHtml(html)
-        self.text_edit.setTextCursor(cursor)
-        self.text_edit.setFocus()
-
     def restore_version_from_history(self, item: QListWidgetItem) -> None:
         if not self.current_note:
             return
@@ -1302,11 +1283,17 @@ class NotesApp(QMainWindow):
                     "description": "Заготовка для заметки о встрече",
                     "content_html": "<b>Встреча</b><br>Дата: <br>Участники: <br>Цели: <br>Результаты: <br>",
                 },
-                {
+                                {
                     "name": "Дневник",
                     "category": "Личное",
                     "description": "Дневниковая запись",
                     "content_html": "<b>Дневник</b><br>Дата: <br>Сегодня:<br><br>Настроение:<br>События:<br>",
+                },
+                {
+                    "name": "UPD/BASE/USER/RESULT/DETAILS",
+                    "category": "Работа",
+                    "description": "Блок обновления",
+                    "content_html": "<b>UPD [{date}]</b><br><b>Base:</b> <br><b>User:</b> <br><b>Result:</b> <br><b>Details:</b> <br><br>",
                 },
             ]
             with open(templates_path, "w", encoding="utf-8") as f:
