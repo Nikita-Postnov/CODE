@@ -1,26 +1,26 @@
 [
-  {
-    "name": "Список дел",
-    "category": "Работа",
-    "description": "Чекбокс-лист для задач",
-    "content_html": "<b>Список дел:</b><br>☐ Первая задача<br>☐ Вторая задача<br>☐ Третья задача<br>"
-  },
-  {
-    "name": "Встреча",
-    "category": "Встречи",
-    "description": "Заготовка для заметки о встрече",
-    "content_html": "<b>Встреча</b><br>Дата: <br>Участники: <br>Цели: <br>Результаты: <br>"
-  },
-  {
-    "name": "Дневник",
-    "category": "Личное",
-    "description": "Дневниковая запись",
-    "content_html": "<b>Дневник</b><br>Дата: <br>Сегодня:<br><br>Настроение:<br>События:<br>"
-  },
-  {
-    "name": "UPD/BASE/USER/RESULT/DETAILS",
-    "category": "Работа",
-    "description": "Блок обновления",
-    "content_html": "<b>UPD [{date}]</b><br><b>Base:</b> <br><b>User:</b> <br><b>Result:</b> <br><b>Details:</b> <br><br>"
-  }
+    {
+        "name": "Список дел",
+        "category": "Работа",
+        "description": "Чекбокс-лист для задач",
+        "content_html": "<b>Список дел:</b><br>☐ Первая задача<br>☐ Вторая задача<br>☐ Третья задача<br>"
+    },
+    {
+        "name": "Встреча",
+        "category": "Встречи",
+        "description": "Заготовка для заметки о встрече",
+        "content_html": "<b>Встреча</b><br>Дата: <br>Участники: <br>Цели: <br>Результаты: <br>"
+    },
+    {
+        "name": "Дневник",
+        "category": "Личное",
+        "description": "Дневниковая запись",
+        "content_html": "<b>Дневник</b><br>Дата: <br>Сегодня:<br><br>Настроение:<br>События:<br>"
+    },
+    {
+        "name": "UPD блок",
+        "category": "Обновления",
+        "description": "Блок обновления с датой, базой, пользователем, результатом и деталями",
+        "content_html": "<b>UPD [{date}]</b><br><b>Base:</b> <br><b>User:</b> <br><b>Result:</b> <br><b>Details:</b> <br><br>"
+    }
 ]
