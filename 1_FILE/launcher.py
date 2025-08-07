@@ -1343,7 +1343,6 @@ class NotesApp(QMainWindow):
             combo.addItems(
                 [f"{tpl['name']} ({tpl.get('description','')})" for tpl in filtered]
             )
-
         category_combo.currentIndexChanged.connect(filter_templates)
         layout.addWidget(category_combo)
         layout.addWidget(combo)
@@ -1354,10 +1353,14 @@ class NotesApp(QMainWindow):
 
         def update_preview(idx):
             if 0 <= idx < len(filtered_templates):
-                preview.setHtml(filtered_templates[idx]["content_html"])
+                content = filtered_templates[idx]["content_html"]
+                if "{date}" in content:
+                    now = QDateTime.currentDateTime()
+                    date_str = now.toString("dd.MM.yyyy")
+                    content = content.replace("{date}", date_str)
+                preview.setHtml(content)
             else:
                 preview.setHtml("")
-
         combo.currentIndexChanged.connect(update_preview)
         filter_templates()
         combo.setCurrentIndex(0)
@@ -1380,9 +1383,15 @@ class NotesApp(QMainWindow):
             idx = combo.currentIndex()
             if 0 <= idx < len(filtered_templates):
                 tpl = filtered_templates[idx]
+                content_html = tpl["content_html"]
+                if "{date}" in content_html:
+                    now = QDateTime.currentDateTime()
+                    date_str = now.toString("dd.MM.yyyy")
+                    content_html = content_html.replace("{date}", date_str)
+
                 cursor = self.text_edit.textCursor()
                 start = cursor.position()
-                self.text_edit.insertHtml(tpl["content_html"])
+                self.text_edit.insertHtml(content_html)
                 end = self.text_edit.textCursor().position()
                 if end > start:
                     cursor.setPosition(start)
@@ -2325,9 +2334,6 @@ class NotesApp(QMainWindow):
         add_tool_button("", "❌ - Удалить", self.delete_note)
         add_tool_button("📎", "📎 - Приерепть файл", self.attach_file_to_note)
         add_tool_button("", "🖼 - Картинка", self.attach_file_to_note)
-        add_tool_button(
-            "", "🔧 - Вставить UPD/BASE/USER/RESULT/DETAILS", self.insert_update_block
-        )
         self.audio_button = QPushButton("🎤")
         self.audio_button.setToolTip("🎤 - Записать аудио")
         self.audio_button.setFixedSize(32, 32)
