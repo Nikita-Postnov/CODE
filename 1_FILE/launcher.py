@@ -1880,6 +1880,7 @@ class NotesApp(QMainWindow):
             self, "Файл прикреплён", f"Файл '{filename}' прикреплён к заметке."
         )
         self.save_note()
+        self.show_note_with_attachments(self.current_note)
 
     def align_left(self) -> None:
         self.text_edit.setAlignment(Qt.AlignLeft)
