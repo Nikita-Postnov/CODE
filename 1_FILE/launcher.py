@@ -1360,6 +1360,14 @@ class NotesApp(QMainWindow):
             self.record_state_for_undo()
             QMessageBox.information(self, "Сохранено", "Заметка успешно сохранена.")
 
+    def save_note_quiet(self) -> None:
+        if self.current_note:
+            self.current_note.content = self.text_edit.toHtml()
+            self.current_note.password_manager = self.password_manager_field.text()
+            self.current_note.rdp_1c8 = self.rdp_1c8_field.text()
+            self.save_note_to_file(self.current_note)
+            self.record_state_for_undo()
+
     def open_note_folder(self, note: Note) -> None:
         if not note:
             self.attachments_scroll.setVisible(False)
@@ -1687,6 +1695,10 @@ class NotesApp(QMainWindow):
         self.rdp_1c8_field.setText(note.rdp_1c8)
 
     def show_note_with_attachments(self, note: Note | None) -> None:
+        self.attachments_watcher.removePaths(self.attachments_watcher.files())
+        self.attachments_watcher.removePaths(
+            self.attachments_watcher.directories()
+        )
         if not note:
             self.attachments_scroll.setVisible(False)
             self.text_edit.blockSignals(True)
@@ -1838,14 +1850,13 @@ class NotesApp(QMainWindow):
                     self, "Ошибка", f"Не удалось открыть изображение: {filename}"
                 )
         else:
-            from urllib.parse import quote
-
             url = "file:///" + quote(os.path.abspath(dest).replace(os.sep, "/"))
             self.text_edit.insertHtml(f'📄 <a href="{url}">{filename}</a>')
         QMessageBox.information(
             self, "Файл прикреплён", f"Файл '{filename}' прикреплён к заметке."
         )
-        self.save_note()
+        self.save_note_quiet()
+        self.show_note_with_attachments(self.current_note)
 
     def attach_file_to_note_external(self, file_path: str) -> None:
         if not self.current_note:
@@ -1878,14 +1889,12 @@ class NotesApp(QMainWindow):
                     self, "Ошибка", f"Не удалось открыть изображение: {filename}"
                 )
         else:
-            from urllib.parse import quote
-
             url = "file:///" + quote(os.path.abspath(dest).replace(os.sep, "/"))
             self.text_edit.insertHtml(f'📄 <a href="{url}">{filename}</a>')
         QMessageBox.information(
             self, "Файл прикреплён", f"Файл '{filename}' прикреплён к заметке."
         )
-        self.save_note()
+        self.save_note_quiet()
         self.show_note_with_attachments(self.current_note)
 
     def align_left(self) -> None:
