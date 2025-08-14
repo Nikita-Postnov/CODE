@@ -3328,7 +3328,10 @@ class NotesApp(QMainWindow):
             for f in attachments
         )
         if attachment_links:
-            self.text_edit.append("\n--- Attachments ---\n" + attachment_links)
+            cursor = self.text_edit.textCursor()
+            html = "<br>--- Attachments ---<br>" + attachment_links.replace("\n", "<br>")
+            cursor.insertHtml(html)
+            self.text_edit.setTextCursor(cursor)
 
     def update_tag_filter_items(self):
         all_tags = sorted(self.get_all_tags())
