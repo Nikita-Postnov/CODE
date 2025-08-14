@@ -1836,7 +1836,6 @@ class NotesApp(QMainWindow):
             return
         is_image = filename.lower().endswith((".png", ".jpg", ".jpeg", ".bmp", ".gif"))
         cursor = self.text_edit.textCursor()
-        cursor.movePosition(QTextCursor.End)
         self.text_edit.setTextCursor(cursor)
         if is_image:
             pixmap = QPixmap(dest)
@@ -1878,7 +1877,6 @@ class NotesApp(QMainWindow):
             return
         is_image = filename.lower().endswith((".png", ".jpg", ".jpeg", ".bmp", ".gif"))
         cursor = self.text_edit.textCursor()
-        cursor.movePosition(QTextCursor.End)
         self.text_edit.setTextCursor(cursor)
         if is_image:
             pixmap = QPixmap(dest)
