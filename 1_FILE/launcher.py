@@ -1835,6 +1835,9 @@ class NotesApp(QMainWindow):
             QMessageBox.critical(self, "Ошибка", f"Не удалось скопировать файл: {e}")
             return
         is_image = filename.lower().endswith((".png", ".jpg", ".jpeg", ".bmp", ".gif"))
+        cursor = self.text_edit.textCursor()
+        cursor.movePosition(QTextCursor.End)
+        self.text_edit.setTextCursor(cursor)
         if is_image:
             pixmap = QPixmap(dest)
             if not pixmap.isNull():
@@ -1874,6 +1877,9 @@ class NotesApp(QMainWindow):
             QMessageBox.critical(self, "Ошибка", f"Не удалось скопировать файл: {e}")
             return
         is_image = filename.lower().endswith((".png", ".jpg", ".jpeg", ".bmp", ".gif"))
+        cursor = self.text_edit.textCursor()
+        cursor.movePosition(QTextCursor.End)
+        self.text_edit.setTextCursor(cursor)
         if is_image:
             pixmap = QPixmap(dest)
             if not pixmap.isNull():
@@ -2164,6 +2170,9 @@ class NotesApp(QMainWindow):
                     break
             cursor.movePosition(QTextCursor.NextCharacter)
         if not replaced:
+            insert_cursor = self.text_edit.textCursor()
+            insert_cursor.movePosition(QTextCursor.End)
+            self.text_edit.setTextCursor(insert_cursor)
             self.text_edit.insertHtml(html_img)
             self.record_state_for_undo()
 
@@ -2177,6 +2186,9 @@ class NotesApp(QMainWindow):
             html_img = (
                 f'<img src="Data:image/png;base64,{base64_data}" width="300"><br>'
             )
+            cursor = self.text_edit.textCursor()
+            cursor.movePosition(QTextCursor.End)
+            self.text_edit.setTextCursor(cursor)
             self.text_edit.insertHtml(html_img)
             self.record_state_for_undo()
 
@@ -2209,6 +2221,9 @@ class NotesApp(QMainWindow):
             html_img = (
                 f'<img src="Data:image/png;base64,{base64_data}" width="200"><br>'
             )
+            cursor = self.text_edit.textCursor()
+            cursor.movePosition(QTextCursor.End)
+            self.text_edit.setTextCursor(cursor)
             self.text_edit.insertHtml(html_img)
             self.record_state_for_undo()
 
@@ -3697,10 +3712,16 @@ class NotesApp(QMainWindow):
                         pixmap.save(buffer, "PNG")
                         base64_data = base64.b64encode(buffer.data()).decode("utf-8")
                         html_img = f'<img src="Data:image/png;base64,{base64_data}" width="200"><br>'
+                        cursor = self.text_edit.textCursor()
+                        cursor.movePosition(QTextCursor.End)
+                        self.text_edit.setTextCursor(cursor)
                         self.text_edit.insertHtml(html_img)
                         self.record_state_for_undo()
                 else:
                     url = "file:///" + quote(os.path.abspath(dest).replace(os.sep, "/"))
+                    cursor = self.text_edit.textCursor()
+                    cursor.movePosition(QTextCursor.End)
+                    self.text_edit.setTextCursor(cursor)
                     self.text_edit.insertHtml(f'📄 <a href="{url}">{filename}</a>')
         QMessageBox.information(
             self, "Перетаскивание файлов", "Файлы прикреплены к заметке."
