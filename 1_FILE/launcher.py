@@ -1695,10 +1695,12 @@ class NotesApp(QMainWindow):
         self.rdp_1c8_field.setText(note.rdp_1c8)
 
     def show_note_with_attachments(self, note: Note | None) -> None:
-        self.attachments_watcher.removePaths(self.attachments_watcher.files())
-        self.attachments_watcher.removePaths(
-            self.attachments_watcher.directories()
-        )
+        files = self.attachments_watcher.files()
+        if files:
+            self.attachments_watcher.removePaths(files)
+        dirs = self.attachments_watcher.directories()
+        if dirs:
+            self.attachments_watcher.removePaths(dirs)
         if not note:
             self.attachments_scroll.setVisible(False)
             self.text_edit.blockSignals(True)
