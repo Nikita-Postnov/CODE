@@ -624,6 +624,8 @@ class NotesApp(QMainWindow):
         self.text_edit.textChanged.connect(lambda: self.debounce_timer.start(self.debounce_ms))
         self.current_note = None
         self.attachments_watcher = QFileSystemWatcher(self)
+        self.attachments_watcher.directoryChanged.connect(self._refresh_attachments)
+        self.attachments_watcher.fileChanged.connect(self._refresh_attachments)
         self.init_all_components()
         self.load_plugins()
         self.init_theme()
@@ -1776,6 +1778,10 @@ class NotesApp(QMainWindow):
                 if note_dir not in self.attachments_watcher.directories():
                     self.attachments_watcher.addPath(note_dir)
             self.attachments_scroll.setVisible(attachments_found)
+
+    def _refresh_attachments(self, *_) -> None:
+        if self.current_note:
+            self.show_note_with_attachments(self.current_note)
 
     def delete_attachment_from_panel(self, file_path: str) -> None:
         reply = QMessageBox.question(
