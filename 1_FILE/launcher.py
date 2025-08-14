@@ -718,7 +718,8 @@ class NotesApp(QMainWindow):
         self.tags_label = QLabel("Теги: нет")
         self.tags_label.setAlignment(Qt.AlignLeft)
         self.attachments_panel = QWidget()
-        self.attachments_layout = QVBoxLayout(self.attachments_panel)
+        self.attachments_layout = QHBoxLayout(self.attachments_panel)
+        self.attachments_layout.setAlignment(Qt.AlignLeft)
         self.attachments_scroll = QScrollArea()
         self.attachments_scroll.setWidgetResizable(True)
         self.attachments_scroll.setWidget(self.attachments_panel)
@@ -1787,7 +1788,9 @@ class NotesApp(QMainWindow):
                         )
                     )
                     layout.addWidget(del_btn)
-                    layout.addStretch(1)
+                    item_widget.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Maximum)
+                    if self.attachments_layout.count() > 0:
+                        self.attachments_layout.addWidget(QLabel(" - "))
                     self.attachments_layout.addWidget(item_widget)
                 if note_dir not in self.attachments_watcher.directories():
                     self.attachments_watcher.addPath(note_dir)
