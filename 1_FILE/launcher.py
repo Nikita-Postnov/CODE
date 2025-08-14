@@ -47,6 +47,7 @@ from PySide6.QtCore import (
     QBuffer,
     QPointF,
     QIODevice,
+    QFileSystemWatcher,
 )
 from PySide6.QtGui import (
     QIcon,
@@ -125,6 +126,7 @@ APPDIR = getattr(sys, "_MEIPASS", os.path.abspath(os.path.dirname(__file__)))
 DATA_DIR = os.path.join(APPDIR, "Data")
 ICON_PATH = os.path.join(DATA_DIR, "icon.ico")
 TRAY_ICON_PATH = os.path.join(DATA_DIR, "tray_icon.ico")
+FILE_ICON_PATH = os.path.join(DATA_DIR, "file.ico")
 os.makedirs(DATA_DIR, exist_ok=True)
 MAX_HISTORY = 250
 
@@ -141,10 +143,15 @@ def copy_default_icons():
     src_tray_icon = os.path.join(
         os.path.abspath(os.path.dirname(__file__)), "tray_icon.ico"
     )
+    src_file_icon = os.path.join(
+        os.path.abspath(os.path.dirname(__file__)), "file.ico"
+    )
     if not os.path.exists(ICON_PATH) and os.path.exists(src_icon):
         shutil.copy(src_icon, ICON_PATH)
     if not os.path.exists(TRAY_ICON_PATH) and os.path.exists(src_tray_icon):
         shutil.copy(src_tray_icon, TRAY_ICON_PATH)
+    if not os.path.exists(FILE_ICON_PATH) and os.path.exists(src_file_icon):
+        shutil.copy(src_file_icon, FILE_ICON_PATH)
 
 
 copy_default_icons()
@@ -616,18 +623,12 @@ class NotesApp(QMainWindow):
         self.debounce_timer.timeout.connect(self.autosave_current_note)
         self.text_edit.textChanged.connect(lambda: self.debounce_timer.start(self.debounce_ms))
         self.current_note = None
+        self.attachments_watcher = QFileSystemWatcher(self)
         self.init_all_components()
         self.load_plugins()
         self.init_theme()
         self.load_settings()
-        self.attachments_panel = QWidget()
-        self.attachments_layout = QVBoxLayout(self.attachments_panel)
-        self.attachments_scroll = QScrollArea()
-        self.attachments_scroll.setWidgetResizable(True)
-        self.attachments_scroll.setWidget(self.attachments_panel)
-        self.attachments_scroll.setVisible(False)
-        self.attachments_layout.setContentsMargins(0,0,0,0)
-        self.tray_icon = QSystemTrayIcon(QIcon(TRAY_ICON_PATH), self)
+        self.tray_icon = QSystemTrayIcon(QIcon(TRAY_ICON_PATH), self) 
         self.tray_icon.activated.connect(self.on_tray_icon_activated)
         self.tray_icon.setToolTip("Мои Заметки")
         self.tray_icon.setVisible(True)
@@ -1710,12 +1711,16 @@ class NotesApp(QMainWindow):
                 if widget:
                     widget.setParent(None)
                     widget.deleteLater()
-            note_dir = os.path.join("Notes", NotesApp.safe_folder_name(note.title, note.uuid, note.timestamp))
+            note_dir = os.path.join(
+                "Notes", NotesApp.safe_folder_name(note.title, note.uuid, note.timestamp)
+            )
+            attachments_found = False
             if os.path.isdir(note_dir):
                 ignored_files = {"note.json", ".DS_Store", "Thumbs.db"}
                 for filename in os.listdir(note_dir):
                     if filename in ignored_files:
                         continue
+                    attachments_found = True
                     file_path = os.path.join(note_dir, filename)
                     item_widget = QWidget()
                     layout = QHBoxLayout(item_widget)
@@ -1732,9 +1737,18 @@ class NotesApp(QMainWindow):
                         layout.addWidget(icon_label)
                     else:
                         icon_label = QLabel()
-                        icon_label.setPixmap(
-                            self.style().standardIcon(QStyle.SP_FileIcon).pixmap(32, 32)
-                        )
+                        if os.path.exists(FILE_ICON_PATH):
+                            icon_label.setPixmap(
+                                QPixmap(FILE_ICON_PATH).scaled(
+                                    48, 48, Qt.KeepAspectRatio, Qt.SmoothTransformation
+                                )
+                            )
+                        else:
+                            icon_label.setPixmap(
+                                self.style()
+                                .standardIcon(QStyle.SP_FileIcon)
+                                .pixmap(32, 32)
+                            )
                         layout.addWidget(icon_label)
                     label = QLabel(filename)
                     label.setTextInteractionFlags(Qt.TextSelectableByMouse)
@@ -1759,10 +1773,9 @@ class NotesApp(QMainWindow):
                     layout.addWidget(del_btn)
                     layout.addStretch(1)
                     self.attachments_layout.addWidget(item_widget)
-                    folder = os.path.join("Notes", NotesApp.safe_folder_name(note.title, note.uuid, note.timestamp))
-                    if os.path.isdir(folder):
-                        if folder not in self.attachments_watcher.directories():
-                            self.attachments_watcher.addPath(folder)
+                if note_dir not in self.attachments_watcher.directories():
+                    self.attachments_watcher.addPath(note_dir)
+            self.attachments_scroll.setVisible(attachments_found)
 
     def delete_attachment_from_panel(self, file_path: str) -> None:
         reply = QMessageBox.question(
