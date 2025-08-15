@@ -3218,7 +3218,6 @@ class NotesApp(QMainWindow):
     def clear_formatting(self):
         cursor = self.text_edit.textCursor()
         palette = self.text_edit.palette()
-        default_bg_color = palette.color(QPalette.Base)
         default_text_color = palette.color(QPalette.Text)
         if cursor.hasSelection():
             selected_text = cursor.selectedText()
@@ -3228,7 +3227,7 @@ class NotesApp(QMainWindow):
             fmt.setFontUnderline(False)
             fmt.setFontStrikeOut(False)
             fmt.setForeground(default_text_color)
-            fmt.setBackground(default_bg_color)
+            fmt.clearBackground()
             fmt.setFontPointSize(14)
             block_fmt = QTextBlockFormat()
             block_fmt.setHeadingLevel(0)
@@ -3243,7 +3242,7 @@ class NotesApp(QMainWindow):
             fmt.setFontUnderline(False)
             fmt.setFontStrikeOut(False)
             fmt.setForeground(default_text_color)
-            fmt.setBackground(default_bg_color)
+            fmt.clearBackground()
             fmt.setFontPointSize(14)
             block_fmt = QTextBlockFormat()
             block_fmt.setHeadingLevel(0)
