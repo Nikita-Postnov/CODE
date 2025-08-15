@@ -2718,7 +2718,6 @@ class NotesApp(QMainWindow):
         self.search_mode_combo = QComboBox()
         self.search_mode_combo.addItems(["Заголовок", "Содержимое", "Напоминание"])
         flow_layout.addWidget(self.search_mode_combo)
-        flow_break()
         self.search_bar = QLineEdit()
         self.search_bar.setPlaceholderText("Поиск...")
         flow_layout.addWidget(self.search_bar)
