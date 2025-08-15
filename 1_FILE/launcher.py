@@ -2883,7 +2883,7 @@ class NotesApp(QMainWindow):
         add_tool_button("", "𝐁 - Жирный", self.toggle_bold)
         add_tool_button("", "𝐼 - Курсив", self.toggle_italic)
         add_tool_button("", "U̲ - Подчёркнутый", self.toggle_underline)
-        add_tool_button("", "S̶ - Зачеркнуть", self.toggle_strikethrough)
+        add_tool_button("", "̶̶̶J̶ - Зачеркнуть", self.toggle_strikethrough)
         add_tool_button("", "🧹 - Сбросить формат", self.clear_formatting)
         add_tool_button("", "🌈 - Цвет текста", self.change_text_color)
         add_tool_button("", "🅰️ - Фон текста", self.change_background_color)
@@ -6255,4 +6255,4 @@ if __name__ == "__main__":
     window.show()
     sys.exit(app.exec())
 
-    #UPD 15.08.2025|18:08
+    #UPD 15.08.2025|18:14
