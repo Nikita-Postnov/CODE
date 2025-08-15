@@ -1945,6 +1945,12 @@ class NotesApp(QMainWindow):
                         widget.deleteLater()
             self.attachments_scroll.setVisible(False)
             return
+        cursor_pos = None
+        anchor_pos = None
+        if note == self.current_note:
+            cursor = self.text_edit.textCursor()
+            cursor_pos = cursor.position()
+            anchor_pos = cursor.anchor()
         self.text_edit.blockSignals(True)
         self.text_edit.setHtml(
             note.content_html
@@ -1952,6 +1958,11 @@ class NotesApp(QMainWindow):
             else note.content
         )
         self.text_edit.blockSignals(False)
+        if cursor_pos is not None and anchor_pos is not None:
+            cursor = self.text_edit.textCursor()
+            cursor.setPosition(anchor_pos)
+            cursor.setPosition(cursor_pos, QTextCursor.KeepAnchor)
+            self.text_edit.setTextCursor(cursor)
         if hasattr(self, "attachments_layout"):
             for i in reversed(range(self.attachments_layout.count())):
                 widget = self.attachments_layout.itemAt(i).widget()
@@ -6275,4 +6286,4 @@ if __name__ == "__main__":
     window.show()
     sys.exit(app.exec())
 
-    #UPD 15.08.2025|18:39
+    #UPD 15.08.2025|18:44
