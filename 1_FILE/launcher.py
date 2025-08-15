@@ -5986,4 +5986,4 @@ if __name__ == "__main__":
     window.show()
     sys.exit(app.exec())
 
-    #UPD 15.08.2025.14:49
+    #UPD 15.08.2025.14:52
