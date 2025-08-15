@@ -816,8 +816,8 @@ class NotesApp(QMainWindow):
         self.rdp_1c8_field.textChanged.connect(
             lambda t: self.rdp_1c8_copy_btn.setEnabled(bool(t))
         )
-        self.rdp_1c8_delete_btn = QPushButton("Удалить")
-        self.rdp_1c8_delete_btn.setFixedHeight(24)
+        self.rdp_1c8_delete_btn = QPushButton("✖")
+        self.rdp_1c8_delete_btn.setFixedSize(24, 24)
         self.rdp_1c8_delete_btn.setEnabled(False)
         self.rdp_1c8_delete_btn.clicked.connect(self.delete_rdp_1c8_field)
         self.rdp_1c8_field.textChanged.connect(
@@ -906,6 +906,10 @@ class NotesApp(QMainWindow):
                 self.action_toggle_rdp, False, self.rdp_1c8_label.text()
             )
             self.action_toggle_rdp.blockSignals(False)
+            if hasattr(self, "visibility_toolbar"):
+                self.visibility_toolbar.removeAction(self.action_toggle_rdp)
+            self.action_toggle_rdp.deleteLater()
+            del self.action_toggle_rdp
 
     def add_custom_field(self, data: dict | None = None) -> None:
         row = QWidget()
@@ -2894,7 +2898,7 @@ class NotesApp(QMainWindow):
         add_tool_button("", "𝐁 - Жирный", self.toggle_bold)
         add_tool_button("", "𝐼 - Курсив", self.toggle_italic)
         add_tool_button("", "U̲ - Подчёркнутый", self.toggle_underline)
-        add_tool_button("", "̶̶̶J̶ - Зачеркнуть", self.toggle_strikethrough)
+        add_tool_button("", "̶̶̶Z - Зачеркнуть", self.toggle_strikethrough)
         add_tool_button("", "🧹 - Сбросить формат", self.clear_formatting)
         add_tool_button("", "🌈 - Цвет текста", self.change_text_color)
         add_tool_button("", "🅰️ - Фон текста", self.change_background_color)
