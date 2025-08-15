@@ -74,6 +74,7 @@ from PySide6.QtGui import (
     QPolygonF,
     QTransform,
     QTextListFormat,
+    QTextBlockFormat,
     QPainter,
     QPalette,
     QTextDocument,
@@ -1979,6 +1980,9 @@ class NotesApp(QMainWindow):
     def align_right(self) -> None:
         self.text_edit.setAlignment(Qt.AlignRight)
 
+    def align_justify(self) -> None:
+        self.text_edit.setAlignment(Qt.AlignJustify)
+
     def change_font(self, font: QFont) -> None:
         self.text_edit.setCurrentFont(font)
 
@@ -2148,6 +2152,19 @@ class NotesApp(QMainWindow):
             text = cursor.selectedText()
             text = text.swapcase()
             cursor.insertText(text)
+
+    def apply_heading(self, level: int) -> None:
+        cursor = self.text_edit.textCursor()
+        if not cursor.hasSelection():
+            cursor.select(QTextCursor.BlockUnderCursor)
+        block_format = QTextBlockFormat()
+        block_format.setHeadingLevel(level)
+        cursor.mergeBlockFormat(block_format)
+        fmt = QTextCharFormat()
+        size_map = {1: 24, 2: 18, 3: 14}
+        fmt.setFontPointSize(size_map.get(level, 12))
+        fmt.setFontWeight(QFont.Bold)
+        cursor.mergeCharFormat(fmt)
 
     def insert_bullet_list(self) -> None:
         cursor = self.text_edit.textCursor()
@@ -2567,6 +2584,29 @@ class NotesApp(QMainWindow):
                 else:
                     cursor.insertHtml(f'<a href="{url}">{url}</a>')
 
+    def edit_link(self) -> None:
+        cursor = self.text_edit.textCursor()
+        if not cursor.hasSelection():
+            cursor.select(QTextCursor.WordUnderCursor)
+        fmt = cursor.charFormat()
+        if fmt.isAnchor():
+            current_url = fmt.anchorHref()
+            url, ok = QInputDialog.getText(self, "Изменить ссылку", "URL:", text=current_url)
+            if ok and url:
+                fmt.setAnchorHref(url)
+                cursor.mergeCharFormat(fmt)
+
+    def remove_link(self) -> None:
+        cursor = self.text_edit.textCursor()
+        if not cursor.hasSelection():
+            cursor.select(QTextCursor.WordUnderCursor)
+        fmt = QTextCharFormat(cursor.charFormat())
+        fmt.setAnchor(False)
+        fmt.setAnchorHref("")
+        fmt.setForeground(self.text_edit.palette().text())
+        fmt.setFontUnderline(False)
+        cursor.mergeCharFormat(fmt)
+
     def insert_table(self):
         rows, ok1 = QInputDialog.getInt(
             self, "Вставить таблицу", "Количество строк:", 2, 1, 100
@@ -2629,18 +2669,25 @@ class NotesApp(QMainWindow):
         add_tool_button("", "𝐁 - Жирный", self.toggle_bold)
         add_tool_button("", "𝐼 - Курсив", self.toggle_italic)
         add_tool_button("", "U̲ - Подчёркнутый", self.toggle_underline)
+        add_tool_button("", "S̶ - Зачеркнуть", self.toggle_strikethrough)
         add_tool_button("", "🧹 - Сбросить формат", self.clear_formatting)
         add_tool_button("", "🌈 - Цвет текста", self.change_text_color)
         add_tool_button("", "🅰️ - Фон текста", self.change_background_color)
         add_tool_button("", "← - Расположить слева", self.align_left)
         add_tool_button("", "→← - Центрировать", self.align_center)
         add_tool_button("", "→ - Расположить справа", self.align_right)
+        add_tool_button("", "☰ - По ширине", self.align_justify)
+        add_tool_button("", "H1 - Заголовок 1", lambda: self.apply_heading(1))
+        add_tool_button("", "H2 - Заголовок 2", lambda: self.apply_heading(2))
+        add_tool_button("", "H3 - Заголовок 3", lambda: self.apply_heading(3))
         add_tool_button("", "Aa - Изменить регистр", self.toggle_case)
         add_tool_button("", "• - маркированный  список", self.insert_bullet_list)
         add_tool_button("", "1. - нумерованный список", self.insert_numbered_list)
         add_tool_button("", "☑ - чекбокс", self.insert_checkbox)
         add_tool_button("", "📅 - Таблица", self.insert_table)
         add_tool_button("", "🔗 - Ссылка", self.insert_link)
+        add_tool_button("", "✏️ - Изменить ссылку", self.edit_link)
+        add_tool_button("", "❌ - Удалить ссылку", self.remove_link)
         add_tool_button("", "▁ - Горизонтальная линия", self.insert_horizontal_line)
         add_tool_button("", "+🏷 - Добавить тег", self.add_tag_to_note)
         self.tag_filter = QComboBox()
@@ -5992,4 +6039,4 @@ if __name__ == "__main__":
     window.show()
     sys.exit(app.exec())
 
-    #UPD 15.08.2025|16:17
+    #UPD 15.08.2025|16:57
