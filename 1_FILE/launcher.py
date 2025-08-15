@@ -1839,21 +1839,26 @@ class NotesApp(QMainWindow):
             except Exception as e:
                 QMessageBox.warning(self, "Ошибка", f"Не удалось удалить файл:\n{e}")
             if self.current_note:
-                url = QUrl.fromLocalFile(os.path.abspath(file_path)).toString()
+                file_path_abs = os.path.abspath(file_path)
+                urls = {
+                    QUrl.fromLocalFile(file_path_abs).toString(),
+                    "file:///" + quote(file_path_abs.replace(os.sep, "/")),
+                }
                 html = self.text_edit.toHtml()
-                esc = re.escape(url)
-                html = re.sub(
-                    rf"(<br>\s*)*<a[^>]+href=\"{esc}\"[^>]*>.*?</a>(<br>\s*)*",
-                    "",
-                    html,
-                    flags=re.IGNORECASE,
-                )
-                html = re.sub(
-                    rf"(<br>\s*)*<img[^>]+src=\"{esc}\"[^>]*>(<br>\s*)*",
-                    "",
-                    html,
-                    flags=re.IGNORECASE,
-                )
+                for url in urls:
+                    esc = re.escape(url)
+                    html = re.sub(
+                        rf"(<br>\s*)*(?:📄\s*)?<a[^>]+href=\"{esc}\"[^>]*>.*?</a>(<br>\s*)*",
+                        "",
+                        html,
+                        flags=re.IGNORECASE,
+                    )
+                    html = re.sub(
+                        rf"(<br>\s*)*<img[^>]+src=\"{esc}\"[^>]*>(<br>\s*)*",
+                        "",
+                        html,
+                        flags=re.IGNORECASE,
+                    )
                 if b64_data:
                     esc_b64 = re.escape(b64_data)
                     html = re.sub(
@@ -1910,8 +1915,8 @@ class NotesApp(QMainWindow):
                     self, "Ошибка", f"Не удалось открыть изображение: {filename}"
                 )
         else:
-            url = "file:///" + quote(os.path.abspath(dest).replace(os.sep, "/"))
-            self.text_edit.insertHtml(f'📄 <a href="{url}">{filename}</a>')
+            file_url = QUrl.fromLocalFile(os.path.abspath(dest)).toString()
+            self.text_edit.insertHtml(f'📄 <a href="{file_url}">{filename}</a>')
         QMessageBox.information(
             self, "Файл прикреплён", f"Файл '{filename}' прикреплён к заметке."
         )
@@ -1951,8 +1956,8 @@ class NotesApp(QMainWindow):
                     self, "Ошибка", f"Не удалось открыть изображение: {filename}"
                 )
         else:
-            url = "file:///" + quote(os.path.abspath(dest).replace(os.sep, "/"))
-            self.text_edit.insertHtml(f'📄 <a href="{url}">{filename}</a>')
+            file_url = QUrl.fromLocalFile(os.path.abspath(dest)).toString()
+            self.text_edit.insertHtml(f'📄 <a href="{file_url}">{filename}</a>')
         QMessageBox.information(
             self, "Файл прикреплён", f"Файл '{filename}' прикреплён к заметке."
         )
@@ -2285,8 +2290,8 @@ class NotesApp(QMainWindow):
 
     def insert_audio_link(self, filepath: str) -> None:
         filename = os.path.basename(filepath)
-        url = "file:///" + quote(os.path.abspath(filepath).replace(os.sep, "/"))
-        self.text_edit.insertHtml(f'📄 <a href="{url}">{filename}</a>')
+        file_url = QUrl.fromLocalFile(os.path.abspath(filepath)).toString()
+        self.text_edit.insertHtml(f'📄 <a href="{file_url}">{filename}</a>')
         self.save_note()
 
     def toggle_audio_recording(self) -> None:
@@ -3778,11 +3783,11 @@ class NotesApp(QMainWindow):
                         self.text_edit.insertHtml(html_img)
                         self.record_state_for_undo()
                 else:
-                    url = "file:///" + quote(os.path.abspath(dest).replace(os.sep, "/"))
+                    file_url = QUrl.fromLocalFile(os.path.abspath(dest)).toString()
                     cursor = self.text_edit.textCursor()
                     cursor.movePosition(QTextCursor.End)
                     self.text_edit.setTextCursor(cursor)
-                    self.text_edit.insertHtml(f'📄 <a href="{url}">{filename}</a>')
+                    self.text_edit.insertHtml(f'📄 <a href="{file_url}">{filename}</a>')
         QMessageBox.information(
             self, "Перетаскивание файлов", "Файлы прикреплены к заметке."
         )
@@ -5981,4 +5986,4 @@ if __name__ == "__main__":
     window.show()
     sys.exit(app.exec())
 
-    #UPD 15.08.2025.14:34
+    #UPD 15.08.2025.14:49
