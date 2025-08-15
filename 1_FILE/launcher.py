@@ -2385,10 +2385,7 @@ class NotesApp(QMainWindow):
     def apply_heading(self, level: int) -> None:
         cursor = self.text_edit.textCursor()
         if not cursor.hasSelection():
-            cursor.select(QTextCursor.BlockUnderCursor)
-        block_format = QTextBlockFormat()
-        block_format.setHeadingLevel(level)
-        cursor.mergeBlockFormat(block_format)
+            cursor.select(QTextCursor.WordUnderCursor)
         fmt = QTextCharFormat()
         size_map = {1: 24, 2: 18, 3: 14}
         fmt.setFontPointSize(size_map.get(level, 12))
@@ -3233,6 +3230,9 @@ class NotesApp(QMainWindow):
             fmt.setForeground(default_text_color)
             fmt.setBackground(default_bg_color)
             fmt.setFontPointSize(14)
+            block_fmt = QTextBlockFormat()
+            block_fmt.setHeadingLevel(0)
+            cursor.mergeBlockFormat(block_fmt)
             cursor.insertText(selected_text, fmt)
         else:
             cursor.select(QTextCursor.WordUnderCursor)
@@ -3245,6 +3245,9 @@ class NotesApp(QMainWindow):
             fmt.setForeground(default_text_color)
             fmt.setBackground(default_bg_color)
             fmt.setFontPointSize(14)
+            block_fmt = QTextBlockFormat()
+            block_fmt.setHeadingLevel(0)
+            cursor.mergeBlockFormat(block_fmt)
             cursor.insertText(selected_text, fmt)
 
     def toggle_pin(self, note):
