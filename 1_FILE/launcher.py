@@ -4612,7 +4612,7 @@ class PasswordManager:
                 "use_lowercase": True,
                 "use_digits": True,
                 "use_symbols": True,
-                "excluded_chars": "1l0Oo|",
+                "excluded_chars": "O0oQl1I|i!S5Z2B8G6CQDceaouvwxX",
                 "passwords_file": "passwords.json",
             }
             try:
@@ -5283,11 +5283,6 @@ class ConfigEditorDialog(BasePasswordDialog):
         )
 
     def _save(self):
-        description = self.description_entry.get()
-        login = self.login_entry.get()
-        password = self.password_entry.get()
-        url = self.url_entry.get().strip()
-        tags = [tag.strip() for tag in self.tags_entry.get().split(",") if tag.strip()]
         new_config = {
             "max_password_length": int(self.max_length_entry.get()),
             "default_length": int(self.default_length_entry.get()),
@@ -5302,18 +5297,6 @@ class ConfigEditorDialog(BasePasswordDialog):
             messagebox.showerror(
                 "Ошибка", "Длина по умолчанию не может превышать максимальную"
             )
-            return
-        if not description:
-            tk.messagebox.showerror("Ошибка", "Заполните описание!")
-            return
-        if not login:
-            tk.messagebox.showerror("Ошибка", "Заполните логин!")
-            return
-        if not password:
-            tk.messagebox.showerror("Ошибка", "Заполните пароль!")
-            return
-        if len(password) < 4:
-            messagebox.showerror("Ошибка", "Пароль должен быть не короче 4 символов!")
             return
         self.config_data.update(new_config)
         self.result = True
@@ -5489,7 +5472,7 @@ class PasswordGeneratorApp:
                 "use_lowercase": True,
                 "use_digits": True,
                 "use_symbols": True,
-                "excluded_chars": "1l0Oo|",
+                "excluded_chars": "O0oQl1I|i!S5Z2B8G6CQDceaouvwxX",
                 "passwords_file": "passwords.json",
             }
             try:
@@ -6286,4 +6269,4 @@ if __name__ == "__main__":
     window.show()
     sys.exit(app.exec())
 
-    #UPD 15.08.2025|21:36
+    #UPD 16.08.2025|01:07
