@@ -655,6 +655,9 @@ class NotesApp(QMainWindow):
         self.setWindowTitle("Мои Заметки")
         self.setMinimumSize(1250, 800)
         self.setWindowIcon(QIcon(ICON_PATH))
+        self.settings = QSettings("settings.ini", QSettings.IniFormat)
+        pm_label = self.settings.value("password_manager_label", "PasswordManager")
+        rdp_label = self.settings.value("rdp_1c8_label", "1C8 RDP")
         self.new_note_button = QPushButton("Новая")
         self.save_note_button = QPushButton("Сохранить")
         self.delete_note_button = QPushButton("Удалить")
@@ -763,15 +766,22 @@ class NotesApp(QMainWindow):
         self.dock_editor.setAllowedAreas(Qt.AllDockWidgetAreas)
         self.addDockWidget(Qt.RightDockWidgetArea, self.dock_editor)
         self.password_manager_field = QLineEdit()
-        self.password_manager_field.setPlaceholderText("PasswordManager")
+        self.password_manager_field.setPlaceholderText(pm_label)
         self.rdp_1c8_field = QLineEdit()
-        self.rdp_1c8_field.setPlaceholderText("1С8 RDP")
+        self.rdp_1c8_field.setPlaceholderText(rdp_label)
         self.password_manager_row = QWidget()
         _pm_row_layout = QHBoxLayout(self.password_manager_row)
         _pm_row_layout.setContentsMargins(0, 0, 0, 0)
-        _pm_label = QLabel("PasswordManager")
-        _pm_label.setMinimumWidth(140)
-        _pm_row_layout.addWidget(_pm_label)
+        self.password_manager_label = QLineEdit()
+        self.password_manager_label.setText(pm_label)
+        self.password_manager_label.setMinimumWidth(140)
+        self.password_manager_label.setFrame(False)
+        self.password_manager_label.setStyleSheet("background: transparent;")
+        self.password_manager_label.textChanged.connect(self.on_pm_label_changed)
+        self.password_manager_label.editingFinished.connect(
+            lambda: self.settings.setValue("password_manager_label", self.password_manager_label.text())
+        )
+        _pm_row_layout.addWidget(self.password_manager_label)
         _pm_row_layout.addWidget(self.password_manager_field, 1)
         self.password_manager_copy_btn = QPushButton("Копировать")
         self.password_manager_copy_btn.setFixedHeight(24)
@@ -784,9 +794,16 @@ class NotesApp(QMainWindow):
         self.rdp_1c8_row = QWidget()
         _rdp_row_layout = QHBoxLayout(self.rdp_1c8_row)
         _rdp_row_layout.setContentsMargins(0, 0, 0, 0)
-        _rdp_label = QLabel("1С8 RDP")
-        _rdp_label.setMinimumWidth(140)
-        _rdp_row_layout.addWidget(_rdp_label)
+        self.rdp_1c8_label = QLineEdit()
+        self.rdp_1c8_label.setText(rdp_label)
+        self.rdp_1c8_label.setMinimumWidth(140)
+        self.rdp_1c8_label.setFrame(False)
+        self.rdp_1c8_label.setStyleSheet("background: transparent;")
+        self.rdp_1c8_label.textChanged.connect(self.on_rdp_label_changed)
+        self.rdp_1c8_label.editingFinished.connect(
+            lambda: self.settings.setValue("rdp_1c8_label", self.rdp_1c8_label.text())
+        )
+        _rdp_row_layout.addWidget(self.rdp_1c8_label)
         _rdp_row_layout.addWidget(self.rdp_1c8_field, 1)
         self.rdp_1c8_copy_btn = QPushButton("Копировать")
         self.rdp_1c8_copy_btn.setFixedHeight(24)
@@ -821,15 +838,14 @@ class NotesApp(QMainWindow):
         self.visibility_toolbar.setObjectName("visibility_toolbar")
         self.visibility_toolbar.setMovable(False)
         self.addToolBar(Qt.TopToolBarArea, self.visibility_toolbar)
-        self.action_toggle_pm = QAction("🙈 PasswordManager", self)
+        self.action_toggle_pm = QAction(f"🙈 {self.password_manager_label.text()}", self)
         self.action_toggle_pm.setCheckable(True)
         self.action_toggle_pm.toggled.connect(self.on_toggle_pm_visible)
-        self.action_toggle_rdp = QAction("🙈 1C8 RDP", self)
+        self.action_toggle_rdp = QAction(f"🙈 {self.rdp_1c8_label.text()}", self)
         self.action_toggle_rdp.setCheckable(True)
         self.action_toggle_rdp.toggled.connect(self.on_toggle_rdp_visible)
         self.visibility_toolbar.addAction(self.action_toggle_pm)
         self.visibility_toolbar.addAction(self.action_toggle_rdp)
-        self.settings = QSettings("settings.ini", QSettings.IniFormat)
         self.all_tags = set()
         self.new_note_button.clicked.connect(self.new_note)
         self.save_note_button.clicked.connect(self.save_note)
@@ -853,7 +869,25 @@ class NotesApp(QMainWindow):
             return
         QApplication.clipboard().setText(text)
         self.show_toast("Скопировано", boundary_widget=self.dock_editor.widget(), anchor_widget=self.rdp_1c8_copy_btn)
-    
+
+    def on_pm_label_changed(self, text: str) -> None:
+        self.password_manager_field.setPlaceholderText(text)
+        if hasattr(self, "action_toggle_pm"):
+            self._update_eye_action(
+                self.action_toggle_pm,
+                self.password_manager_row.isVisible(),
+                text,
+            )
+
+    def on_rdp_label_changed(self, text: str) -> None:
+        self.rdp_1c8_field.setPlaceholderText(text)
+        if hasattr(self, "action_toggle_rdp"):
+            self._update_eye_action(
+                self.action_toggle_rdp,
+                self.rdp_1c8_row.isVisible(),
+                text,
+            )
+
     def add_toolbar(self) -> None:
         self.init_toolbar()
         layout_splitter = QSplitter(Qt.Vertical)
@@ -874,7 +908,9 @@ class NotesApp(QMainWindow):
             return
         self.current_note.password_manager_visible = bool(checked)
         self.password_manager_row.setVisible(checked)
-        self._update_eye_action(self.action_toggle_pm, checked, "PasswordManager")
+        self._update_eye_action(
+            self.action_toggle_pm, checked, self.password_manager_label.text()
+        )
         self.save_note_to_file(self.current_note)
 
     def on_toggle_rdp_visible(self, checked: bool) -> None:
@@ -882,7 +918,9 @@ class NotesApp(QMainWindow):
             return
         self.current_note.rdp_1c8_visible = bool(checked)
         self.rdp_1c8_row.setVisible(checked)
-        self._update_eye_action(self.action_toggle_rdp, checked, "1C8 RDP")
+        self._update_eye_action(
+            self.action_toggle_rdp, checked, self.rdp_1c8_label.text()
+        )
         self.save_note_to_file(self.current_note)
 
     def delete_selected_history_entries(self) -> None:
@@ -1341,12 +1379,16 @@ class NotesApp(QMainWindow):
             if hasattr(self, "action_toggle_pm"):
                 self.action_toggle_pm.blockSignals(True)
                 self.action_toggle_pm.setChecked(False)
-                self._update_eye_action(self.action_toggle_pm, False, "PasswordManager")
+                self._update_eye_action(
+                    self.action_toggle_pm, False, self.password_manager_label.text()
+                )
                 self.action_toggle_pm.blockSignals(False)
             if hasattr(self, "action_toggle_rdp"):
                 self.action_toggle_rdp.blockSignals(True)
                 self.action_toggle_rdp.setChecked(False)
-                self._update_eye_action(self.action_toggle_rdp, False, "1C8 RDP")
+                self._update_eye_action(
+                    self.action_toggle_rdp, False, self.rdp_1c8_label.text()
+                )
                 self.action_toggle_rdp.blockSignals(False)
 
     def save_note(self) -> None:
@@ -1681,12 +1723,16 @@ class NotesApp(QMainWindow):
         if hasattr(self, "action_toggle_pm"):
             self.action_toggle_pm.blockSignals(True)
             self.action_toggle_pm.setChecked(pm_vis)
-            self._update_eye_action(self.action_toggle_pm, pm_vis, "PasswordManager")
+            self._update_eye_action(
+                self.action_toggle_pm, pm_vis, self.password_manager_label.text()
+            )
             self.action_toggle_pm.blockSignals(False)
         if hasattr(self, "action_toggle_rdp"):
             self.action_toggle_rdp.blockSignals(True)
             self.action_toggle_rdp.setChecked(rdp_vis)
-            self._update_eye_action(self.action_toggle_rdp, rdp_vis, "1C8 RDP")
+            self._update_eye_action(
+                self.action_toggle_rdp, rdp_vis, self.rdp_1c8_label.text()
+            )
             self.action_toggle_rdp.blockSignals(False)
         self.text_edit.show()
         if hasattr(self, "current_note") and self.current_note:
@@ -6038,4 +6084,4 @@ if __name__ == "__main__":
     window.show()
     sys.exit(app.exec())
 
-    #UPD 15.08.2025|17:20
+    #UPD 15.08.2025|17:37
