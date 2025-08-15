@@ -3155,6 +3155,8 @@ class NotesApp(QMainWindow):
             self.save_note_to_file(self.current_note)
 
     def attach_docks(self, dock1, dock2):
+        area = self.dockWidgetArea(dock1)
+        self.addDockWidget(area, dock2)
         self.tabifyDockWidget(dock1, dock2)
         dock2.show()
         dock1.raise_()
@@ -3162,6 +3164,11 @@ class NotesApp(QMainWindow):
     def detach_dock(self, dock):
         dock.setFloating(True)
         dock.show()
+
+    def move_dock(self, dock, area):
+        self.addDockWidget(area, dock)
+        dock.show()
+        dock.raise_()
 
     def show_dock_context_menu(self, position, dock):
         menu = QMenu()
@@ -3179,6 +3186,19 @@ class NotesApp(QMainWindow):
                 action.triggered.connect(
                     lambda checked, d1=target_dock, d2=dock: self.attach_docks(d1, d2)
                 )
+
+        move_menu = menu.addMenu("Переместить к краю")
+        areas = [
+            (Qt.LeftDockWidgetArea, "Слева"),
+            (Qt.RightDockWidgetArea, "Справа"),
+            (Qt.TopDockWidgetArea, "Сверху"),
+            (Qt.BottomDockWidgetArea, "Снизу"),
+        ]
+        for area, name in areas:
+            move_action = move_menu.addAction(name)
+            move_action.triggered.connect(
+                lambda checked, a=area, d=dock: self.move_dock(d, a)
+            )
         detach_action = menu.addAction("Открепить")
         detach_action.triggered.connect(lambda: self.detach_dock(dock))
         menu.exec(dock.mapToGlobal(position))
@@ -6255,4 +6275,4 @@ if __name__ == "__main__":
     window.show()
     sys.exit(app.exec())
 
-    #UPD 15.08.2025|18:14
+    #UPD 15.08.2025|18:39
