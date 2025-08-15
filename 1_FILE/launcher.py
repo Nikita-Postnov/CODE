@@ -123,9 +123,7 @@ from PySide6.QtWidgets import (
     QDockWidget,
 )
 
-APPDIR = getattr(
-    sys, "_MEIPASS", os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-)
+APPDIR = getattr(sys, "_MEIPASS", os.path.abspath(os.path.dirname(__file__)))
 DATA_DIR = os.path.join(APPDIR, "Data")
 NOTES_DIR = os.path.join(APPDIR, "Notes")
 PASSWORDS_DIR = os.path.join(APPDIR, "Passwords")
@@ -139,13 +137,10 @@ os.makedirs(NOTES_DIR, exist_ok=True)
 os.makedirs(PASSWORDS_DIR, exist_ok=True)
 MAX_HISTORY = 250
 
-
 def handle_exception(exc_type, exc_value, exc_traceback):
     traceback.print_exception(exc_type, exc_value, exc_traceback)
 
-
 sys.excepthook = lambda t, v, tb: print("Uncaught exception:", t, v)
-
 
 def copy_default_icons():
     src_icon = os.path.join(os.path.abspath(os.path.dirname(__file__)), "icon.ico")
@@ -162,9 +157,7 @@ def copy_default_icons():
     if not os.path.exists(FILE_ICON_PATH) and os.path.exists(src_file_icon):
         shutil.copy(src_file_icon, FILE_ICON_PATH)
 
-
 copy_default_icons()
-
 
 def paste_from_clipboard(widget):
     if pyperclip is None:
@@ -183,7 +176,6 @@ def paste_from_clipboard(widget):
             widget.insert(tk.INSERT, text)
     except (tk.TclError, pyperclip.PyperclipException) as exc:
         messagebox.showerror("Ошибка", f"Не удалось вставить из буфера: {exc}")
-
 
 CUSTOM_MENU_STYLE = """
 QMenu {
@@ -211,7 +203,6 @@ QMenu::separator {
     margin: 8px 0;
 }
 """
-
 
 class AudioRecorderThread(QThread):
     recording_finished = Signal(str)
