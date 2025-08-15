@@ -1429,72 +1429,43 @@ class NotesApp(QMainWindow):
 
     def load_templates(self) -> list[dict]:
         templates_path = os.path.join(DATA_DIR, "templates.json")
+        base_templates = [
+            {
+                "name": "Список дел",
+                "category": "Работа",
+                "description": "Чекбокс-лист для задач",
+                "content_html": "<b>Список дел:</b><br>☐ Первая задача<br>☐ Вторая задача<br>☐ Третья задача<br>",
+            },
+            {
+                "name": "Встреча",
+                "category": "Встречи",
+                "description": "Заготовка для заметки о встрече",
+                "content_html": "<b>Встреча</b><br>Дата: <br>Участники: <br>Цели: <br>Результаты: <br>",
+            },
+            {
+                "name": "Дневник",
+                "category": "Личное",
+                "description": "Дневниковая запись",
+                "content_html": "<b>Дневник</b><br>Дата: <br>Сегодня:<br><br>Настроение:<br>События:<br>",
+            },
+        ]
+
         if not os.path.exists(templates_path):
-            default_templates = [
-                {
-                    "name": "Список дел",
-                    "category": "Работа",
-                    "description": "Чекбокс-лист для задач",
-                    "content_html": "<b>Список дел:</b><br>☐ Первая задача<br>☐ Вторая задача<br>☐ Третья задача<br>",
-                },
-                {
-                    "name": "Встреча",
-                    "category": "Встречи",
-                    "description": "Заготовка для заметки о встрече",
-                    "content_html": "<b>Встреча</b><br>Дата: <br>Участники: <br>Цели: <br>Результаты: <br>",
-                },
-                {
-                    "name": "Дневник",
-                    "category": "Личное",
-                    "description": "Дневниковая запись",
-                    "content_html": "<b>Дневник</b><br>Дата: <br>Сегодня:<br><br>Настроение:<br>События:<br>",
-                },
-            ]
             with open(templates_path, "w", encoding="utf-8") as f:
-                json.dump(default_templates, f, ensure_ascii=False, indent=4)
-        with open(templates_path, "r", encoding="utf-8") as f:
-            return json.load(f)
-        if not os.path.exists(templates_path):
-            default_templates = [
-                {
-                    "name": "Список дел",
-                    "category": "Работа",
-                    "description": "Чекбокс-лист для задач",
-                    "content_html": "<b>Список дел:</b><br>☐ Первая задача<br>☐ Вторая задача<br>☐ Третья задача<br>",
-                },
-                {
-                    "name": "Встреча",
-                    "category": "Встречи",
-                    "description": "Заготовка для заметки о встрече",
-                    "content_html": "<b>Встреча</b><br>Дата: <br>Участники: <br>Цели: <br>Результаты: <br>",
-                },
-                {
-                    "name": "Дневник",
-                    "category": "Личное",
-                    "description": "Дневниковая запись",
-                    "content_html": "<b>Дневник</b><br>Дата: <br>Сегодня:<br><br>Настроение:<br>События:<br>",
-                },
-                {
-                    "name": "UPD блок",
-                    "category": "Обновления",
-                    "description": "Блок обновления с датой, базой, пользователем, результатом и деталями",
-                    "content_html": "<b>UPD [{date}]</b><br><b>Base:</b> <br><b>User:</b> <br><b>Result:</b> <br><b>Details:</b> <br><br>",
-                },
-            ]
-            with open(templates_path, "w", encoding="utf-8") as f:
-                json.dump(default_templates, f, ensure_ascii=False, indent=4)
-            return default_templates
-        with open(templates_path, "r", encoding="utf-8") as f:
-            templates = json.load(f)
-        if not any(tpl.get("name") == "UPD блок" for tpl in templates):
-            templates.append(
-                {
-                    "name": "UPD блок",
-                    "category": "Обновления",
-                    "description": "Блок обновления с датой, базой, пользователем, результатом и деталями",
-                    "content_html": "<b>UPD [{date}]</b><br><b>Base:</b> <br><b>User:</b> <br><b>Result:</b> <br><b>Details:</b> <br><br>",
-                }
-            )
+                json.dump(base_templates, f, ensure_ascii=False, indent=4)
+        try:
+            with open(templates_path, "r", encoding="utf-8") as f:
+                templates = json.load(f)
+        except Exception:
+            templates = base_templates
+        upd_tpl = {
+            "name": "UPD блок",
+            "category": "Работа",
+            "description": "Блок обновления с датой, базой, пользователем, результатом и деталями",
+            "content_html": "<b>UPD [{date}]</b><br><b>Base:</b> <br><b>User:</b> <br><b>Result:</b> <br><b>Details:</b> <br><br>",
+        }
+        if not any(t.get("name") == "UPD блок" for t in templates):
+            templates.append(upd_tpl)
             with open(templates_path, "w", encoding="utf-8") as f:
                 json.dump(templates, f, ensure_ascii=False, indent=4)
         return templates
@@ -5840,12 +5811,21 @@ class PasswordGeneratorApp:
             widget.delete("sel.first", "sel.last")
 
     def _select_all(self, widget):
-        widget.select_range(0, tk.END)
-        widget.icursor(tk.END)
+        if isinstance(widget, (tk.Entry, ttk.Entry)):
+            widget.select_range(0, tk.END)
+            widget.icursor(tk.END)
+        elif isinstance(widget, tk.Text):
+            widget.tag_add("sel", "1.0", tk.END)
+            widget.mark_set("insert", tk.END)
 
     def _on_right_click(self, event):
         widget = event.widget
         if isinstance(widget, (tk.Entry, ttk.Entry)):
+            widget.focus_set()
+            try:
+                widget.icursor(widget.index(f"@{event.x}"))
+            except tk.TclError:
+                pass
             self.entry_context_menu.tk_popup(event.x_root, event.y_root)
 
     def _on_tree_right_click(self, event):
