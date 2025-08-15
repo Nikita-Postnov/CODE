@@ -544,6 +544,7 @@ class Note:
         pinned: bool = False,
         password_manager: str = "",
         rdp_1c8: str = "",
+        custom_fields: list[dict] | None = None,
     ) -> None:
         self.reminder_shown = False
         self.title = title
@@ -559,6 +560,7 @@ class Note:
         self.pinned = pinned
         self.password_manager = password_manager
         self.rdp_1c8 = rdp_1c8
+        self.custom_fields = custom_fields if custom_fields is not None else []
         self.password_manager_visible = False
         self.rdp_1c8_visible = False
 
@@ -579,6 +581,7 @@ class Note:
             "rdp_1c8": self.rdp_1c8,
             "password_manager_visible": bool(self.password_manager_visible),
             "rdp_1c8_visible": bool(self.rdp_1c8_visible),
+            "custom_fields": self.custom_fields,
         }
 
     @staticmethod
@@ -600,6 +603,7 @@ class Note:
         note.rdp_1c8 = data.get("rdp_1c8", "")
         note.password_manager_visible = bool(data.get("password_manager_visible", False))
         note.rdp_1c8_visible = bool(data.get("rdp_1c8_visible", False))
+        note.custom_fields = data.get("custom_fields", [])
         return note
 
 
@@ -813,8 +817,18 @@ class NotesApp(QMainWindow):
             lambda t: self.rdp_1c8_copy_btn.setEnabled(bool(t))
         )
         _rdp_row_layout.addWidget(self.rdp_1c8_copy_btn)
+        self.custom_fields_container = QWidget()
+        self.custom_fields_layout = QVBoxLayout(self.custom_fields_container)
+        self.custom_fields_layout.setContentsMargins(0, 0, 0, 0)
+        self.custom_fields_widgets: list[dict] = []
+        self.add_field_btn = QPushButton("Добавить поле")
+        self.add_field_btn.setFixedHeight(24)
+        self.add_field_btn.setEnabled(False)
+        self.add_field_btn.clicked.connect(self.add_custom_field)
+        self.custom_fields_layout.addWidget(self.add_field_btn)
         editor_layout_combined.insertWidget(0, self.password_manager_row)
         editor_layout_combined.insertWidget(1, self.rdp_1c8_row)
+        editor_layout_combined.insertWidget(2, self.custom_fields_container)
         self.dock_toolbar = QDockWidget("Панель инструментов", self)
         self.dock_toolbar.setObjectName("dock_toolbar")
         self.dock_toolbar.setWidget(self.toolbar_scroll)
@@ -869,6 +883,121 @@ class NotesApp(QMainWindow):
             return
         QApplication.clipboard().setText(text)
         self.show_toast("Скопировано", boundary_widget=self.dock_editor.widget(), anchor_widget=self.rdp_1c8_copy_btn)
+
+    def add_custom_field(self, data: dict | None = None) -> None:
+        row = QWidget()
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(0, 0, 0, 0)
+        label_edit = QLineEdit()
+        label = data.get("label", "Новое поле") if data else "Новое поле"
+        label_edit.setText(label)
+        label_edit.setMinimumWidth(140)
+        label_edit.setFrame(False)
+        label_edit.setStyleSheet("background: transparent;")
+        value_edit = QLineEdit()
+        value = data.get("value", "") if data else ""
+        value_edit.setText(value)
+        value_edit.setPlaceholderText(label)
+        copy_btn = QPushButton("Копировать")
+        copy_btn.setFixedHeight(24)
+        copy_btn.setEnabled(bool(value))
+        copy_btn.clicked.connect(
+            lambda _, e=value_edit, b=copy_btn: self.copy_custom_field_to_clipboard(e, b)
+        )
+        value_edit.textChanged.connect(lambda t, b=copy_btn: b.setEnabled(bool(t)))
+        value_edit.textChanged.connect(lambda _: self.update_current_note_custom_fields())
+        value_edit.textChanged.connect(lambda _: self.debounce_timer.start(self.debounce_ms))
+        remove_btn = QPushButton("✖")
+        remove_btn.setFixedSize(24, 24)
+        layout.addWidget(label_edit)
+        layout.addWidget(value_edit, 1)
+        layout.addWidget(copy_btn)
+        layout.addWidget(remove_btn)
+        self.custom_fields_layout.insertWidget(self.custom_fields_layout.count() - 1, row)
+        action = QAction(f"🙈 {label}", self)
+        action.setCheckable(True)
+        widget = {
+            "row": row,
+            "label_edit": label_edit,
+            "value_edit": value_edit,
+            "copy_btn": copy_btn,
+            "remove_btn": remove_btn,
+            "action": action,
+        }
+        action.toggled.connect(lambda checked, w=widget: self.on_toggle_custom_field(w, checked))
+        label_edit.textChanged.connect(lambda text, w=widget: self.on_custom_field_label_changed(w, text))
+        remove_btn.clicked.connect(lambda _, w=widget: self.remove_custom_field(w))
+        self.visibility_toolbar.addAction(action)
+        self.custom_fields_widgets.append(widget)
+        action.blockSignals(True)
+        visible = bool(data.get("visible")) if data else False
+        action.setChecked(visible)
+        action.blockSignals(False)
+        row.setVisible(visible)
+        self._update_eye_action(action, visible, label)
+        self.update_current_note_custom_fields()
+
+    def remove_custom_field(self, widget: dict) -> None:
+        self.visibility_toolbar.removeAction(widget["action"])
+        widget["row"].setParent(None)
+        widget["action"].deleteLater()
+        widget["row"].deleteLater()
+        self.custom_fields_widgets.remove(widget)
+        self.update_current_note_custom_fields()
+        if self.current_note:
+            self.save_note_to_file(self.current_note)
+
+    def clear_custom_fields(self) -> None:
+        for w in list(self.custom_fields_widgets):
+            self.visibility_toolbar.removeAction(w["action"])
+            w["action"].deleteLater()
+            w["row"].deleteLater()
+        self.custom_fields_widgets.clear()
+        self.update_current_note_custom_fields()
+
+    def on_custom_field_label_changed(self, widget: dict, text: str) -> None:
+        widget["value_edit"].setPlaceholderText(text)
+        self._update_eye_action(widget["action"], widget["row"].isVisible(), text)
+        self.update_current_note_custom_fields()
+        if hasattr(self, "debounce_timer"):
+            self.debounce_timer.start(self.debounce_ms)
+
+    def on_toggle_custom_field(self, widget: dict, checked: bool) -> None:
+        if not self.current_note:
+            widget["action"].blockSignals(True)
+            widget["action"].setChecked(False)
+            widget["action"].blockSignals(False)
+            return
+        widget["row"].setVisible(checked)
+        self._update_eye_action(widget["action"], checked, widget["label_edit"].text())
+        self.update_current_note_custom_fields()
+        self.save_note_to_file(self.current_note)
+
+    def copy_custom_field_to_clipboard(self, edit: QLineEdit, btn: QPushButton) -> None:
+        text = edit.text().strip()
+        if not text:
+            QToolTip.showText(QCursor.pos(), "Поле пустое")
+            return
+        QApplication.clipboard().setText(text)
+        self.show_toast(
+            "Скопировано",
+            boundary_widget=self.dock_editor.widget(),
+            anchor_widget=btn,
+        )
+
+    def update_current_note_custom_fields(self) -> None:
+        if not getattr(self, "current_note", None):
+            return
+        fields = []
+        for w in self.custom_fields_widgets:
+            fields.append(
+                {
+                    "label": w["label_edit"].text(),
+                    "value": w["value_edit"].text(),
+                    "visible": w["row"].isVisible(),
+                }
+            )
+        self.current_note.custom_fields = fields
 
     def on_pm_label_changed(self, text: str) -> None:
         self.password_manager_field.setPlaceholderText(text)
@@ -1303,7 +1432,12 @@ class NotesApp(QMainWindow):
             history=note.history.copy(),
             reminder=None,
             uuid=new_uuid,
+            password_manager=note.password_manager,
+            rdp_1c8=note.rdp_1c8,
+            custom_fields=[dict(f) for f in getattr(note, "custom_fields", [])],
         )
+        new_note.password_manager_visible = note.password_manager_visible
+        new_note.rdp_1c8_visible = note.rdp_1c8_visible
         note_dir = os.path.join("Notes", NotesApp.safe_folder_name(note.title, note.uuid, note.timestamp))
         new_note_dir = os.path.join("Notes", NotesApp.safe_folder_name(new_title, new_uuid, new_note.timestamp))
         if os.path.exists(note_dir):
@@ -1376,6 +1510,8 @@ class NotesApp(QMainWindow):
             self.rdp_1c8_field.clear()
             self.password_manager_row.setVisible(False)
             self.rdp_1c8_row.setVisible(False)
+            self.clear_custom_fields()
+            self.add_field_btn.setEnabled(True)
             if hasattr(self, "action_toggle_pm"):
                 self.action_toggle_pm.blockSignals(True)
                 self.action_toggle_pm.setChecked(False)
@@ -1396,6 +1532,7 @@ class NotesApp(QMainWindow):
             self.current_note.content = self.text_edit.toHtml()
             self.current_note.password_manager = self.password_manager_field.text()
             self.current_note.rdp_1c8 = self.rdp_1c8_field.text()
+            self.update_current_note_custom_fields()
             self.save_note_to_file(self.current_note)
             self.refresh_notes_list()
             self.record_state_for_undo()
@@ -1406,6 +1543,7 @@ class NotesApp(QMainWindow):
             self.current_note.content = self.text_edit.toHtml()
             self.current_note.password_manager = self.password_manager_field.text()
             self.current_note.rdp_1c8 = self.rdp_1c8_field.text()
+            self.update_current_note_custom_fields()
             self.save_note_to_file(self.current_note)
             self.record_state_for_undo()
 
@@ -1706,6 +1844,8 @@ class NotesApp(QMainWindow):
             self.text_edit.hide()
             self.tags_label.setText("Теги: нет")
             self.current_note = None
+            self.clear_custom_fields()
+            self.add_field_btn.setEnabled(False)
             if hasattr(self, "history_list"):
                 self.history_list.clear()
             self.attachments_scroll.setVisible(False)
@@ -1738,7 +1878,12 @@ class NotesApp(QMainWindow):
         if hasattr(self, "current_note") and self.current_note:
             self.current_note.content = self.text_edit.toHtml()
             self.save_note_to_file(self.current_note)
+        fields_data = list(getattr(note, "custom_fields", []))
         self.current_note = note
+        self.clear_custom_fields()
+        for field in fields_data:
+            self.add_custom_field(field)
+        self.add_field_btn.setEnabled(True)
         if hasattr(self, "settings"):
             self.settings.setValue("lastNoteUUID", note.uuid)
         if (
@@ -3836,6 +3981,9 @@ class NotesApp(QMainWindow):
         for note in self.notes:
             if note == self.current_note:
                 note.content = self.text_edit.toHtml()
+                note.password_manager = self.password_manager_field.text()
+                note.rdp_1c8 = self.rdp_1c8_field.text()
+                self.update_current_note_custom_fields()
             self.save_note_to_file(note)
 
     def eventFilter(self, source, event):
