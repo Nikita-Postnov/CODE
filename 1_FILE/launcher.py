@@ -614,9 +614,6 @@ class NotesApp(QMainWindow):
         self.audio_thread = None
         self.load_plugins_state()
         self.init_ui()
-        self.autosave_enabled = True
-        self.autosave_interval = 60000
-        self.autosave_timer = QTimer(self)
         self.debounce_ms = self.settings.value("autosave_debounce_ms", 1500, type=int)
         self.debounce_timer = QTimer(self)
         self.debounce_timer.setSingleShot(True)
@@ -1457,6 +1454,50 @@ class NotesApp(QMainWindow):
                 json.dump(default_templates, f, ensure_ascii=False, indent=4)
         with open(templates_path, "r", encoding="utf-8") as f:
             return json.load(f)
+        if not os.path.exists(templates_path):
+            default_templates = [
+                {
+                    "name": "Список дел",
+                    "category": "Работа",
+                    "description": "Чекбокс-лист для задач",
+                    "content_html": "<b>Список дел:</b><br>☐ Первая задача<br>☐ Вторая задача<br>☐ Третья задача<br>",
+                },
+                {
+                    "name": "Встреча",
+                    "category": "Встречи",
+                    "description": "Заготовка для заметки о встрече",
+                    "content_html": "<b>Встреча</b><br>Дата: <br>Участники: <br>Цели: <br>Результаты: <br>",
+                },
+                {
+                    "name": "Дневник",
+                    "category": "Личное",
+                    "description": "Дневниковая запись",
+                    "content_html": "<b>Дневник</b><br>Дата: <br>Сегодня:<br><br>Настроение:<br>События:<br>",
+                },
+                {
+                    "name": "UPD блок",
+                    "category": "Обновления",
+                    "description": "Блок обновления с датой, базой, пользователем, результатом и деталями",
+                    "content_html": "<b>UPD [{date}]</b><br><b>Base:</b> <br><b>User:</b> <br><b>Result:</b> <br><b>Details:</b> <br><br>",
+                },
+            ]
+            with open(templates_path, "w", encoding="utf-8") as f:
+                json.dump(default_templates, f, ensure_ascii=False, indent=4)
+            return default_templates
+        with open(templates_path, "r", encoding="utf-8") as f:
+            templates = json.load(f)
+        if not any(tpl.get("name") == "UPD блок" for tpl in templates):
+            templates.append(
+                {
+                    "name": "UPD блок",
+                    "category": "Обновления",
+                    "description": "Блок обновления с датой, базой, пользователем, результатом и деталями",
+                    "content_html": "<b>UPD [{date}]</b><br><b>Base:</b> <br><b>User:</b> <br><b>Result:</b> <br><b>Details:</b> <br><br>",
+                }
+            )
+            with open(templates_path, "w", encoding="utf-8") as f:
+                json.dump(templates, f, ensure_ascii=False, indent=4)
+        return templates
 
     def insert_template(self) -> None:
         if not self.current_note:
