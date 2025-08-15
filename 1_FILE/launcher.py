@@ -1663,6 +1663,9 @@ class NotesApp(QMainWindow):
             self.text_edit.hide()
             self.tags_label.setText("Теги: нет")
             self.current_note = None
+            if hasattr(self, "history_list"):
+                self.history_list.clear()
+            self.attachments_scroll.setVisible(False)
             return
         note = item.data(Qt.ItemDataRole.UserRole)
         self.select_note(note)
@@ -1825,6 +1828,25 @@ class NotesApp(QMainWindow):
             except Exception as e:
                 QMessageBox.warning(self, "Ошибка", f"Не удалось удалить файл:\n{e}")
             if self.current_note:
+                url = QUrl.fromLocalFile(os.path.abspath(file_path)).toString()
+                html = self.text_edit.toHtml()
+                esc = re.escape(url)
+                html = re.sub(
+                    rf"(<br>\s*)*<a[^>]+href=\"{esc}\"[^>]*>.*?</a>(<br>\s*)*",
+                    "",
+                    html,
+                    flags=re.IGNORECASE,
+                )
+                html = re.sub(
+                    rf"(<br>\s*)*<img[^>]+src=\"{esc}\"[^>]*>(<br>\s*)*",
+                    "",
+                    html,
+                    flags=re.IGNORECASE,
+                )
+                self.text_edit.blockSignals(True)
+                self.text_edit.setHtml(html)
+                self.text_edit.blockSignals(False)
+                self.save_note_quiet()
                 self.show_note_with_attachments(self.current_note)
 
     def _atomic_json_dump(path: str, data: dict) -> None:
@@ -3217,6 +3239,9 @@ class NotesApp(QMainWindow):
             if self.current_note and self.current_note.uuid == note.uuid:
                 self.current_note = None
                 self.text_edit.clear()
+                if hasattr(self, "history_list"):
+                    self.history_list.clear()
+                self.attachments_scroll.setVisible(False)
             self.refresh_notes_list()
             self.save_all_notes_to_disk()
             QMessageBox.information(
@@ -5936,3 +5961,5 @@ if __name__ == "__main__":
     window = LauncherWindow()
     window.show()
     sys.exit(app.exec())
+
+#UPD 15.08.2025.14.22
