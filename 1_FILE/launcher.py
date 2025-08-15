@@ -1823,6 +1823,17 @@ class NotesApp(QMainWindow):
             QMessageBox.Yes | QMessageBox.No,
         )
         if reply == QMessageBox.Yes:
+            b64_data = None
+            if file_path.lower().endswith((".png", ".jpg", ".jpeg", ".bmp", ".gif")):
+                try:
+                    pixmap = QPixmap(file_path)
+                    if not pixmap.isNull():
+                        buffer = QBuffer()
+                        buffer.open(QIODevice.WriteOnly)
+                        pixmap.save(buffer, "PNG")
+                        b64_data = base64.b64encode(buffer.data()).decode("utf-8")
+                except Exception:
+                    b64_data = None
             try:
                 os.remove(file_path)
             except Exception as e:
@@ -1843,6 +1854,14 @@ class NotesApp(QMainWindow):
                     html,
                     flags=re.IGNORECASE,
                 )
+                if b64_data:
+                    esc_b64 = re.escape(b64_data)
+                    html = re.sub(
+                        rf"(<br>\s*)*<img[^>]+src=\"data:image/[^;]+;base64,{esc_b64}\"[^>]*>(<br>\s*)*",
+                        "",
+                        html,
+                        flags=re.IGNORECASE,
+                    )
                 self.text_edit.blockSignals(True)
                 self.text_edit.setHtml(html)
                 self.text_edit.blockSignals(False)
