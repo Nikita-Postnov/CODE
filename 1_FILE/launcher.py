@@ -1749,8 +1749,14 @@ class NotesApp(QMainWindow):
             attachments_found = False
             if os.path.isdir(note_dir):
                 ignored_files = {"note.json", ".DS_Store", "Thumbs.db"}
+                ignored_prefixes = ("~$", ".~")
+                ignored_suffixes = ("~", ".tmp", ".temp")
                 for filename in os.listdir(note_dir):
-                    if filename in ignored_files:
+                    if (
+                        filename in ignored_files
+                        or filename.startswith(ignored_prefixes)
+                        or filename.endswith(ignored_suffixes)
+                    ):
                         continue
                     attachments_found = True
                     file_path = os.path.join(note_dir, filename)
@@ -5986,4 +5992,4 @@ if __name__ == "__main__":
     window.show()
     sys.exit(app.exec())
 
-    #UPD 15.08.2025.14:52
+    #UPD 15.08.2025.14:57
