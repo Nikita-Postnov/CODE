@@ -123,12 +123,20 @@ from PySide6.QtWidgets import (
     QDockWidget,
 )
 
-APPDIR = getattr(sys, "_MEIPASS", os.path.abspath(os.path.dirname(__file__)))
+APPDIR = getattr(
+    sys, "_MEIPASS", os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+)
 DATA_DIR = os.path.join(APPDIR, "Data")
+NOTES_DIR = os.path.join(APPDIR, "Notes")
+PASSWORDS_DIR = os.path.join(APPDIR, "Passwords")
+SALT_PATH = os.path.join(DATA_DIR, "salt.bin")
+SETTINGS_PATH = os.path.join(DATA_DIR, "settings.ini")
 ICON_PATH = os.path.join(DATA_DIR, "icon.ico")
 TRAY_ICON_PATH = os.path.join(DATA_DIR, "tray_icon.ico")
 FILE_ICON_PATH = os.path.join(DATA_DIR, "file.ico")
 os.makedirs(DATA_DIR, exist_ok=True)
+os.makedirs(NOTES_DIR, exist_ok=True)
+os.makedirs(PASSWORDS_DIR, exist_ok=True)
 MAX_HISTORY = 250
 
 
@@ -608,7 +616,7 @@ class Note:
 
 
 class NotesApp(QMainWindow):
-    TRASH_DIR = "Trash"
+    TRASH_DIR = os.path.join(NOTES_DIR, "Trash")
     window_hidden = Signal()
 
     def __init__(self):
@@ -659,7 +667,7 @@ class NotesApp(QMainWindow):
         self.setWindowTitle("Мои Заметки")
         self.setMinimumSize(1250, 800)
         self.setWindowIcon(QIcon(ICON_PATH))
-        self.settings = QSettings("settings.ini", QSettings.IniFormat)
+        self.settings = QSettings(SETTINGS_PATH, QSettings.IniFormat)
         pm_label = self.settings.value("password_manager_label", "PasswordManager")
         rdp_label = self.settings.value("rdp_1c8_label", "1C8 RDP")
         self.new_note_button = QPushButton("Новая")
@@ -1149,7 +1157,7 @@ class NotesApp(QMainWindow):
         note_folder_name = NotesApp.safe_folder_name(
             note.title, note.uuid, note.timestamp
         )
-        note_dir = os.path.join("Notes", note_folder_name)
+        note_dir = os.path.join(NOTES_DIR, note_folder_name)
         trash_dir = os.path.join(self.TRASH_DIR, note_folder_name)
         if not os.path.exists(self.TRASH_DIR):
             os.makedirs(self.TRASH_DIR)
@@ -1269,8 +1277,8 @@ class NotesApp(QMainWindow):
     def load_notes_from_disk(self) -> None:
         self.ensure_notes_directory()
         loaded_notes = []
-        for folder in os.listdir("Notes"):
-            folder_path = os.path.join("Notes", folder)
+        for folder in os.listdir(NOTES_DIR):
+            folder_path = os.path.join(NOTES_DIR, folder)
             if os.path.isdir(folder_path):
                 file_path = os.path.join(folder_path, "note.json")
                 if os.path.exists(file_path):
@@ -1291,7 +1299,7 @@ class NotesApp(QMainWindow):
         self.deduplicate_notes()
 
     def save_note_to_file(self, note: Note) -> None:
-        note_dir = os.path.join("Notes", NotesApp.safe_folder_name(note.title, note.uuid, note.timestamp))
+        note_dir = os.path.join(NOTES_DIR, NotesApp.safe_folder_name(note.title, note.uuid, note.timestamp))
         os.makedirs(note_dir, exist_ok=True)
         file_path = os.path.join(note_dir, "note.json")
         if self.current_note and note.uuid == self.current_note.uuid:
@@ -1356,7 +1364,7 @@ class NotesApp(QMainWindow):
         if reply == QMessageBox.Yes:
             self.move_note_to_trash(note)
             note_dir = os.path.join(
-                "Notes", NotesApp.safe_folder_name(note.title, note.uuid)
+                NOTES_DIR, NotesApp.safe_folder_name(note.title, note.uuid)
             )
             if self.current_note and self.current_note.uuid == note.uuid:
                 self.current_note = None
@@ -1369,9 +1377,9 @@ class NotesApp(QMainWindow):
             self, "Переименовать", "Новое имя заметки:", text=note.title
         )
         if ok and new_title and new_title != note.title:
-            old_dir = os.path.join("Notes", NotesApp.safe_folder_name(note.title, note.uuid, note.timestamp))
+            old_dir = os.path.join(NOTES_DIR, NotesApp.safe_folder_name(note.title, note.uuid, note.timestamp))
             note.title = new_title
-            new_dir = os.path.join("Notes", NotesApp.safe_folder_name(note.title, note.uuid, note.timestamp))
+            new_dir = os.path.join(NOTES_DIR, NotesApp.safe_folder_name(note.title, note.uuid, note.timestamp))
             if os.path.exists(old_dir):
                 os.rename(old_dir, new_dir)
             self.save_note_to_file(note)
@@ -1465,8 +1473,8 @@ class NotesApp(QMainWindow):
         )
         new_note.password_manager_visible = note.password_manager_visible
         new_note.rdp_1c8_visible = note.rdp_1c8_visible
-        note_dir = os.path.join("Notes", NotesApp.safe_folder_name(note.title, note.uuid, note.timestamp))
-        new_note_dir = os.path.join("Notes", NotesApp.safe_folder_name(new_title, new_uuid, new_note.timestamp))
+        note_dir = os.path.join(NOTES_DIR, NotesApp.safe_folder_name(note.title, note.uuid, note.timestamp))
+        new_note_dir = os.path.join(NOTES_DIR, NotesApp.safe_folder_name(new_title, new_uuid, new_note.timestamp))
         if os.path.exists(note_dir):
             shutil.copytree(note_dir, new_note_dir)
             self.save_note_to_file(new_note)
@@ -1475,8 +1483,8 @@ class NotesApp(QMainWindow):
         self.deduplicate_notes()
 
     def ensure_notes_directory(self) -> None:
-        if not os.path.exists("Notes"):
-            os.makedirs("Notes")
+        if not os.path.exists(NOTES_DIR):
+            os.makedirs(NOTES_DIR)
 
     def create_new_note(self) -> None:
         self.new_note()
@@ -1511,7 +1519,7 @@ class NotesApp(QMainWindow):
             note.history = [""]
             note.history_index = 0
             note_dir = os.path.join(
-                "Notes", NotesApp.safe_folder_name(title, note_uuid)
+                NOTES_DIR, NotesApp.safe_folder_name(title, note_uuid)
             )
             os.makedirs(note_dir, exist_ok=True)
             self.notes.append(note)
@@ -1580,7 +1588,7 @@ class NotesApp(QMainWindow):
             return
         folder_name = NotesApp.safe_folder_name(note.title, note.uuid, note.timestamp)
         candidates = [
-            os.path.join("Notes", folder_name),
+            os.path.join(NOTES_DIR, folder_name),
             os.path.join(self.TRASH_DIR, folder_name),
         ]
         for path in candidates:
@@ -1588,7 +1596,7 @@ class NotesApp(QMainWindow):
                 QDesktopServices.openUrl(QUrl.fromLocalFile(os.path.abspath(path)))
                 return
         self.save_note_to_file(note)
-        path = os.path.join("Notes", folder_name)
+        path = os.path.join(NOTES_DIR, folder_name)
         os.makedirs(path, exist_ok=True)
         QDesktopServices.openUrl(QUrl.fromLocalFile(os.path.abspath(path)))
 
@@ -1806,7 +1814,7 @@ class NotesApp(QMainWindow):
             NotesApp.safe_folder_name(note.title, note.uuid, note.timestamp),
         )
         note_dir = os.path.join(
-            "Notes", NotesApp.safe_folder_name(note.title, note.uuid, note.timestamp)
+            NOTES_DIR, NotesApp.safe_folder_name(note.title, note.uuid, note.timestamp)
         )
         if os.path.exists(trash_note_dir):
             shutil.move(trash_note_dir, note_dir)
@@ -1974,7 +1982,7 @@ class NotesApp(QMainWindow):
                     widget.setParent(None)
                     widget.deleteLater()
             note_dir = os.path.join(
-                "Notes", NotesApp.safe_folder_name(note.title, note.uuid, note.timestamp)
+                NOTES_DIR, NotesApp.safe_folder_name(note.title, note.uuid, note.timestamp)
             )
             attachments_found = False
             if os.path.isdir(note_dir):
@@ -2122,7 +2130,7 @@ class NotesApp(QMainWindow):
         file_path, _ = QFileDialog.getOpenFileName(self, "Прикрепить файл")
         if not file_path:
             return
-        note_dir = os.path.join("Notes", NotesApp.safe_folder_name(self.current_note.title, self.current_note.uuid, self.current_note.timestamp))
+        note_dir = os.path.join(NOTES_DIR, NotesApp.safe_folder_name(self.current_note.title, self.current_note.uuid, self.current_note.timestamp))
         os.makedirs(note_dir, exist_ok=True)
         filename = os.path.basename(file_path)
         dest = os.path.join(note_dir, filename)
@@ -2162,7 +2170,7 @@ class NotesApp(QMainWindow):
     def attach_file_to_note_external(self, file_path: str) -> None:
         if not self.current_note:
             return
-        note_dir = os.path.join("Notes", NotesApp.safe_folder_name(
+        note_dir = os.path.join(NOTES_DIR, NotesApp.safe_folder_name(
         self.current_note.title, self.current_note.uuid, self.current_note.timestamp))
         os.makedirs(note_dir, exist_ok=True)
         filename = os.path.basename(file_path)
@@ -2507,7 +2515,7 @@ class NotesApp(QMainWindow):
             )
             return
         note_dir = os.path.join(
-            "Notes",
+            NOTES_DIR,
             NotesApp.safe_folder_name(self.current_note.title, self.current_note.uuid),
         )
         os.makedirs(note_dir, exist_ok=True)
@@ -2551,7 +2559,7 @@ class NotesApp(QMainWindow):
             self.audio_button.setText("🎤")
         else:
             filename = str(uuid.uuid4()) + ".wav"
-            folder_path = os.path.join("Notes", "Audio")
+            folder_path = os.path.join(NOTES_DIR, "Audio")
             os.makedirs(folder_path, exist_ok=True)
             full_path = os.path.join(folder_path, filename)
 
@@ -3558,7 +3566,7 @@ class NotesApp(QMainWindow):
         )
         if reply == QMessageBox.Yes:
             note_dir = os.path.join(
-                "Notes", NotesApp.safe_folder_name(note.title, note.uuid)
+                NOTES_DIR, NotesApp.safe_folder_name(note.title, note.uuid)
             )
             if os.path.exists(note_dir):
                 shutil.rmtree(note_dir)
@@ -3681,7 +3689,7 @@ class NotesApp(QMainWindow):
     def list_attachments_for_current_note(self):
         if not self.current_note:
             return
-        note_dir = os.path.join("Notes", self.current_note.uuid)
+        note_dir = os.path.join(NOTES_DIR, self.current_note.uuid)
         if not os.path.exists(note_dir):
             return
         attachments = []
@@ -4067,7 +4075,7 @@ class NotesApp(QMainWindow):
             file_path = url.toLocalFile()
             if os.path.isfile(file_path):
                 note_dir = os.path.join(
-                    "Notes",
+                    NOTES_DIR,
                     NotesApp.safe_folder_name(self.current_note.title, self.current_note.uuid, self.current_note.timestamp)
                 )
                 if not os.path.exists(note_dir):
@@ -4377,13 +4385,11 @@ def load_plugins(app, plugins_folder="Plugins"):
 
 
 def get_app_dir():
-    if getattr(sys, "frozen", False):
-        return os.path.dirname(sys.executable)
-    return os.path.dirname(os.path.abspath(sys.argv[0]))
+    return APPDIR
 
 
 def create_default_config():
-    config_path = os.path.join(get_app_dir(), "config.json")
+    config_path = os.path.join(PASSWORDS_DIR, "config.json")
     if not os.path.exists(config_path):
         default_config = {
             "salt_file": "salt.bin",
@@ -4414,7 +4420,7 @@ class PasswordGenerator:
         self.load_config()
 
     def load_config(self):
-        config_path = os.path.join(get_app_dir(), "config.json")
+        config_path = os.path.join(PASSWORDS_DIR, "config.json")
         if os.path.exists(config_path):
             try:
                 with open(config_path, "r", encoding="utf-8") as f:
@@ -4508,7 +4514,7 @@ class PasswordManager:
         self.load_passwords()
 
     def backup_passwords(self):
-        backup_dir = os.path.join(get_app_dir(), "backups")
+        backup_dir = os.path.join(PASSWORDS_DIR, "backups")
         backup_filename = os.path.join(backup_dir, "backup_passwords.bin")
         os.makedirs(backup_dir, exist_ok=True)
         try:
@@ -4523,7 +4529,7 @@ class PasswordManager:
         new_salt = os.urandom(16)
         backup_passwords = self.get_all_passwords()
         try:
-            with open("salt.bin", "wb") as salt_file:
+            with open(SALT_PATH, "wb") as salt_file:
                 salt_file.write(new_salt)
             self.salt = new_salt
             kdf = PBKDF2HMAC(
@@ -4549,12 +4555,12 @@ class PasswordManager:
             return False, f"Ошибка обновления соли: {str(e)}"
 
     def _initialize_encryption(self):
-        if not os.path.exists("salt.bin"):
+        if not os.path.exists(SALT_PATH):
             self.salt = os.urandom(16)
-            with open("salt.bin", "wb") as salt_file:
+            with open(SALT_PATH, "wb") as salt_file:
                 salt_file.write(self.salt)
         else:
-            with open("salt.bin", "rb") as salt_file:
+            with open(SALT_PATH, "rb") as salt_file:
                 self.salt = salt_file.read()
         kdf = PBKDF2HMAC(
             algorithm=hashes.SHA256(),
@@ -4575,19 +4581,19 @@ class PasswordManager:
         return fernet.decrypt(encrypted_data.encode()).decode()
 
     def load_config(self):
-        config_path = os.path.join(get_app_dir(), "config.json")
+        config_path = os.path.join(PASSWORDS_DIR, "config.json")
         if os.path.exists(config_path):
             try:
                 with open(config_path, "r", encoding="utf-8") as f:
                     config = json.load(f)
-                    if "passwords_file" in config:
-                        self.filename = config["passwords_file"]
-                    else:
-                        self.filename = os.path.join(get_app_dir(), "passwords.json")
+                    filename = config.get("passwords_file", "passwords.json")
+                    if not os.path.isabs(filename):
+                        filename = os.path.join(PASSWORDS_DIR, filename)
+                    self.filename = filename
             except Exception as e:
-                self.filename = os.path.join(get_app_dir(), "passwords.json")
+                self.filename = os.path.join(PASSWORDS_DIR, "passwords.json")
         else:
-            self.filename = os.path.join(get_app_dir(), "passwords.json")
+            self.filename = os.path.join(PASSWORDS_DIR, "passwords.json")
 
     def add_password(self, password, description, tags=None, url=None, login=""):
         encrypted_password = self.encrypt(password)
@@ -4606,7 +4612,7 @@ class PasswordManager:
         return True
 
     def _create_default_config(self):
-        config_path = os.path.join(get_app_dir(), "config.json")
+        config_path = os.path.join(PASSWORDS_DIR, "config.json")
         if not os.path.exists(config_path):
             default_config = {
                 "max_password_length": 32,
@@ -4936,8 +4942,9 @@ class AuthenticationDialog(tk.Toplevel):
 
     def _validate_master_password(self, password):
         try:
-            if os.path.exists("passwords.json"):
-                with open("passwords.json", "r", encoding="utf-8") as f:
+            passwords_file = os.path.join(PASSWORDS_DIR, "passwords.json")
+            if os.path.exists(passwords_file):
+                with open(passwords_file, "r", encoding="utf-8") as f:
                     data = json.load(f)
                     if data:
                         test_item = data[0]
@@ -4948,7 +4955,7 @@ class AuthenticationDialog(tk.Toplevel):
             return False
 
     def _generate_key(self, password):
-        with open("salt.bin", "rb") as salt_file:
+        with open(SALT_PATH, "rb") as salt_file:
             salt = salt_file.read()
         kdf = PBKDF2HMAC(
             algorithm=hashes.SHA256(),
@@ -5407,7 +5414,7 @@ class PasswordGeneratorApp:
         self.master.deiconify()
 
     def _edit_configuration(self):
-        config_path = os.path.join(get_app_dir(), "config.json")
+        config_path = os.path.join(PASSWORDS_DIR, "config.json")
         try:
             with open(config_path, "r", encoding="utf-8") as f:
                 config_data = json.load(f)
@@ -5482,9 +5489,7 @@ class PasswordGeneratorApp:
             self._refresh_password_list()
 
     def _create_default_config(self):
-        config_path = os.path.join(
-            os.path.dirname(os.path.abspath(__file__)), "config.json"
-        )
+        config_path = os.path.join(PASSWORDS_DIR, "config.json")
         if not os.path.exists(config_path):
             default_config = {
                 "max_password_length": 32,
@@ -5854,9 +5859,7 @@ class PasswordGeneratorApp:
         self._refresh_password_list()
 
     def _open_backup(self):
-        backup_dir = os.path.join(
-            os.path.dirname(os.path.abspath(__file__)), "..", "backups"
-        )
+        backup_dir = os.path.join(PASSWORDS_DIR, "backups")
         backup_file = os.path.join(backup_dir, "backup_passwords.bin")
         if not os.path.exists(backup_file):
             messagebox.showerror("Ошибка", f"Файл не найден:\n{backup_file}")
