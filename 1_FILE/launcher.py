@@ -816,7 +816,15 @@ class NotesApp(QMainWindow):
         self.rdp_1c8_field.textChanged.connect(
             lambda t: self.rdp_1c8_copy_btn.setEnabled(bool(t))
         )
+        self.rdp_1c8_delete_btn = QPushButton("Удалить")
+        self.rdp_1c8_delete_btn.setFixedHeight(24)
+        self.rdp_1c8_delete_btn.setEnabled(False)
+        self.rdp_1c8_delete_btn.clicked.connect(self.delete_rdp_1c8_field)
+        self.rdp_1c8_field.textChanged.connect(
+            lambda t: self.rdp_1c8_delete_btn.setEnabled(bool(t))
+        )
         _rdp_row_layout.addWidget(self.rdp_1c8_copy_btn)
+        _rdp_row_layout.addWidget(self.rdp_1c8_delete_btn)
         self.custom_fields_container = QWidget()
         self.custom_fields_layout = QVBoxLayout(self.custom_fields_container)
         self.custom_fields_layout.setContentsMargins(0, 0, 0, 0)
@@ -883,6 +891,21 @@ class NotesApp(QMainWindow):
             return
         QApplication.clipboard().setText(text)
         self.show_toast("Скопировано", boundary_widget=self.dock_editor.widget(), anchor_widget=self.rdp_1c8_copy_btn)
+
+    def delete_rdp_1c8_field(self) -> None:
+        self.rdp_1c8_field.clear()
+        if getattr(self, "current_note", None):
+            self.current_note.rdp_1c8 = ""
+            self.current_note.rdp_1c8_visible = False
+            self.save_note_to_file(self.current_note)
+        self.rdp_1c8_row.setVisible(False)
+        if hasattr(self, "action_toggle_rdp"):
+            self.action_toggle_rdp.blockSignals(True)
+            self.action_toggle_rdp.setChecked(False)
+            self._update_eye_action(
+                self.action_toggle_rdp, False, self.rdp_1c8_label.text()
+            )
+            self.action_toggle_rdp.blockSignals(False)
 
     def add_custom_field(self, data: dict | None = None) -> None:
         row = QWidget()
@@ -6232,4 +6255,4 @@ if __name__ == "__main__":
     window.show()
     sys.exit(app.exec())
 
-    #UPD 15.08.2025|17:41
+    #UPD 15.08.2025|18:08
