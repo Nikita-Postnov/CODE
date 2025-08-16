@@ -876,6 +876,8 @@ class NotesApp(QMainWindow):
         self.notes_list.itemClicked.connect(self.load_note)
         self.text_edit.setReadOnly(True)
         self.add_menu_bar()
+        self.current_note = None
+        self._update_editor_visibility()
 
     def copy_password_manager_to_clipboard(self) -> None:
         text = self.password_manager_field.text().strip()
@@ -1877,9 +1879,11 @@ class NotesApp(QMainWindow):
             if hasattr(self, "history_list"):
                 self.history_list.clear()
             self.attachments_scroll.setVisible(False)
+            self._update_editor_visibility()
             return
         note = item.data(Qt.ItemDataRole.UserRole)
         self.select_note(note)
+        self._update_editor_visibility()
 
     def select_note(self, note: Note | None) -> None:
         self.password_manager_field.setText(note.password_manager)
@@ -2116,6 +2120,45 @@ class NotesApp(QMainWindow):
             json.dump(data, f, ensure_ascii=False, indent=4)
             f.flush(); os.fsync(f.fileno())
         os.replace(tmp, path)
+
+    def _update_editor_visibility(self):
+        has = self.current_note is not None
+        self.dock_editor.setVisible(has)
+        self.dock_toolbar.setVisible(has)
+        self.visibility_toolbar.setVisible(has)
+        self.text_edit.setVisible(has)
+        self.text_edit.setReadOnly(not has)
+        self.tags_label.setVisible(has)
+        if not has:
+            self.tags_label.setText("Теги: нет")
+        self.add_field_btn.setEnabled(has)
+        self.attachments_scroll.setVisible(False if not has else self.attachments_scroll.isVisible())
+        if not has:
+            self.password_manager_row.setVisible(False)
+            self.rdp_1c8_row.setVisible(False)
+            if hasattr(self, "action_toggle_pm"):
+                self.action_toggle_pm.setEnabled(False)
+            if hasattr(self, "action_toggle_rdp"):
+                self.action_toggle_rdp.setEnabled(False)
+            for w in self.custom_fields_widgets:
+                w["row"].setVisible(False)
+                w["action"].setEnabled(False)
+            return
+        if hasattr(self, "action_toggle_pm"):
+            self.action_toggle_pm.setEnabled(True)
+            self.action_toggle_pm.blockSignals(True)
+            self.action_toggle_pm.setChecked(bool(self.current_note.password_manager_visible))
+            self.action_toggle_pm.blockSignals(False)
+        if hasattr(self, "action_toggle_rdp"):
+            self.action_toggle_rdp.setEnabled(True)
+            self.action_toggle_rdp.blockSignals(True)
+            self.action_toggle_rdp.setChecked(bool(self.current_note.rdp_1c8_visible))
+            self.action_toggle_rdp.blockSignals(False)
+        self.password_manager_row.setVisible(bool(self.current_note.password_manager_visible))
+        self.rdp_1c8_row.setVisible(bool(self.current_note.rdp_1c8_visible))
+        for w in self.custom_fields_widgets:
+            w["action"].setEnabled(True)
+            w["row"].setVisible(w["action"].isChecked())
 
     def attach_file_to_note(self) -> None:
         if not self.current_note:
@@ -4004,14 +4047,10 @@ class NotesApp(QMainWindow):
         QTimer.singleShot(ms, _close)
 
     def exit_note(self):
-        self.text_edit.blockSignals(True)
-        self.text_edit.clear()
-        self.text_edit.blockSignals(False)
-        self.text_edit.setReadOnly(True)
-        self.text_edit.hide()
-        self.tags_label.setText("Теги: нет")
+        self.load_note(None)
         self.current_note = None
         self.notes_list.clearSelection()
+        self._update_editor_visibility()
 
     def apply_light_theme(self):
         self.setStyle(QStyleFactory.create("Fusion"))
@@ -6271,4 +6310,4 @@ if __name__ == "__main__":
     window.show()
     sys.exit(app.exec())
 
-    #UPD 16.08.2025|10:14
+    #UPD 16.08.2025|10:42
