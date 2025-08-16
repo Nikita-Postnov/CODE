@@ -123,7 +123,10 @@ from PySide6.QtWidgets import (
     QDockWidget,
 )
 
-APPDIR = getattr(sys, "_MEIPASS", os.path.abspath(os.path.dirname(__file__)))
+if getattr(sys, 'frozen', False):
+    APPDIR = os.path.dirname(sys.executable)
+else:
+    APPDIR = os.path.abspath(os.path.dirname(__file__))
 DATA_DIR = os.path.join(APPDIR, "Data")
 NOTES_DIR = os.path.join(APPDIR, "Notes")
 PASSWORDS_DIR = os.path.join(APPDIR, "Passwords")
@@ -141,21 +144,20 @@ def handle_exception(exc_type, exc_value, exc_traceback):
     traceback.print_exception(exc_type, exc_value, exc_traceback)
 
 sys.excepthook = lambda t, v, tb: print("Uncaught exception:", t, v)
-
 def copy_default_icons():
-    src_icon = os.path.join(os.path.abspath(os.path.dirname(__file__)), "icon.ico")
-    src_tray_icon = os.path.join(
-        os.path.abspath(os.path.dirname(__file__)), "tray_icon.ico"
-    )
-    src_file_icon = os.path.join(
-        os.path.abspath(os.path.dirname(__file__)), "file.ico"
-    )
-    if not os.path.exists(ICON_PATH) and os.path.exists(src_icon):
-        shutil.copy(src_icon, ICON_PATH)
-    if not os.path.exists(TRAY_ICON_PATH) and os.path.exists(src_tray_icon):
-        shutil.copy(src_tray_icon, TRAY_ICON_PATH)
-    if not os.path.exists(FILE_ICON_PATH) and os.path.exists(src_file_icon):
-        shutil.copy(src_file_icon, FILE_ICON_PATH)
+    app_root = os.path.dirname(sys.executable) if getattr(sys, "frozen", False) \
+               else os.path.abspath(os.path.dirname(__file__))
+    src_root = os.path.join(app_root, "Data")
+    pairs = [
+        ("icon.ico", ICON_PATH),
+        ("tray_icon.ico", TRAY_ICON_PATH),
+        ("file.ico", FILE_ICON_PATH),
+    ]
+    for name, dst in pairs:
+        src = os.path.join(src_root, name)
+        if os.path.isfile(src) and not os.path.isfile(dst):
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            shutil.copy(src, dst)
 
 copy_default_icons()
 
@@ -6269,4 +6271,4 @@ if __name__ == "__main__":
     window.show()
     sys.exit(app.exec())
 
-    #UPD 16.08.2025|09:30
+    #UPD 16.08.2025|10:14
