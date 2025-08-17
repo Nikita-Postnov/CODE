@@ -142,8 +142,8 @@ MAX_HISTORY = 250
 
 def handle_exception(exc_type, exc_value, exc_traceback):
     traceback.print_exception(exc_type, exc_value, exc_traceback)
-
 sys.excepthook = lambda t, v, tb: print("Uncaught exception:", t, v)
+
 def copy_default_icons():
     app_root = os.path.dirname(sys.executable) if getattr(sys, "frozen", False) \
                else os.path.abspath(os.path.dirname(__file__))
@@ -1182,7 +1182,7 @@ class NotesApp(QMainWindow):
 
     def bring_widget_to_front(self, w: QWidget) -> None:
         old = w.windowFlags()
-        w.setWindowFlag(Qt.WindowStaysOnTopHint, True)  # временно «поверх всех»
+        w.setWindowFlag(Qt.WindowStaysOnTopHint, True)
         w.show()
         w.raise_()
         w.activateWindow()
@@ -6310,4 +6310,4 @@ if __name__ == "__main__":
     window.show()
     sys.exit(app.exec())
 
-    #UPD 16.08.2025|10:42
+    #UPD 17.08.2025|11:41
