@@ -1,28 +1,3 @@
-# -*- coding: utf-8 -*-
-"""
-Плагин для приложения "Мои Заметки": отправка текущей заметки в Telegram.
-
-Обновлено:
-• Улучшена диагностика ошибок Telegram (показывает текст из JSON: например, "chat not found", "bot was blocked by the user").
-• Валидация Bot Token и chat_id с подсказками.
-• Кнопка «Определить chat_id» (через getUpdates — после того как вы нажмёте Start вашему боту).
-• Кнопка «Отправить тест» (проверка связки токен/chat_id до основной отправки).
-• Всё по‑прежнему без сторонних библиотек, через Telegram Bot API.
-
-Установка
----------
-1) Сохраните файл в папку `Plugins` вашего приложения под именем `telegram_send_current_note.py`
-   (или замените существующий файл).
-2) В меню приложения включите плагин и используйте пункт: Плагины → Отправить текущую заметку в Telegram…
-
-Важно
------
-• Для отправки в ЛС пользователю бот не может написать первым. Пользователь должен
-  открыть диалог с ботом и нажать «Start». Потом можно определить chat_id.
-• Значение chat_id похоже на 7–12 цифр (для групп может быть отрицательным). Значения «1»,
-  «123», «000» и т.п. — неверны.
-"""
-
 import os
 import json
 import uuid as _uuid
@@ -30,44 +5,32 @@ import mimetypes
 import time
 import re
 from typing import Optional
-
-# Qt (PySide6)
 from PySide6.QtCore import Qt, QDateTime
 from PySide6.QtGui import QAction, QTextDocument
 from PySide6.QtWidgets import (
     QDialog, QFormLayout, QLineEdit, QDialogButtonBox,
     QCheckBox, QMessageBox, QLabel, QPushButton, QHBoxLayout
 )
-
-# stdlib HTTP
 from urllib import request as _urlreq
 from urllib import parse as _urlparse
 from urllib.error import HTTPError, URLError
 
-
-# --------- Вспомогательные функции ---------
-
 def _app_dir_from_plugin() -> str:
     here = os.path.abspath(os.path.dirname(__file__))
-    appdir = os.path.dirname(here)  # APPDIR / Plugins -> APPDIR
+    appdir = os.path.dirname(here)
     return appdir
-
 
 def _data_dir() -> str:
     return os.path.join(_app_dir_from_plugin(), "Data")
 
-
 def _notes_dir() -> str:
     return os.path.join(_app_dir_from_plugin(), "Notes")
-
 
 def _read_file_bytes(path: str) -> bytes:
     with open(path, "rb") as f:
         return f.read()
 
-
 def _parse_tg_http_error(e: HTTPError) -> dict:
-    """Считывает тело 4xx/5xx ответа Telegram и возвращает {ok: False, description: ...}"""
     try:
         raw = e.read().decode("utf-8", errors="replace")
         data = json.loads(raw)
@@ -81,9 +44,7 @@ def _parse_tg_http_error(e: HTTPError) -> dict:
     except Exception:
         return {"ok": False, "description": f"{e}"}
 
-
 def _http_post_form(url: str, data: dict, timeout: int = 20) -> dict:
-    """POST application/x-www-form-urlencoded, вернёт dict Telegram-ответа (ok/description)."""
     body = _urlparse.urlencode(data).encode("utf-8")
     req = _urlreq.Request(url, data=body, headers={
         "Content-Type": "application/x-www-form-urlencoded; charset=utf-8"
@@ -99,7 +60,6 @@ def _http_post_form(url: str, data: dict, timeout: int = 20) -> dict:
     except Exception as e:
         return {"ok": False, "description": f"{e}"}
 
-
 def _http_get(url: str, timeout: int = 20) -> dict:
     req = _urlreq.Request(url)
     try:
@@ -113,26 +73,16 @@ def _http_get(url: str, timeout: int = 20) -> dict:
     except Exception as e:
         return {"ok": False, "description": f"{e}"}
 
-
 def _http_post_multipart(url: str, fields: dict, files: list[tuple]) -> dict:
-    """
-    POST multipart/form-data.
-    fields: {"chat_id": "...", "caption": "..."} (строки)
-    files:  [("document", filename, bytes), ...]
-    """
     boundary = f"----Boundary{int(time.time()*1000)}{_uuid.uuid4().hex}"
     CRLF = b"\r\n"
     parts = []
-
-    # text fields
     for name, value in fields.items():
         parts.append(b"--" + boundary.encode("ascii"))
         header = f'Content-Disposition: form-data; name="{name}"'.encode("utf-8")
         parts.append(header)
         parts.append(b"")
         parts.append(str(value).encode("utf-8"))
-
-    # files
     for fieldname, filename, filebytes in files:
         parts.append(b"--" + boundary.encode("ascii"))
         disp = f'Content-Disposition: form-data; name="{fieldname}"; filename="{os.path.basename(filename)}"'.encode("utf-8")
@@ -141,10 +91,8 @@ def _http_post_multipart(url: str, fields: dict, files: list[tuple]) -> dict:
         parts.append(f"Content-Type: {ctype}".encode("utf-8"))
         parts.append(b"")
         parts.append(filebytes)
-
     parts.append(b"--" + boundary.encode("ascii") + b"--")
     parts.append(b"")
-
     body = CRLF.join(parts)
     headers = {"Content-Type": f"multipart/form-data; boundary={boundary}"}
     req = _urlreq.Request(url, data=body, headers=headers)
@@ -173,9 +121,6 @@ def _split_message(text: str, limit: int = 4000) -> list[str]:
         parts.append(text[start:cut])
         start = cut
     return parts
-
-
-# --------- Конфиг ---------
 
 class _Config:
     def __init__(self):
@@ -210,11 +155,8 @@ class _Config:
             f.flush(); os.fsync(f.fileno())
         os.replace(tmp, self.path)
 
-
-# --------- Телеграм утилиты ---------
-
 _token_re = re.compile(r"^\d+:[A-Za-z0-9_-]{30,}$")
-_chatid_re = re.compile(r"^-?\d{5,15}$")  # user/peer id или групповой id (отрицательный)
+_chatid_re = re.compile(r"^-?\d{5,15}$")
 
 def _validate_token(token: str) -> tuple[bool, str]:
     if not token:
@@ -227,7 +169,6 @@ def _validate_chat_id(chat_id: str) -> tuple[bool, str]:
     if not chat_id:
         return False, "Укажите chat_id получателя."
     if chat_id.startswith("@"):
-        # для каналов допустимо @channelusername — оставим, но предупредим в тесте, если не канал
         return True, ""
     if not _chatid_re.match(chat_id):
         return False, "chat_id должен быть числом (7–12 цифр, для групп может начинаться с «-»)."
@@ -240,7 +181,6 @@ def _tg_get_me(token: str) -> dict:
     return _http_get(_tg_api_url(token, "getMe"))
 
 def _tg_get_updates(token: str, limit: int = 10) -> dict:
-    # Без offset, чтобы получить последние непрочитанные события
     return _http_get(_tg_api_url(token, f"getUpdates?limit={limit}"))
 
 def _tg_send_message(token: str, chat_id: str, text: str) -> dict:
@@ -255,8 +195,6 @@ def _tg_send_document(token: str, chat_id: str, file_path: str, caption: str = "
     return _http_post_multipart(_tg_api_url(token, "sendDocument"), fields, files)
 
 
-# --------- Диалог настроек/отправки ---------
-
 class _SendDialog(QDialog):
     def __init__(self, parent_window):
         super().__init__(parent_window)
@@ -264,22 +202,16 @@ class _SendDialog(QDialog):
         self.setWindowFlag(Qt.WindowStaysOnTopHint, True)
         self.cfg = _Config()
         self.cfg.load()
-
         layout = QFormLayout(self)
-
         self.ed_token = QLineEdit(self.cfg.token)
         self.ed_token.setEchoMode(QLineEdit.Password)
         layout.addRow("Bot Token:", self.ed_token)
-
         self.ed_chat = QLineEdit(self.cfg.chat_id)
         self.ed_chat.setPlaceholderText("Напр.: 123456789  или  -1001234567890  или  @channelusername")
         layout.addRow("Target Chat ID:", self.ed_chat)
-
         self.cb_attach = QCheckBox("Отправлять вложения из папки заметки")
         self.cb_attach.setChecked(self.cfg.send_attachments)
         layout.addRow("", self.cb_attach)
-
-        # Панель кнопок: Определить chat_id и Тест
         btn_row = QHBoxLayout()
         self.btn_detect = QPushButton("Определить chat_id")
         self.btn_test = QPushButton("Отправить тест")
@@ -288,18 +220,15 @@ class _SendDialog(QDialog):
         btn_row.addWidget(self.btn_detect)
         btn_row.addWidget(self.btn_test)
         layout.addRow(btn_row)
-
         help_lbl = QLabel(
             "Подсказка:\n"
-            "1) Создайте бота у @BotFather → получите токен.\n"
-            "2) Откройте диалог с вашим ботом и нажмите «Start».\n"
-            "3) Нажмите «Определить chat_id» (или узнайте через @getmyid_bot).\n"
-            "Примечание: username (@name) работает только для каналов/групп, для личных сообщений нужен числовой chat_id."
+            "1) Создать бота в @BotFather\n"
+            "2) «Start» в боте\n"
+            "3) «Определить chat_id»\n"
         )
         help_lbl.setWordWrap(True)
         help_lbl.setStyleSheet("color: gray; font-size: 12px;")
         layout.addRow(help_lbl)
-
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
@@ -309,13 +238,9 @@ class _SendDialog(QDialog):
         token = self.ed_token.text().strip()
         chat_id = self.ed_chat.text().strip()
         send_atts = self.cb_attach.isChecked()
-        # сохраняем
         self.cfg.token, self.cfg.chat_id, self.cfg.send_attachments = token, chat_id, send_atts
         self.cfg.save()
         return token, chat_id, send_atts
-
-    # --- вспомогательные действия в диалоге ---
-
     def on_detect_chat_id(self):
         token = self.ed_token.text().strip()
         ok, msg = _validate_token(token)
@@ -329,7 +254,6 @@ class _SendDialog(QDialog):
         if not updates:
             QMessageBox.information(self, "getUpdates", "Новых сообщений нет. Напишите боту «/start» и попробуйте ещё раз.")
             return
-        # Найдём последний update с message/channel_post
         chat = None
         for upd in reversed(updates):
             for k in ("message", "edited_message", "channel_post", "edited_channel_post"):
@@ -358,9 +282,6 @@ class _SendDialog(QDialog):
             QMessageBox.information(self, "Тест", "Сообщение отправлено.")
         else:
             QMessageBox.critical(self, "Тест", f"Не удалось отправить тест:\n{resp.get('description')}")
-
-
-# --------- Логика отправки ---------
 
 def _current_note(parent) -> Optional[object]:
     try:
@@ -433,22 +354,16 @@ def _send_current_note_impl(parent):
     if not ok_t or not ok_c:
         QMessageBox.warning(parent, "Проверка данных", msg_t if not ok_t else msg_c)
         return
-
-    # Синхронизируем текущий HTML из редактора
     try:
         if getattr(parent, "text_edit", None) is not None:
             note.content = parent.text_edit.toHtml()
     except Exception:
         pass
-
-    # Текст
     text = _build_text_for_note(note)
     resp = _tg_send_message(token, chat_id, text)
     if not resp.get("ok"):
         QMessageBox.critical(parent, "Telegram", f"Не удалось отправить текст:\n{resp.get('description')}")
         return
-
-    # Вложения
     if send_attachments:
         try:
             folder = _note_folder(parent, note)
@@ -466,11 +381,7 @@ def _send_current_note_impl(parent):
             QMessageBox.warning(parent, "Telegram", f"Текст отправлен, но вложения не отправились:\n{e}")
 
     QMessageBox.information(parent, "Telegram", "Заметка успешно отправлена.")
-
-
-# --------- Хуки плагина ---------
-
-_action_send = None  # type: Optional[QAction]
+_action_send = None
 
 def on_enable(parent):
     global _action_send
@@ -488,11 +399,9 @@ def on_enable(parent):
             plugins_menu = mbar.addMenu("Плагины")
     except Exception:
         return
-
     _action_send = QAction("Отправить текущую заметку в Telegram…", parent)
     _action_send.triggered.connect(lambda: _send_current_note_impl(parent))
     plugins_menu.addAction(_action_send)
-
 
 def on_disable(parent):
     global _action_send
