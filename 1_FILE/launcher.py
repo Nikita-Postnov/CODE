@@ -4308,6 +4308,15 @@ class NotesApp(QMainWindow):
                 plugins_menu.removeAction(action)
 
     def load_plugins(self):
+        import importlib
+        importlib.invalidate_caches()
+        self.clear_plugin_menu_actions()
+        for module in getattr(self, "active_plugins", {}).values():
+            try:
+                if hasattr(module, "on_disable"):
+                    module.on_disable(parent=self)
+            except Exception as e:
+                print(f"Ошибка при деинициализации плагина {getattr(module, '__name__', '')}: {e}")
         plugins_folder = os.path.join(APPDIR, "Plugins")
         plugins_state_path = os.path.join(DATA_DIR, "plugins_state.json")
         if os.path.exists(plugins_state_path):
@@ -4315,19 +4324,15 @@ class NotesApp(QMainWindow):
                 plugins_state = json.load(f)
         else:
             plugins_state = {}
-
         self.active_plugins = {}
         if not os.path.exists(plugins_folder):
             return
-
         for fname in os.listdir(plugins_folder):
             if fname.endswith(".py"):
                 plugin_name = fname[:-3]
                 plugin_path = os.path.join(plugins_folder, fname)
                 try:
-                    spec = importlib.util.spec_from_file_location(
-                        plugin_name, plugin_path
-                    )
+                    spec = importlib.util.spec_from_file_location(plugin_name, plugin_path)
                     module = importlib.util.module_from_spec(spec)
                     spec.loader.exec_module(module)
                     self.active_plugins[plugin_name] = module
@@ -6310,4 +6315,4 @@ if __name__ == "__main__":
     window.show()
     sys.exit(app.exec())
 
-    #UPD 17.08.2025|22:22
+    #UPD 17.08.2025|23:20
