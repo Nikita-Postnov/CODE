@@ -121,6 +121,8 @@ from PySide6.QtWidgets import (
     QSplitter,
     QToolBar,
     QDockWidget,
+    QPushButton, 
+    QInputDialog,
 )
 
 if getattr(sys, 'frozen', False):
@@ -1680,12 +1682,80 @@ class NotesApp(QMainWindow):
             with open(templates_path, "w", encoding="utf-8") as f:
                 json.dump(templates, f, ensure_ascii=False, indent=4)
         return templates
+    
+    def save_templates(self, templates: list[dict]) -> None:
+        templates_path = os.path.join(DATA_DIR, "templates.json")
+        os.makedirs(DATA_DIR, exist_ok=True)
+        with open(templates_path, "w", encoding="utf-8") as f:
+            json.dump(templates, f, ensure_ascii=False, indent=4)
+
+    def save_current_as_template(self) -> None:
+        if not self.current_note:
+            QMessageBox.warning(self, "Нет заметки", "Сначала выбери заметку.")
+            return
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Сохранить как шаблон")
+        layout = QFormLayout(dialog)
+        name_edit = QLineEdit()
+        category_edit = QLineEdit()
+        description_edit = QLineEdit()
+        only_selection = QCheckBox("Только выделенный фрагмент")
+        layout.addRow("Название:", name_edit)
+        layout.addRow("Категория:", category_edit)
+        layout.addRow("Описание:", description_edit)
+        layout.addRow("", only_selection)
+        preview = QTextEdit()
+        preview.setMinimumHeight(180)
+        layout.addRow("Содержимое:", preview)
+
+        def fill_preview():
+            cur = self.text_edit.textCursor()
+            if only_selection.isChecked() and cur.hasSelection():
+                frag = cur.selection()
+                preview.setHtml(frag.toHtml())
+            else:
+                preview.setHtml(self.text_edit.toHtml())
+        only_selection.toggled.connect(fill_preview)
+        fill_preview()
+        buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+        layout.addRow(buttons)
+
+        def on_accept():
+            name = name_edit.text().strip()
+            if not name:
+                QMessageBox.warning(dialog, "Ошибка", "Укажи название шаблона.")
+                return
+            tpl = {
+                "name": name,
+                "category": (category_edit.text().strip() or "Без категории"),
+                "description": description_edit.text().strip(),
+                "content_html": preview.toHtml(),
+            }
+            templates = self.load_templates()
+            exist_idx = next((i for i, t in enumerate(templates) if t.get("name") == name), -1)
+            if exist_idx >= 0:
+                r = QMessageBox.question(
+                    dialog, "Перезаписать?",
+                    f"Шаблон «{name}» уже существует. Перезаписать?",
+                    QMessageBox.Yes | QMessageBox.No
+                )
+                if r == QMessageBox.No:
+                    return
+                templates[exist_idx] = tpl
+            else:
+                templates.append(tpl)
+            self.save_templates(templates)
+            dialog.accept()
+            QMessageBox.information(self, "Готово", f"Шаблон «{name}» сохранён.")
+        buttons.accepted.connect(on_accept)
+        buttons.rejected.connect(dialog.reject)
+        fg = dialog.frameGeometry(); fg.moveCenter(self.frameGeometry().center()); dialog.move(fg.topLeft())
+        dialog.exec()
 
     def insert_template(self) -> None:
         if not self.current_note:
             QMessageBox.warning(self, "Нет заметки", "Создайте или выберите заметку.")
             return
-
         templates = self.load_templates()
         dialog = QDialog(self)
         dialog.setWindowFlag(Qt.WindowStaysOnTopHint, True)
@@ -1773,6 +1843,87 @@ class NotesApp(QMainWindow):
                     cursor.clearSelection()
                     self.text_edit.setTextCursor(cursor)
                 self.record_state_for_undo()
+    def manage_templates_dialog(self) -> None:
+        templates = self.load_templates()
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Шаблоны")
+        v = QVBoxLayout(dlg)
+        lst = QListWidget()
+        def refresh():
+            lst.clear()
+            for t in templates:
+                lst.addItem(f"{t.get('name','')} — {t.get('category','Без категории')}")
+        refresh()
+        v.addWidget(lst)
+        form = QFormLayout()
+        name_edit = QLineEdit()
+        category_edit = QLineEdit()
+        desc_edit = QLineEdit()
+        form.addRow("Название:", name_edit)
+        form.addRow("Категория:", category_edit)
+        form.addRow("Описание:", desc_edit)
+        v.addLayout(form)
+        content = QTextEdit()
+        content.setMinimumHeight(180)
+        v.addWidget(content)
+        btns_line = QHBoxLayout()
+        btn_new = QPushButton("Новый")
+        btn_save = QPushButton("Сохранить")
+        btn_del = QPushButton("Удалить")
+        btn_close = QPushButton("Закрыть")
+        for b in (btn_new, btn_save, btn_del, btn_close):
+            btns_line.addWidget(b)
+        v.addLayout(btns_line)
+
+        def load_current(i):
+            if i < 0 or i >= len(templates):
+                name_edit.clear(); category_edit.clear(); desc_edit.clear(); content.clear()
+                return
+            t = templates[i]
+            name_edit.setText(t.get("name",""))
+            category_edit.setText(t.get("category",""))
+            desc_edit.setText(t.get("description",""))
+            content.setHtml(t.get("content_html",""))
+        lst.currentRowChanged.connect(load_current)
+        if templates:
+            lst.setCurrentRow(0)
+
+        def on_new():
+            templates.append({"name": "Новый шаблон", "category": "Без категории",
+                            "description": "", "content_html": ""})
+            refresh()
+            lst.setCurrentRow(len(templates)-1)
+
+        def on_save():
+            i = lst.currentRow()
+            if i < 0: return
+            templates[i] = {
+                "name": name_edit.text().strip() or "Без имени",
+                "category": category_edit.text().strip() or "Без категории",
+                "description": desc_edit.text().strip(),
+                "content_html": content.toHtml(),
+            }
+            self.save_templates(templates)
+            refresh()
+            lst.setCurrentRow(i)
+            QMessageBox.information(dlg, "Готово", "Сохранено.")
+
+        def on_del():
+            i = lst.currentRow()
+            if i < 0: return
+            r = QMessageBox.question(dlg, "Удалить", "Удалить выбранный шаблон?",
+                                    QMessageBox.Yes | QMessageBox.No)
+            if r == QMessageBox.Yes:
+                templates.pop(i)
+                self.save_templates(templates)
+                refresh()
+                lst.setCurrentRow(min(i, len(templates)-1))
+        btn_new.clicked.connect(on_new)
+        btn_save.clicked.connect(on_save)
+        btn_del.clicked.connect(on_del)
+        btn_close.clicked.connect(dlg.accept)
+        fg = dlg.frameGeometry(); fg.moveCenter(self.frameGeometry().center()); dlg.move(fg.topLeft())
+        dlg.exec()
 
     def show_trash(self) -> None:
         self.notes_list.clear()
@@ -2418,6 +2569,18 @@ class NotesApp(QMainWindow):
             fmt = self.text_edit.currentCharFormat()
             fmt.setFontStrikeOut(not fmt.fontStrikeOut())
             self.text_edit.setCurrentCharFormat(fmt)
+
+    @staticmethod
+    def _app_dir():
+        return os.path.dirname(sys.executable) if getattr(sys, "frozen", False) \
+            else os.path.abspath(os.path.dirname(__file__))
+
+    def open_readme(self):
+        path = os.path.join(self._app_dir(), "README.md")
+        if not os.path.exists(path):
+            QMessageBox.warning(self, "README", f"Файл не найден:\n{path}")
+            return
+        QDesktopServices.openUrl(QUrl.fromLocalFile(os.path.abspath(path)))
 
     def toggle_case(self) -> None:
         cursor = self.text_edit.textCursor()
@@ -3311,6 +3474,13 @@ class NotesApp(QMainWindow):
         insert_template_action = QAction("Вставить шаблон", self)
         insert_template_action.triggered.connect(self.insert_template)
         template_menu.addAction(insert_template_action)
+        save_tpl_action = QAction("Сохранить как шаблон…", self)
+        save_tpl_action.setShortcut("Ctrl+Shift+S")
+        save_tpl_action.triggered.connect(self.save_current_as_template)
+        template_menu.addAction(save_tpl_action)
+        manage_tpls_action = QAction("Управление шаблонами…", self)
+        manage_tpls_action.triggered.connect(self.manage_templates_dialog)
+        template_menu.addAction(manage_tpls_action)
         file_menu = menu_bar.addMenu("Файл")
         import_action = QAction("Импорт...", self)
         import_action.triggered.connect(self.import_note)
@@ -3328,6 +3498,9 @@ class NotesApp(QMainWindow):
         export_action.triggered.connect(self.export_note)
         file_menu.addAction(export_action)
         help_menu = menu_bar.addMenu("Справка")
+        readme_action = QAction("Открыть README.md", self)
+        readme_action.triggered.connect(self.open_readme)
+        help_menu.addAction(readme_action)
         settings_menu = menu_bar.addMenu("Настройки")
         view_menu = menu_bar.addMenu("Вид")
         for dock, name in [
@@ -6315,4 +6488,4 @@ if __name__ == "__main__":
     window.show()
     sys.exit(app.exec())
 
-    #UPD 18.08.2025|11:10
+    #UPD 18.08.2025|16:55
