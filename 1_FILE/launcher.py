@@ -714,7 +714,11 @@ class NotesApp(QMainWindow):
         self.text_edit = CustomTextEdit(
             parent=self, paste_image_callback=self.insert_image_from_clipboard
         )
-        self.text_edit.textChanged.connect(self.update_current_note_content)
+        self._save_debouncer = QTimer(self)
+        self._save_debouncer.setSingleShot(True)
+        self._save_debouncer.setInterval(400)
+        self._save_debouncer.timeout.connect(self.update_current_note_content)
+        self.text_edit.textChanged.connect(self._save_debouncer.start)
         self.text_edit.cursorPositionChanged.connect(self.update_font_controls)
         self.text_edit.setReadOnly(True)
         self.text_edit.hide()
@@ -2576,11 +2580,103 @@ class NotesApp(QMainWindow):
             else os.path.abspath(os.path.dirname(__file__))
 
     def open_readme(self):
-        path = os.path.join(self._app_dir(), "README.md")
+        path = os.path.join(APPDIR, "README.md")
+        if not os.path.exists(path):
+            up = os.path.abspath(os.path.join(APPDIR, "..", "README.md"))
+            if os.path.exists(up):
+                path = up
         if not os.path.exists(path):
             QMessageBox.warning(self, "README", f"Файл не найден:\n{path}")
             return
-        QDesktopServices.openUrl(QUrl.fromLocalFile(os.path.abspath(path)))
+        dlg = QDialog(self)
+        dlg.setWindowTitle("README.md")
+        dlg.resize(900, 700)
+        from PySide6.QtWidgets import QVBoxLayout, QTextBrowser, QDialogButtonBox
+        v = QVBoxLayout(dlg)
+        view = QTextBrowser(dlg)
+        view.setOpenLinks(False)
+        view.setOpenExternalLinks(False)
+        view.setTextInteractionFlags(Qt.TextBrowserInteraction)
+        v.addWidget(view)
+        btns = QDialogButtonBox(QDialogButtonBox.Close)
+        btns.addButton("Открыть в редакторе", QDialogButtonBox.ActionRole)
+        v.addWidget(btns)
+        with open(path, "r", encoding="utf-8") as f:
+            md = f.read()
+        try:
+            view.setMarkdown(md)
+        except AttributeError:
+            view.setPlainText(md)
+        base = QUrl.fromLocalFile(os.path.abspath(os.path.dirname(path)) + os.sep)
+        view.document().setBaseUrl(base)
+        self._ensure_heading_ids(view)
+        if hasattr(self, "_linkify_urls_in_browser"):
+            self._linkify_urls_in_browser(view)
+            view.document().setBaseUrl(base)
+            view.setOpenLinks(False)
+            view.setOpenExternalLinks(False)
+
+        def _on_anchor_clicked(url: QUrl):
+            if (not url.scheme()) and url.fragment():
+                frag = url.fragment()
+                if not view.scrollToAnchor(frag):
+                    view.scrollToAnchor(frag.lower())
+                return
+            if url.isRelative():
+                QDesktopServices.openUrl(view.document().baseUrl().resolved(url))
+                return
+            QDesktopServices.openUrl(url)
+        view.anchorClicked.connect(_on_anchor_clicked)
+
+        def _open_external():
+            QDesktopServices.openUrl(QUrl.fromLocalFile(os.path.abspath(path)))
+        btns.rejected.connect(dlg.reject)
+        for b in btns.buttons():
+            if btns.buttonRole(b) == QDialogButtonBox.ActionRole:
+                b.clicked.connect(_open_external)
+                break
+        fg = dlg.frameGeometry()
+        fg.moveCenter(self.frameGeometry().center())
+        dlg.move(fg.topLeft())
+        dlg.exec()
+
+    def _ensure_heading_ids(self, view: QTextBrowser):
+        html = view.toHtml()
+
+        def slugify(text: str) -> str:
+            s = text.strip().lower()
+            s = re.sub(r'[^0-9a-zа-яё \-]+', '', s, flags=re.IGNORECASE)
+            s = re.sub(r'\s+', '-', s)
+            s = re.sub(r'-{2,}', '-', s)
+            return s.strip('-')
+
+        def repl(m):
+            tag, attrs, inner = m.group(1), m.group(2), m.group(3)
+            if re.search(r'\b(id|name)\s*=', attrs, flags=re.I):
+                return m.group(0)
+            text_only = re.sub(r'<[^>]*>', '', inner)
+            anchor = slugify(text_only)
+            if not anchor:
+                return m.group(0)
+            return f'<{tag}{attrs} id="{anchor}" name="{anchor}">{inner}</{tag}>'
+        html = re.sub(r'<(h[1-6])([^>]*)>(.*?)</\1>', repl, html, flags=re.I | re.S)
+        view.setHtml(html)
+        base = view.document().baseUrl()
+        view.document().setBaseUrl(base)
+        view.setOpenLinks(False)
+        view.setOpenExternalLinks(False)
+
+    def _linkify_urls_in_browser(self, view: QTextBrowser):
+        html = view.toHtml()
+        pattern = re.compile(r'(?<!href=")(?<!src=")((?:https?://|www\.)[^\s"<>]+)')
+        def repl(m):
+            url = m.group(1)
+            href = url if url.startswith(('http://', 'https://')) else f'http://{url}'
+            return f'<a href="{href}">{url}</a>'
+        html = pattern.sub(repl, html)
+        view.setHtml(html)
+        view.setOpenExternalLinks(True)
+        view.setOpenLinks(False)
 
     def toggle_case(self) -> None:
         cursor = self.text_edit.textCursor()
@@ -3017,17 +3113,63 @@ class NotesApp(QMainWindow):
                 else:
                     cursor.insertHtml(f'<a href="{url}">{url}</a>')
 
+    def _select_entire_anchor(self, cursor: QTextCursor) -> QTextCursor | None:
+        fmt = cursor.charFormat()
+        if not fmt.isAnchor():
+            return None
+        href = fmt.anchorHref()
+        c = QTextCursor(cursor)
+        max_steps = cursor.document().characterCount() + 5  # страховка от зацикливания
+        steps = 0
+        while steps < max_steps:
+            steps += 1
+            left = QTextCursor(c)
+            moved = left.movePosition(QTextCursor.Left, QTextCursor.KeepAnchor, 1)
+            if (not moved) or left.atStart():
+                break
+            f = left.charFormat()
+            if not (f.isAnchor() and f.anchorHref() == href):
+                break
+            if left.position() == c.position() and left.anchor() == c.anchor():
+                break
+            c = left
+        while steps < max_steps:
+            steps += 1
+            right = QTextCursor(c)
+            moved = right.movePosition(QTextCursor.Right, QTextCursor.KeepAnchor, 1)
+            if (not moved) or right.atEnd():
+                break
+            f = right.charFormat()
+            if not (f.isAnchor() and f.anchorHref() == href):
+                break
+            if right.position() == c.position() and right.anchor() == c.anchor():
+                break
+            c = right
+        return c
+
     def edit_link(self) -> None:
         cursor = self.text_edit.textCursor()
         if not cursor.hasSelection():
             cursor.select(QTextCursor.WordUnderCursor)
-        fmt = cursor.charFormat()
-        if fmt.isAnchor():
-            current_url = fmt.anchorHref()
-            url, ok = QInputDialog.getText(self, "Изменить ссылку", "URL:", text=current_url)
-            if ok and url:
-                fmt.setAnchorHref(url)
-                cursor.mergeCharFormat(fmt)
+        if not cursor.charFormat().isAnchor():
+            QMessageBox.information(self, "Ссылка", "Курсор не находится на ссылке.")
+            return
+        full = self._select_entire_anchor(cursor)
+        if not full:
+            return
+        fmt = full.charFormat()
+        old_url = fmt.anchorHref()
+        new_url, ok = QInputDialog.getText(self, "Изменить ссылку", "URL:", text=old_url)
+        if not (ok and new_url):
+            return
+        visible = full.selectedText()
+        if visible.strip() == old_url.strip() or re.match(r'^\s*(https?://|www\.)', visible, flags=re.I):
+            new_visible = new_url
+        else:
+            new_visible = visible
+        fmt.setAnchor(True)
+        fmt.setAnchorHref(new_url)
+        full.insertText(new_visible, fmt)
 
     def remove_link(self) -> None:
         cursor = self.text_edit.textCursor()
@@ -3059,6 +3201,135 @@ class NotesApp(QMainWindow):
                 html += "</tr>"
             html += "</table>"
             self.text_edit.insertHtml(html)
+
+    def insert_dropdown(self) -> None:
+        if not self.current_note:
+            QMessageBox.warning(self, "Нет заметки", "Сначала выберите или создайте заметку.")
+            return
+
+        values = self._open_dropdown_values_editor()
+        if not values:
+            return
+        self._show_combo_popup(values)
+
+    def _open_dropdown_values_editor(self) -> list[str] | None:
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Значения выпадающего списка")
+        v = QVBoxLayout(dlg)
+        lst = QListWidget(dlg)
+        v.addWidget(lst)
+        try:
+            last = json.loads(self.settings.value("dropdown_values", "[]"))
+            if not isinstance(last, list):
+                last = []
+        except Exception:
+            last = []
+        if not last:
+            last = ["Вариант 1", "Вариант 2", "Вариант 3"]
+        for s in last:
+            lst.addItem(str(s))
+        btns_line = QHBoxLayout()
+        btn_add = QPushButton("Добавить")
+        btn_ren = QPushButton("Переименовать")
+        btn_del = QPushButton("Удалить")
+        btn_up  = QPushButton("↑")
+        btn_dn  = QPushButton("↓")
+        btns_line.addWidget(btn_add)
+        btns_line.addWidget(btn_ren)
+        btns_line.addWidget(btn_del)
+        btns_line.addStretch(1)
+        btns_line.addWidget(btn_up)
+        btns_line.addWidget(btn_dn)
+        v.addLayout(btns_line)
+
+        def add_item():
+            text, ok = QInputDialog.getText(dlg, "Добавить значение", "Текст:")
+            if ok and text.strip():
+                lst.addItem(text.strip())
+
+        def rename_item():
+            it = lst.currentItem()
+            if not it:
+                return
+            text, ok = QInputDialog.getText(dlg, "Переименовать", "Текст:", text=it.text())
+            if ok and text.strip():
+                it.setText(text.strip())
+
+        def delete_item():
+            row = lst.currentRow()
+            if row >= 0:
+                lst.takeItem(row)
+
+        def move_up():
+            row = lst.currentRow()
+            if row > 0:
+                it = lst.takeItem(row)
+                lst.insertItem(row - 1, it)
+                lst.setCurrentRow(row - 1)
+
+        def move_dn():
+            row = lst.currentRow()
+            if 0 <= row < lst.count() - 1:
+                it = lst.takeItem(row)
+                lst.insertItem(row + 1, it)
+                lst.setCurrentRow(row + 1)
+        btn_add.clicked.connect(add_item)
+        btn_ren.clicked.connect(rename_item)
+        btn_del.clicked.connect(delete_item)
+        btn_up.clicked.connect(move_up)
+        btn_dn.clicked.connect(move_dn)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel, dlg)
+        v.addWidget(buttons)
+        buttons.accepted.connect(dlg.accept)
+        buttons.rejected.connect(dlg.reject)
+        fg = dlg.frameGeometry()
+        fg.moveCenter(self.frameGeometry().center())
+        dlg.move(fg.topLeft())
+        if dlg.exec() == QDialog.Accepted:
+            values = [lst.item(i).text().strip() for i in range(lst.count()) if lst.item(i).text().strip()]
+            self.settings.setValue("dropdown_values", json.dumps(values, ensure_ascii=False))
+            return values
+        return None
+
+    def _show_combo_popup(self, values: list[str]) -> None:
+        menu = QMenu(self)
+        fm = self.text_edit.fontMetrics()
+        w = max([180] + [fm.horizontalAdvance(v) for v in values]) + fm.averageCharWidth() * 3
+        menu.setFixedWidth(int(w))
+        for val in values:
+            act = menu.addAction(val)
+            act.triggered.connect(lambda _, v=val: self._insert_dropdown_plain(v))
+        cr = self.text_edit.cursorRect(self.text_edit.textCursor())
+        pos = self.text_edit.viewport().mapToGlobal(cr.bottomLeft())
+        menu.exec(pos) 
+
+    def _insert_dropdown_plain(self, value: str) -> None:
+        fmt = self.text_edit.currentCharFormat() 
+        c = self.text_edit.textCursor()
+        c.insertText(value, fmt)
+        self.text_edit.setTextCursor(c)
+        self.record_state_for_undo()
+        if hasattr(self, "debounce_timer"):
+            self.debounce_timer.start(self.debounce_ms)
+
+    def _commit_dropdown_value(self, combo: QComboBox, value: str) -> None:
+        fmt = self.text_edit.currentCharFormat() 
+        cursor = self.text_edit.textCursor()
+        cursor.insertText(value, fmt)
+        self.text_edit.setTextCursor(cursor)
+        combo.hide()
+        self.record_state_for_undo()
+        if hasattr(self, "debounce_timer"):
+            self.debounce_timer.start(self.debounce_ms)
+            
+    def _insert_dropdown_plain(self, value: str) -> None:
+        fmt = self.text_edit.currentCharFormat()
+        c = self.text_edit.textCursor()
+        c.insertText(value, fmt)
+        self.text_edit.setTextCursor(c)
+        self.record_state_for_undo()
+        if hasattr(self, "debounce_timer"):
+            self.debounce_timer.start(self.debounce_ms)
 
     def init_toolbar(self):
         full_toolbar_widget = QWidget()
@@ -3103,6 +3374,7 @@ class NotesApp(QMainWindow):
         add_tool_button("", "𝐼 - Курсив", self.toggle_italic)
         add_tool_button("", "U̲ - Подчёркнутый", self.toggle_underline)
         add_tool_button("", "̶̶̶Z - Зачеркнуть", self.toggle_strikethrough)
+        add_tool_button("", "🔽 - Выпадающий список", self.insert_dropdown)
         add_tool_button("", "🧹 - Сбросить формат", self.clear_formatting)
         add_tool_button("", "🌈 - Цвет текста", self.change_text_color)
         add_tool_button("", "🅰️ - Фон текста", self.change_background_color)
@@ -6488,4 +6760,4 @@ if __name__ == "__main__":
     window.show()
     sys.exit(app.exec())
 
-    #UPD 18.08.2025|16:55
+    #UPD 18.08.2025|23:10
