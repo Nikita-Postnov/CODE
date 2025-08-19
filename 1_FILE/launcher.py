@@ -969,7 +969,11 @@ class NotesApp(QMainWindow):
         visible = bool(data.get("visible")) if data else False
         action.setChecked(visible)
         action.blockSignals(False)
+        raw = data.get("visible", False) if data else False
+        visible = (raw is True) or (str(raw).lower() in {"1", "true", "yes"})
+        action.setChecked(visible)
         row.setVisible(visible)
+        self._update_eye_action(action, visible, label)
         self._update_eye_action(action, visible, label)
         self.update_current_note_custom_fields()
 
@@ -2313,7 +2317,9 @@ class NotesApp(QMainWindow):
         self.rdp_1c8_row.setVisible(bool(self.current_note.rdp_1c8_visible))
         for w in self.custom_fields_widgets:
             w["action"].setEnabled(True)
-            w["row"].setVisible(w["action"].isChecked())
+            vis = bool(w["action"].isChecked())
+            w["row"].setVisible(vis)
+            self._update_eye_action(w["action"], vis, w["label_edit"].text())
 
     def attach_file_to_note(self) -> None:
         if not self.current_note:
@@ -3391,7 +3397,6 @@ class NotesApp(QMainWindow):
         add_tool_button("", "☑ - чекбокс", self.insert_checkbox)
         add_tool_button("", "📅 - Таблица", self.insert_table)
         add_tool_button("", "🔗 - Ссылка", self.insert_link)
-        add_tool_button("", "✏️ - Изменить ссылку", self.edit_link)
         add_tool_button("", "❌ - Удалить ссылку", self.remove_link)
         add_tool_button("", "▁ - Горизонтальная линия", self.insert_horizontal_line)
         add_tool_button("", "+🏷 - Добавить тег", self.add_tag_to_note)
@@ -3785,10 +3790,7 @@ class NotesApp(QMainWindow):
             action = dock.toggleViewAction()
             action.setText(name)
             view_menu.addAction(action)
-        help_action = QAction("Справка", self)
-        help_action.setShortcut("F1")
-        help_action.triggered.connect(self.show_help_window)
-        help_menu.addAction(help_action)
+        
         settings_action = QAction("Настройки:", self)
         settings_action.setShortcut("Ctrl+,")
         settings_action.triggered.connect(self.show_settings_window)
@@ -3810,7 +3812,7 @@ class NotesApp(QMainWindow):
         add_reminder_action = QAction("Добавить напоминание к текущей заметки", self)
         add_reminder_action.triggered.connect(self.set_reminder_for_note)
         reminders_menu.addAction(add_reminder_action)
-        edit_reminder_action = QAction("Изменить напоминание у текущей…", self)
+        edit_reminder_action = QAction("Изменить напоминание у текущей заметки", self)
         edit_reminder_action.triggered.connect(self.edit_reminder_for_note)
         remove_reminder_action = QAction("Удалить напоминание у текущей заметки", self)
         remove_reminder_action.triggered.connect(self.remove_reminder_from_note)
@@ -6760,4 +6762,4 @@ if __name__ == "__main__":
     window.show()
     sys.exit(app.exec())
 
-    #UPD 18.08.2025|23:10
+    #UPD 19.08.2025|14:48
