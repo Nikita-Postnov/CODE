@@ -404,6 +404,61 @@ class CustomTextEdit(QTextEdit):
             super().dropEvent(event)
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
+        if event.button() == Qt.LeftButton and not (event.modifiers() & Qt.ControlModifier):
+            cursor = self.cursorForPosition(event.position().toPoint())
+            fmt = cursor.charFormat()
+            if fmt.isAnchor():
+                href = fmt.anchorHref()
+                if href.startswith("dropdown://"):
+                    full = self._select_entire_anchor_local(cursor)
+                    if full:
+                        visible = full.selectedText()
+                        if visible.endswith(" ▾"):
+                            visible = visible[:-2]
+                        values = []
+                        m = re.search(r"[?&]d=([^&]+)", href)
+                        if m:
+                            try:
+                                payload = base64.urlsafe_b64decode(m.group(1)).decode("utf-8")
+                                values = json.loads(payload)
+                            except Exception:
+                                values = []
+                        if values:
+                            menu = QMenu(self)
+                            fm = self.fontMetrics()
+                            w = max([180] + [fm.horizontalAdvance(v) for v in values]) + fm.averageCharWidth()*3
+                            menu.setFixedWidth(int(w))
+                            actions = []
+                            for v in values:
+                                act = menu.addAction(v)
+                                act.setCheckable(True)
+                                act.setChecked(v == visible)
+                                actions.append((act, v))
+                            pos = self.viewport().mapToGlobal(self.cursorRect(cursor).bottomLeft())
+                            chosen = menu.exec(pos)
+                            if chosen is not None:
+                                for act, v in actions:
+                                    if act is chosen:
+                                        new_fmt = QTextCharFormat()
+                                        new_fmt.setAnchor(True)
+                                        new_fmt.setAnchorHref(href)
+                                        new_fmt.setFontUnderline(True)
+                                        new_fmt.setForeground(Qt.blue)
+                                        self.setTextCursor(full)
+                                        tc = self.textCursor()
+                                        tc.beginEditBlock()
+                                        tc.removeSelectedText()
+                                        tc.insertText(f"{v} ▾", new_fmt)
+                                        tc.endEditBlock()
+                                        self.setTextCursor(tc)
+                                        main = self.window()
+                                        if hasattr(main, "record_state_for_undo"):
+                                            main.record_state_for_undo()
+                                        if hasattr(main, "debounce_timer"):
+                                            main.debounce_timer.start(getattr(main, "debounce_ms", 300))
+                                        break
+                            event.accept()
+                            return
         if event.button() == Qt.LeftButton and (event.modifiers() & Qt.ControlModifier):
             cursor = self.cursorForPosition(event.position().toPoint())
             char_format = cursor.charFormat()
@@ -467,6 +522,28 @@ class CustomTextEdit(QTextEdit):
         painter.setPen(pen)
         painter.drawPath(path)
         return scaled_pixmap
+    
+    def _select_entire_anchor_local(self, cursor: QTextCursor) -> QTextCursor | None:
+        fmt = cursor.charFormat()
+        if not fmt.isAnchor():
+            return None
+        href = fmt.anchorHref()
+        c = QTextCursor(cursor)
+        while True:
+            left = QTextCursor(c)
+            if not left.movePosition(QTextCursor.Left, QTextCursor.KeepAnchor, 1):
+                break
+            if not (left.charFormat().isAnchor() and left.charFormat().anchorHref() == href):
+                break
+            c = left
+        while True:
+            right = QTextCursor(c)
+            if not right.movePosition(QTextCursor.Right, QTextCursor.KeepAnchor, 1):
+                break
+            if not (right.charFormat().isAnchor() and right.charFormat().anchorHref() == href):
+                break
+            c = right
+        return c
 
     def delete_selection(self) -> None:
         cursor = self.textCursor()
@@ -3125,7 +3202,7 @@ class NotesApp(QMainWindow):
             return None
         href = fmt.anchorHref()
         c = QTextCursor(cursor)
-        max_steps = cursor.document().characterCount() + 5  # страховка от зацикливания
+        max_steps = cursor.document().characterCount() + 5
         steps = 0
         while steps < max_steps:
             steps += 1
@@ -3302,17 +3379,49 @@ class NotesApp(QMainWindow):
         fm = self.text_edit.fontMetrics()
         w = max([180] + [fm.horizontalAdvance(v) for v in values]) + fm.averageCharWidth() * 3
         menu.setFixedWidth(int(w))
+        cur = self.text_edit.textCursor()
+        fmt = cur.charFormat()
+        if fmt.isAnchor() and fmt.anchorHref().startswith("dropdown://"):
+            full = self.text_edit._select_entire_anchor_local(cur)
+            if full:
+                self.text_edit.setTextCursor(full)
         for val in values:
             act = menu.addAction(val)
-            act.triggered.connect(lambda _, v=val: self._insert_dropdown_plain(v))
+            act.triggered.connect(lambda _, v=val: self._insert_dropdown_token(values, v))
         cr = self.text_edit.cursorRect(self.text_edit.textCursor())
         pos = self.text_edit.viewport().mapToGlobal(cr.bottomLeft())
         menu.exec(pos) 
 
-    def _insert_dropdown_plain(self, value: str) -> None:
-        fmt = self.text_edit.currentCharFormat() 
+    def _insert_dropdown_token(self, values: list[str], selected: str) -> None:
         c = self.text_edit.textCursor()
-        c.insertText(value, fmt)
+        existing_href = None
+        fmt_here = c.charFormat()
+        if fmt_here.isAnchor() and fmt_here.anchorHref().startswith("dropdown://"):
+            full = self.text_edit._select_entire_anchor_local(c)
+            if full and full.hasSelection():
+                self.text_edit.setTextCursor(full)
+                c = self.text_edit.textCursor()
+                existing_href = fmt_here.anchorHref()
+        try:
+            data = json.dumps(values, ensure_ascii=False)
+            b64 = base64.urlsafe_b64encode(data.encode("utf-8")).decode("ascii")
+        except Exception:
+            return
+        href = None
+        if existing_href:
+            m = re.match(r"^dropdown://([^?]+)", existing_href)
+            if m:
+                href = f"dropdown://{m.group(1)}?d={b64}"
+        if not href:
+            href = f"dropdown://{uuid.uuid4().hex[:8]}?d={b64}"
+        fmt = QTextCharFormat()
+        fmt.setAnchor(True)
+        fmt.setAnchorHref(href)
+        fmt.setFontUnderline(True)
+        fmt.setForeground(Qt.blue)
+        if c.hasSelection():
+            c.removeSelectedText()
+        c.insertText(f"{selected} ▾", fmt)
         self.text_edit.setTextCursor(c)
         self.record_state_for_undo()
         if hasattr(self, "debounce_timer"):
@@ -3331,6 +3440,8 @@ class NotesApp(QMainWindow):
     def _insert_dropdown_plain(self, value: str) -> None:
         fmt = self.text_edit.currentCharFormat()
         c = self.text_edit.textCursor()
+        if c.hasSelection():
+            c.removeSelectedText()
         c.insertText(value, fmt)
         self.text_edit.setTextCursor(c)
         self.record_state_for_undo()
@@ -6762,4 +6873,4 @@ if __name__ == "__main__":
     window.show()
     sys.exit(app.exec())
 
-    #UPD 19.08.2025|14:48
+    #UPD 19.08.2025|17:20
