@@ -3373,35 +3373,60 @@ class NotesApp(QMainWindow):
             self.settings.setValue("dropdown_values", json.dumps(values, ensure_ascii=False))
             return values
         return None
+    
+    def _find_anchor_by_href(self, href: str) -> QTextCursor | None:
+        if not href:
+            return None
+        doc = self.text_edit.document()
+        c = QTextCursor(doc)
+        c.movePosition(QTextCursor.Start)
+        while not c.atEnd():
+            f = c.charFormat()
+            if f.isAnchor() and f.anchorHref() == href:
+                return self.text_edit._select_entire_anchor_local(c)
+            c.movePosition(QTextCursor.Right)
+        return None
 
     def _show_combo_popup(self, values: list[str]) -> None:
         menu = QMenu(self)
         fm = self.text_edit.fontMetrics()
         w = max([180] + [fm.horizontalAdvance(v) for v in values]) + fm.averageCharWidth() * 3
         menu.setFixedWidth(int(w))
+        self._pending_dropdown_href = None
         cur = self.text_edit.textCursor()
         fmt = cur.charFormat()
         if fmt.isAnchor() and fmt.anchorHref().startswith("dropdown://"):
             full = self.text_edit._select_entire_anchor_local(cur)
             if full:
                 self.text_edit.setTextCursor(full)
+                self._pending_dropdown_href = fmt.anchorHref()
         for val in values:
             act = menu.addAction(val)
             act.triggered.connect(lambda _, v=val: self._insert_dropdown_token(values, v))
         cr = self.text_edit.cursorRect(self.text_edit.textCursor())
         pos = self.text_edit.viewport().mapToGlobal(cr.bottomLeft())
-        menu.exec(pos) 
-
+        menu.exec(pos)
+ 
     def _insert_dropdown_token(self, values: list[str], selected: str) -> None:
         c = self.text_edit.textCursor()
+        target_cursor = None
         existing_href = None
         fmt_here = c.charFormat()
         if fmt_here.isAnchor() and fmt_here.anchorHref().startswith("dropdown://"):
-            full = self.text_edit._select_entire_anchor_local(c)
-            if full and full.hasSelection():
-                self.text_edit.setTextCursor(full)
-                c = self.text_edit.textCursor()
-                existing_href = fmt_here.anchorHref()
+            target_cursor = self.text_edit._select_entire_anchor_local(c)
+            existing_href = fmt_here.anchorHref()
+        if target_cursor is None:
+            left = QTextCursor(c)
+            if left.movePosition(QTextCursor.Left, QTextCursor.MoveAnchor, 1):
+                f = left.charFormat()
+                if f.isAnchor() and f.anchorHref().startswith("dropdown://"):
+                    target_cursor = self.text_edit._select_entire_anchor_local(left)
+                    existing_href = f.anchorHref()
+        if target_cursor is None and getattr(self, "_pending_dropdown_href", None):
+            found = self._find_anchor_by_href(self._pending_dropdown_href)
+            if found:
+                target_cursor = found
+                existing_href = self._pending_dropdown_href
         try:
             data = json.dumps(values, ensure_ascii=False)
             b64 = base64.urlsafe_b64encode(data.encode("utf-8")).decode("ascii")
@@ -3419,10 +3444,20 @@ class NotesApp(QMainWindow):
         fmt.setAnchorHref(href)
         fmt.setFontUnderline(True)
         fmt.setForeground(Qt.blue)
-        if c.hasSelection():
-            c.removeSelectedText()
-        c.insertText(f"{selected} ▾", fmt)
-        self.text_edit.setTextCursor(c)
+        if target_cursor and target_cursor.hasSelection():
+            self.text_edit.setTextCursor(target_cursor)
+            tc = self.text_edit.textCursor()
+            tc.beginEditBlock()
+            tc.removeSelectedText()
+            tc.insertText(f"{selected} ▾", fmt)
+            tc.endEditBlock()
+            self.text_edit.setTextCursor(tc)
+        else:
+            if c.hasSelection():
+                c.removeSelectedText()
+            c.insertText(f"{selected} ▾", fmt)
+            self.text_edit.setTextCursor(c)
+        self._pending_dropdown_href = None
         self.record_state_for_undo()
         if hasattr(self, "debounce_timer"):
             self.debounce_timer.start(self.debounce_ms)
@@ -6873,4 +6908,4 @@ if __name__ == "__main__":
     window.show()
     sys.exit(app.exec())
 
-    #UPD 19.08.2025|17:20
+    #UPD 19.08.2025|17:27
