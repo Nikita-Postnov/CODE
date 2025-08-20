@@ -404,73 +404,27 @@ class CustomTextEdit(QTextEdit):
             super().dropEvent(event)
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
-        if event.button() == Qt.LeftButton and not (event.modifiers() & Qt.ControlModifier):
-            cursor = self.cursorForPosition(event.position().toPoint())
-            fmt = cursor.charFormat()
-            if fmt.isAnchor():
-                href = fmt.anchorHref()
-                if href.startswith("dropdown://"):
-                    full = self._select_entire_anchor_local(cursor)
-                    if full:
-                        visible = full.selectedText()
-                        if visible.endswith(" ▾"):
-                            visible = visible[:-2]
-                        values = []
-                        m = re.search(r"[?&]d=([^&]+)", href)
-                        if m:
-                            try:
-                                payload = base64.urlsafe_b64decode(m.group(1)).decode("utf-8")
-                                values = json.loads(payload)
-                            except Exception:
-                                values = []
-                        if values:
-                            menu = QMenu(self)
-                            fm = self.fontMetrics()
-                            w = max([180] + [fm.horizontalAdvance(v) for v in values]) + fm.averageCharWidth()*3
-                            menu.setFixedWidth(int(w))
-                            actions = []
-                            for v in values:
-                                act = menu.addAction(v)
-                                act.setCheckable(True)
-                                act.setChecked(v == visible)
-                                actions.append((act, v))
-                            pos = self.viewport().mapToGlobal(self.cursorRect(cursor).bottomLeft())
-                            chosen = menu.exec(pos)
-                            if chosen is not None:
-                                for act, v in actions:
-                                    if act is chosen:
-                                        new_fmt = QTextCharFormat()
-                                        new_fmt.setAnchor(True)
-                                        new_fmt.setAnchorHref(href)
-                                        new_fmt.setFontUnderline(True)
-                                        new_fmt.setForeground(Qt.blue)
-                                        self.setTextCursor(full)
-                                        tc = self.textCursor()
-                                        tc.beginEditBlock()
-                                        tc.removeSelectedText()
-                                        tc.insertText(f"{v} ▾", new_fmt)
-                                        tc.endEditBlock()
-                                        self.setTextCursor(tc)
-                                        main = self.window()
-                                        if hasattr(main, "record_state_for_undo"):
-                                            main.record_state_for_undo()
-                                        if hasattr(main, "debounce_timer"):
-                                            main.debounce_timer.start(getattr(main, "debounce_ms", 300))
-                                        break
-                            event.accept()
-                            return
+        pos = event.position().toPoint()
+        cursor = self.cursorForPosition(pos)
+        char_format = cursor.charFormat()
+        if event.button() == Qt.LeftButton and char_format.isAnchor():
+            link = char_format.anchorHref()
+            if link.startswith("dropdown://"):
+                dd_id = link.split("://", 1)[1]
+                main_window = self.window()
+                if hasattr(main_window, "show_dropdown_menu_for_token"):
+                    rect = self.cursorRect(cursor)
+                    global_pos = self.viewport().mapToGlobal(rect.bottomLeft())
+                    main_window.show_dropdown_menu_for_token(dd_id, global_pos)
+                return
         if event.button() == Qt.LeftButton and (event.modifiers() & Qt.ControlModifier):
-            cursor = self.cursorForPosition(event.position().toPoint())
-            char_format = cursor.charFormat()
             if char_format.isImageFormat():
                 image_format = char_format.toImageFormat()
                 image_path = image_format.name()
                 if image_path.startswith("Data:image"):
                     header, b64data = image_path.split(",", 1)
                     suffix = ".png" if "png" in header else ".jpg"
-                    with tempfile.NamedTemporaryFile(
-                        delete=False, suffix=suffix
-                    ) as tmpfile:
+                    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmpfile:
                         tmpfile.write(base64.b64decode(b64data))
                         tmpfile_path = tmpfile.name
                     QDesktopServices.openUrl(QUrl.fromLocalFile(tmpfile_path))
@@ -479,7 +433,7 @@ class CustomTextEdit(QTextEdit):
                     if os.path.exists(file_path):
                         QDesktopServices.openUrl(QUrl.fromLocalFile(file_path))
                 return
-            elif char_format.isAnchor():
+            if char_format.isAnchor():
                 link = char_format.anchorHref()
                 if link.startswith("file://"):
                     local_path = QUrl(link).toLocalFile()
@@ -489,8 +443,9 @@ class CustomTextEdit(QTextEdit):
                 else:
                     QDesktopServices.openUrl(QUrl(link))
                     return
-            cursor.select(QTextCursor.SelectionType.BlockUnderCursor)
-            block_html = cursor.selection().toHtml()
+            block_cursor = self.cursorForPosition(pos)
+            block_cursor.select(QTextCursor.SelectionType.BlockUnderCursor)
+            block_html = block_cursor.selection().toHtml()
             match = re.search(r'href="(file://[^"]+)"', block_html)
             if match:
                 link = match.group(1)
@@ -498,15 +453,16 @@ class CustomTextEdit(QTextEdit):
                 if os.path.exists(local_path):
                     QDesktopServices.openUrl(QUrl.fromLocalFile(local_path))
                     return
-        cursor = self.cursorForPosition(event.position().toPoint())
-        cursor.select(QTextCursor.SelectionType.WordUnderCursor)
-        word = cursor.selectedText()
-        if word == "☐":
-            cursor.insertText("☑")
-            return
-        elif word == "☑":
-            cursor.insertText("☐")
-            return
+        if event.button() == Qt.LeftButton:
+            word_cursor = self.cursorForPosition(pos)
+            word_cursor.select(QTextCursor.SelectionType.WordUnderCursor)
+            word = word_cursor.selectedText()
+            if word == "☐":
+                word_cursor.insertText("☑")
+                return
+            elif word == "☑":
+                word_cursor.insertText("☐")
+                return
         super().mousePressEvent(event)
 
     def create_drag_image(self, widget: QWidget) -> QPixmap:
@@ -522,28 +478,6 @@ class CustomTextEdit(QTextEdit):
         painter.setPen(pen)
         painter.drawPath(path)
         return scaled_pixmap
-    
-    def _select_entire_anchor_local(self, cursor: QTextCursor) -> QTextCursor | None:
-        fmt = cursor.charFormat()
-        if not fmt.isAnchor():
-            return None
-        href = fmt.anchorHref()
-        c = QTextCursor(cursor)
-        while True:
-            left = QTextCursor(c)
-            if not left.movePosition(QTextCursor.Left, QTextCursor.KeepAnchor, 1):
-                break
-            if not (left.charFormat().isAnchor() and left.charFormat().anchorHref() == href):
-                break
-            c = left
-        while True:
-            right = QTextCursor(c)
-            if not right.movePosition(QTextCursor.Right, QTextCursor.KeepAnchor, 1):
-                break
-            if not (right.charFormat().isAnchor() and right.charFormat().anchorHref() == href):
-                break
-            c = right
-        return c
 
     def delete_selection(self) -> None:
         cursor = self.textCursor()
@@ -643,6 +577,7 @@ class Note:
         self.custom_fields = custom_fields if custom_fields is not None else []
         self.password_manager_visible = False
         self.rdp_1c8_visible = False
+        self.rdp_1c8_removed = False
 
     def to_dict(self) -> dict:
         return {
@@ -661,6 +596,7 @@ class Note:
             "rdp_1c8": self.rdp_1c8,
             "password_manager_visible": bool(self.password_manager_visible),
             "rdp_1c8_visible": bool(self.rdp_1c8_visible),
+            "rdp_1c8_removed": bool(self.rdp_1c8_removed),
             "custom_fields": self.custom_fields,
         }
 
@@ -683,6 +619,7 @@ class Note:
         note.rdp_1c8 = data.get("rdp_1c8", "")
         note.password_manager_visible = bool(data.get("password_manager_visible", False))
         note.rdp_1c8_visible = bool(data.get("rdp_1c8_visible", False))
+        note.rdp_1c8_removed = bool(data.get("rdp_1c8_removed", False))
         note.custom_fields = data.get("custom_fields", [])
         return note
 
@@ -902,11 +839,7 @@ class NotesApp(QMainWindow):
         )
         self.rdp_1c8_delete_btn = QPushButton("✖")
         self.rdp_1c8_delete_btn.setFixedSize(24, 24)
-        self.rdp_1c8_delete_btn.setEnabled(False)
         self.rdp_1c8_delete_btn.clicked.connect(self.delete_rdp_1c8_field)
-        self.rdp_1c8_field.textChanged.connect(
-            lambda t: self.rdp_1c8_delete_btn.setEnabled(bool(t))
-        )
         _rdp_row_layout.addWidget(self.rdp_1c8_copy_btn)
         _rdp_row_layout.addWidget(self.rdp_1c8_delete_btn)
         self.custom_fields_container = QWidget()
@@ -983,19 +916,16 @@ class NotesApp(QMainWindow):
         if getattr(self, "current_note", None):
             self.current_note.rdp_1c8 = ""
             self.current_note.rdp_1c8_visible = False
+            self.current_note.rdp_1c8_removed = True
             self.save_note_to_file(self.current_note)
         self.rdp_1c8_row.setVisible(False)
         if hasattr(self, "action_toggle_rdp"):
             self.action_toggle_rdp.blockSignals(True)
             self.action_toggle_rdp.setChecked(False)
-            self._update_eye_action(
-                self.action_toggle_rdp, False, self.rdp_1c8_label.text()
-            )
+            self._update_eye_action(self.action_toggle_rdp, False, self.rdp_1c8_label.text())
+            self.action_toggle_rdp.setEnabled(False)
+            self.action_toggle_rdp.setVisible(False)
             self.action_toggle_rdp.blockSignals(False)
-            if hasattr(self, "visibility_toolbar"):
-                self.visibility_toolbar.removeAction(self.action_toggle_rdp)
-            self.action_toggle_rdp.deleteLater()
-            del self.action_toggle_rdp
 
     def add_custom_field(self, data: dict | None = None) -> None:
         row = QWidget()
@@ -1162,11 +1092,15 @@ class NotesApp(QMainWindow):
     def on_toggle_rdp_visible(self, checked: bool) -> None:
         if not self.current_note:
             return
+        if getattr(self.current_note, "rdp_1c8_removed", False):
+            if hasattr(self, "action_toggle_rdp"):
+                self.action_toggle_rdp.blockSignals(True)
+                self.action_toggle_rdp.setChecked(False)
+                self.action_toggle_rdp.blockSignals(False)
+            return
         self.current_note.rdp_1c8_visible = bool(checked)
         self.rdp_1c8_row.setVisible(checked)
-        self._update_eye_action(
-            self.action_toggle_rdp, checked, self.rdp_1c8_label.text()
-        )
+        self._update_eye_action(self.action_toggle_rdp, checked, self.rdp_1c8_label.text())
         self.save_note_to_file(self.current_note)
 
     def delete_selected_history_entries(self) -> None:
@@ -1623,6 +1557,7 @@ class NotesApp(QMainWindow):
             self.text_edit.setReadOnly(False)
             note.password_manager_visible = False
             note.rdp_1c8_visible = False
+            note.rdp_1c8_removed = False
             self.password_manager_field.clear()
             self.rdp_1c8_field.clear()
             self.password_manager_row.setVisible(False)
@@ -2126,10 +2061,14 @@ class NotesApp(QMainWindow):
         self.rdp_1c8_field.setText(note.rdp_1c8)
         pm_vis = bool(getattr(note, "password_manager_visible", False))
         rdp_vis = bool(getattr(note, "rdp_1c8_visible", False))
+        rdp_removed = bool(getattr(note, "rdp_1c8_removed", False))
+        self.rdp_1c8_row.setVisible(False if rdp_removed else rdp_vis)
         self.password_manager_row.setVisible(pm_vis)
         self.rdp_1c8_row.setVisible(rdp_vis)
         if hasattr(self, "action_toggle_pm"):
             self.action_toggle_pm.blockSignals(True)
+            self.action_toggle_rdp.setVisible(not rdp_removed)
+            self.action_toggle_rdp.setEnabled(not rdp_removed)
             self.action_toggle_pm.setChecked(pm_vis)
             self._update_eye_action(
                 self.action_toggle_pm, pm_vis, self.password_manager_label.text()
@@ -2169,6 +2108,89 @@ class NotesApp(QMainWindow):
         self.tags_label.setText(f"Теги: {', '.join(note.tags) if note.tags else 'нет'}")
         self.password_manager_field.setText(note.password_manager)
         self.rdp_1c8_field.setText(note.rdp_1c8)
+
+    def _html_escape(self, s: str) -> str:
+        return (s.replace("&", "&amp;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;"))
+
+    def _load_dropdown_values(self) -> list[str]:
+        try:
+            vals = json.loads(self.settings.value("dropdown_values", "[]"))
+            if not isinstance(vals, list): vals = []
+        except Exception:
+            vals = []
+        if not vals:
+            vals = ["Вариант 1", "Вариант 2", "Вариант 3"]
+        return [str(v) for v in vals]
+
+    def _dropdown_palette(self) -> tuple[str, str, str]:
+        is_dark = self.settings.value("theme", "dark") == "dark"
+        if is_dark:
+            return ("#303030", "#ffffff", "#7a7a7a")
+        return ("#f0f0f0", "#111111", "#b0b0b0")
+
+    def _ensure_dd_map(self) -> None:
+        if not hasattr(self, "_dropdown_tokens"):
+            self._dropdown_tokens = {}  # id -> {"value": str}
+
+    def _insert_dropdown_token(self, value: str, dd_id: str | None = None) -> str:
+        self._ensure_dd_map()
+        if dd_id is None:
+            dd_id = uuid.uuid4().hex[:8]
+        self._dropdown_tokens[dd_id] = {"value": value}
+        bg, fg, br = self._dropdown_palette()
+        inner = (f'<span style="display:inline-block; padding:2px 8px; '
+                f'border-radius:6px; border:1px solid {br}; '
+                f'background:{bg}; color:{fg};">{self._html_escape(value)} &#9662;</span>')
+        html = f'<a href="dropdown://{dd_id}" style="text-decoration:none;">{inner}</a>&nbsp;'
+        c = self.text_edit.textCursor()
+        c.insertHtml(html)
+        self.text_edit.setTextCursor(c)
+        self.record_state_for_undo()
+        if hasattr(self, "debounce_timer"):
+            self.debounce_timer.start(self.debounce_ms)
+        return dd_id
+
+    def _update_dropdown_token(self, dd_id: str, new_value: str) -> None:
+        self._ensure_dd_map()
+        self._dropdown_tokens.get(dd_id, {})["value"] = new_value
+        bg, fg, br = self._dropdown_palette()
+        inner = (f'<span style="display:inline-block; padding:2px 8px; '
+                f'border-radius:6px; border:1px solid {br}; '
+                f'background:{bg}; color:{fg};">{self._html_escape(new_value)} &#9662;</span>')
+
+        href = f'dropdown://{re.escape(dd_id)}'
+        html = self.text_edit.toHtml()
+        new_html = re.sub(rf'(<a[^>]+href="{href}"[^>]*>)(.*?)(</a>)',
+                        r'\1' + inner + r'\3', html, flags=re.S)
+        self.text_edit.blockSignals(True)
+        self.text_edit.setHtml(new_html)
+        self.text_edit.blockSignals(False)
+        self.record_state_for_undo()
+        if hasattr(self, "debounce_timer"):
+            self.debounce_timer.start(self.debounce_ms)
+
+    def _edit_values_and_reopen(self, dd_id: str) -> None:
+        vals = self._open_dropdown_values_editor()
+        if vals is not None:
+            self.show_dropdown_menu_for_token(dd_id)
+
+    def show_dropdown_menu_for_token(self, dd_id: str, global_pos=None) -> None:
+        values = self._load_dropdown_values()
+        menu = QMenu(self)
+        menu.setStyleSheet(CUSTOM_MENU_STYLE)
+        for v in values:
+            act = menu.addAction(v)
+            act.triggered.connect(lambda _, val=v: self._update_dropdown_token(dd_id, val))
+        menu.addSeparator()
+        edit_act = menu.addAction("✏️ Редактировать список…")
+        edit_act.triggered.connect(lambda: self._edit_values_and_reopen(dd_id))
+
+        if global_pos is None:
+            cr = self.text_edit.cursorRect(self.text_edit.textCursor())
+            global_pos = self.text_edit.viewport().mapToGlobal(cr.bottomLeft())
+        menu.exec(global_pos)
 
     def show_note_with_attachments(self, note: Note | None) -> None:
         files = self.attachments_watcher.files()
@@ -2390,6 +2412,19 @@ class NotesApp(QMainWindow):
             self.action_toggle_rdp.blockSignals(True)
             self.action_toggle_rdp.setChecked(bool(self.current_note.rdp_1c8_visible))
             self.action_toggle_rdp.blockSignals(False)
+        if hasattr(self, "action_toggle_rdp"):
+            rdp_removed = bool(getattr(self.current_note, "rdp_1c8_removed", False))
+            self.action_toggle_rdp.setVisible(not rdp_removed)               # <— НОВОЕ
+            self.action_toggle_rdp.setEnabled(not rdp_removed)               # <— НОВОЕ
+            self.action_toggle_rdp.blockSignals(True)
+            self.action_toggle_rdp.setChecked(
+                False if rdp_removed else bool(self.current_note.rdp_1c8_visible)
+            )
+            self.action_toggle_rdp.blockSignals(False)
+
+        self.rdp_1c8_row.setVisible(
+            False if rdp_removed else bool(self.current_note.rdp_1c8_visible)
+        )
         self.password_manager_row.setVisible(bool(self.current_note.password_manager_visible))
         self.rdp_1c8_row.setVisible(bool(self.current_note.rdp_1c8_visible))
         for w in self.custom_fields_widgets:
@@ -3202,7 +3237,7 @@ class NotesApp(QMainWindow):
             return None
         href = fmt.anchorHref()
         c = QTextCursor(cursor)
-        max_steps = cursor.document().characterCount() + 5
+        max_steps = cursor.document().characterCount() + 5  # страховка от зацикливания
         steps = 0
         while steps < max_steps:
             steps += 1
@@ -3287,13 +3322,14 @@ class NotesApp(QMainWindow):
 
     def insert_dropdown(self) -> None:
         if not self.current_note:
-            QMessageBox.warning(self, "Нет заметки", "Сначала выберите или создайте заметку.")
+            QMessageBox.warning(self, "Нет заметки", "Сначала выбери или создай заметку.")
             return
-
-        values = self._open_dropdown_values_editor()
-        if not values:
-            return
-        self._show_combo_popup(values)
+        values = self._load_dropdown_values()
+        initial = values[0] if values else "Выбрать…"
+        dd_id = self._insert_dropdown_token(initial)
+        cr = self.text_edit.cursorRect(self.text_edit.textCursor())
+        pos = self.text_edit.viewport().mapToGlobal(cr.bottomLeft())
+        self.show_dropdown_menu_for_token(dd_id, pos)
 
     def _open_dropdown_values_editor(self) -> list[str] | None:
         dlg = QDialog(self)
@@ -3373,91 +3409,24 @@ class NotesApp(QMainWindow):
             self.settings.setValue("dropdown_values", json.dumps(values, ensure_ascii=False))
             return values
         return None
-    
-    def _find_anchor_by_href(self, href: str) -> QTextCursor | None:
-        if not href:
-            return None
-        doc = self.text_edit.document()
-        c = QTextCursor(doc)
-        c.movePosition(QTextCursor.Start)
-        while not c.atEnd():
-            f = c.charFormat()
-            if f.isAnchor() and f.anchorHref() == href:
-                return self.text_edit._select_entire_anchor_local(c)
-            c.movePosition(QTextCursor.Right)
-        return None
 
     def _show_combo_popup(self, values: list[str]) -> None:
         menu = QMenu(self)
         fm = self.text_edit.fontMetrics()
         w = max([180] + [fm.horizontalAdvance(v) for v in values]) + fm.averageCharWidth() * 3
         menu.setFixedWidth(int(w))
-        self._pending_dropdown_href = None
-        cur = self.text_edit.textCursor()
-        fmt = cur.charFormat()
-        if fmt.isAnchor() and fmt.anchorHref().startswith("dropdown://"):
-            full = self.text_edit._select_entire_anchor_local(cur)
-            if full:
-                self.text_edit.setTextCursor(full)
-                self._pending_dropdown_href = fmt.anchorHref()
         for val in values:
             act = menu.addAction(val)
-            act.triggered.connect(lambda _, v=val: self._insert_dropdown_token(values, v))
+            act.triggered.connect(lambda _, v=val: self._insert_dropdown_plain(v))
         cr = self.text_edit.cursorRect(self.text_edit.textCursor())
         pos = self.text_edit.viewport().mapToGlobal(cr.bottomLeft())
-        menu.exec(pos)
- 
-    def _insert_dropdown_token(self, values: list[str], selected: str) -> None:
+        menu.exec(pos) 
+
+    def _insert_dropdown_plain(self, value: str) -> None:
+        fmt = self.text_edit.currentCharFormat() 
         c = self.text_edit.textCursor()
-        target_cursor = None
-        existing_href = None
-        fmt_here = c.charFormat()
-        if fmt_here.isAnchor() and fmt_here.anchorHref().startswith("dropdown://"):
-            target_cursor = self.text_edit._select_entire_anchor_local(c)
-            existing_href = fmt_here.anchorHref()
-        if target_cursor is None:
-            left = QTextCursor(c)
-            if left.movePosition(QTextCursor.Left, QTextCursor.MoveAnchor, 1):
-                f = left.charFormat()
-                if f.isAnchor() and f.anchorHref().startswith("dropdown://"):
-                    target_cursor = self.text_edit._select_entire_anchor_local(left)
-                    existing_href = f.anchorHref()
-        if target_cursor is None and getattr(self, "_pending_dropdown_href", None):
-            found = self._find_anchor_by_href(self._pending_dropdown_href)
-            if found:
-                target_cursor = found
-                existing_href = self._pending_dropdown_href
-        try:
-            data = json.dumps(values, ensure_ascii=False)
-            b64 = base64.urlsafe_b64encode(data.encode("utf-8")).decode("ascii")
-        except Exception:
-            return
-        href = None
-        if existing_href:
-            m = re.match(r"^dropdown://([^?]+)", existing_href)
-            if m:
-                href = f"dropdown://{m.group(1)}?d={b64}"
-        if not href:
-            href = f"dropdown://{uuid.uuid4().hex[:8]}?d={b64}"
-        fmt = QTextCharFormat()
-        fmt.setAnchor(True)
-        fmt.setAnchorHref(href)
-        fmt.setFontUnderline(True)
-        fmt.setForeground(Qt.blue)
-        if target_cursor and target_cursor.hasSelection():
-            self.text_edit.setTextCursor(target_cursor)
-            tc = self.text_edit.textCursor()
-            tc.beginEditBlock()
-            tc.removeSelectedText()
-            tc.insertText(f"{selected} ▾", fmt)
-            tc.endEditBlock()
-            self.text_edit.setTextCursor(tc)
-        else:
-            if c.hasSelection():
-                c.removeSelectedText()
-            c.insertText(f"{selected} ▾", fmt)
-            self.text_edit.setTextCursor(c)
-        self._pending_dropdown_href = None
+        c.insertText(value, fmt)
+        self.text_edit.setTextCursor(c)
         self.record_state_for_undo()
         if hasattr(self, "debounce_timer"):
             self.debounce_timer.start(self.debounce_ms)
@@ -3475,8 +3444,6 @@ class NotesApp(QMainWindow):
     def _insert_dropdown_plain(self, value: str) -> None:
         fmt = self.text_edit.currentCharFormat()
         c = self.text_edit.textCursor()
-        if c.hasSelection():
-            c.removeSelectedText()
         c.insertText(value, fmt)
         self.text_edit.setTextCursor(c)
         self.record_state_for_undo()
@@ -6908,4 +6875,4 @@ if __name__ == "__main__":
     window.show()
     sys.exit(app.exec())
 
-    #UPD 19.08.2025|17:27
+    #UPD 20.08.2025|14:39
