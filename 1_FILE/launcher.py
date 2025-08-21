@@ -123,6 +123,7 @@ from PySide6.QtWidgets import (
     QDockWidget,
     QPushButton, 
     QInputDialog,
+    QToolButton,
 )
 
 if getattr(sys, 'frozen', False):
@@ -2313,7 +2314,6 @@ class NotesApp(QMainWindow):
                     del_btn.clicked.connect(
                         lambda _, path=file_path: self.delete_attachment_from_panel(path)
                     )
-                    )
                     layout.addWidget(del_btn)
                     item_widget.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Maximum)
                     if self.attachments_layout.count() > 0:
@@ -2840,7 +2840,7 @@ class NotesApp(QMainWindow):
         fmt.setFontWeight(QFont.Bold)
         cursor.mergeCharFormat(fmt)
 
-    def insert_bullet_list(self) -> None:
+    def insert_list(self, style: QTextListFormat.Style) -> None:
         cursor = self.text_edit.textCursor()
         if cursor.hasSelection():
             selection_start = cursor.selectionStart()
@@ -2848,23 +2848,19 @@ class NotesApp(QMainWindow):
             cursor.setPosition(selection_start)
             cursor.setPosition(selection_end, QTextCursor.KeepAnchor)
             block_format = QTextListFormat()
-            block_format.setStyle(QTextListFormat.ListDisc)
+            block_format.setStyle(style)
             cursor.createList(block_format)
         else:
-            cursor.insertText("• ")
+            if style == QTextListFormat.ListDisc:
+                cursor.insertText("• ")
+            elif style == QTextListFormat.ListDecimal:
+                cursor.insertText("1. ")
+
+    def insert_bullet_list(self) -> None:
+        self.insert_list(QTextListFormat.ListDisc)
 
     def insert_numbered_list(self) -> None:
-        cursor = self.text_edit.textCursor()
-        if cursor.hasSelection():
-            selection_start = cursor.selectionStart()
-            selection_end = cursor.selectionEnd()
-            cursor.setPosition(selection_start)
-            cursor.setPosition(selection_end, QTextCursor.KeepAnchor)
-            block_format = QTextListFormat()
-            block_format.setStyle(QTextListFormat.ListDecimal)
-            cursor.createList(block_format)
-        else:
-            cursor.insertText("1. ")
+        self.insert_list(QTextListFormat.ListDecimal)
 
     def insert_checkbox(self) -> None:
         cursor = self.text_edit.textCursor()
@@ -3301,7 +3297,7 @@ class NotesApp(QMainWindow):
                 del_btn.setToolTip("Удалить вложение")
                 del_btn.setFixedSize(28, 24)
                 del_btn.clicked.connect(
-                    lambda _, p=file_path, n=note: self.delete_attachment(p, n)
+                    lambda _, path=file_path: self.delete_attachment_from_panel(path)
                 )
                 layout.addWidget(del_btn)
                 self.attachments_layout.addWidget(item_widget)
@@ -3600,8 +3596,18 @@ class NotesApp(QMainWindow):
         add_tool_button("", "H2 - Заголовок 2", lambda: self.apply_heading(2))
         add_tool_button("", "H3 - Заголовок 3", lambda: self.apply_heading(3))
         add_tool_button("", "Aa - Изменить регистр", self.toggle_case)
-        add_tool_button("", "• - Маркированный  список", self.insert_bullet_list)
-        add_tool_button("", "1. - Нумерованный список", self.insert_numbered_list)
+        list_button = QToolButton()
+        list_button.setText("Список")
+        list_button.setToolTip("Вставить список")
+        list_button.setFixedSize(32, 32)
+        list_menu = QMenu(list_button)
+        act_bullet = list_menu.addAction("• Маркированный")
+        act_bullet.triggered.connect(lambda _: self.insert_list(QTextListFormat.ListDisc))
+        act_numbered = list_menu.addAction("1. Нумерованный")
+        act_numbered.triggered.connect(lambda _: self.insert_list(QTextListFormat.ListDecimal))
+        list_button.setMenu(list_menu)
+        list_button.setPopupMode(QToolButton.InstantPopup)
+        flow_layout.addWidget(list_button)
         add_tool_button("", "☑ - Чекбокс", self.insert_checkbox)
         add_tool_button("", "📅 - Таблица", self.insert_table)
         add_tool_button("", "🔗 - Ссылка", self.insert_link)
