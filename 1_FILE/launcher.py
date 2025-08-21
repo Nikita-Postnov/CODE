@@ -528,6 +528,23 @@ class CustomTextEdit(QTextEdit):
 
         menu.exec(event.globalPos())
 
+    def createMimeDataFromSelection(self):
+        md = super().createMimeDataFromSelection()
+        try:
+            txt = md.text()
+            if txt:
+                md.setText(txt.replace("▾", ""))
+        except Exception:
+            pass
+        try:
+            html = md.html()
+            if html:
+                html = html.replace("▾", "").replace("&#9662;", "")
+                md.setHtml(html)
+        except Exception:
+            pass
+        return md
+
     def startDrag(self, supportedActions: Qt.DropActions) -> None:
         cursor = self.textCursor()
         if cursor.charFormat().isImageFormat():
@@ -2226,10 +2243,7 @@ class NotesApp(QMainWindow):
         )
         self.text_edit.blockSignals(False)
         if cursor_pos is not None and anchor_pos is not None:
-            cursor = self.text_edit.textCursor()
-            cursor.setPosition(anchor_pos)
-            cursor.setPosition(cursor_pos, QTextCursor.KeepAnchor)
-            self.text_edit.setTextCursor(cursor)
+            self._safe_restore_cursor(anchor_pos, cursor_pos)
         if hasattr(self, "attachments_layout"):
             for i in reversed(range(self.attachments_layout.count())):
                 widget = self.attachments_layout.itemAt(i).widget()
@@ -2297,9 +2311,8 @@ class NotesApp(QMainWindow):
                     del_btn.setToolTip("Удалить вложение")
                     del_btn.setFixedSize(28, 24)
                     del_btn.clicked.connect(
-                        lambda _, path=file_path: self.delete_attachment_from_panel(
-                            path
-                        )
+                        lambda _, path=file_path: self.delete_attachment_from_panel(path)
+                    )
                     )
                     layout.addWidget(del_btn)
                     item_widget.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Maximum)
@@ -2311,8 +2324,9 @@ class NotesApp(QMainWindow):
             self.attachments_scroll.setVisible(attachments_found)
 
     def _refresh_attachments(self, *_) -> None:
-        if self.current_note:
-            self.show_note_with_attachments(self.current_note)
+        if not self.current_note:
+            return
+        self._rebuild_attachments_panel(self.current_note)
 
     def delete_attachment_from_panel(self, file_path: str) -> None:
         reply = QMessageBox.question(
@@ -2370,7 +2384,20 @@ class NotesApp(QMainWindow):
                 self.text_edit.setHtml(html)
                 self.text_edit.blockSignals(False)
                 self.save_note_quiet()
-                self.show_note_with_attachments(self.current_note)
+                self._rebuild_attachments_panel(self.current_note)
+
+    def _safe_restore_cursor(self, anchor_pos: int, cursor_pos: int) -> None:
+        doc = self.text_edit.document()
+        max_pos = max(0, doc.characterCount() - 1)
+        a = max(0, min(anchor_pos, max_pos))
+        p = max(0, min(cursor_pos, max_pos))
+        cur = self.text_edit.textCursor()
+        if a == p:
+            cur.setPosition(p)
+        else:
+            cur.setPosition(a)
+            cur.setPosition(p, QTextCursor.KeepAnchor)
+        self.text_edit.setTextCursor(cur)
 
     def _atomic_json_dump(path: str, data: dict) -> None:
         tmp = path + ".tmp"
@@ -2474,7 +2501,7 @@ class NotesApp(QMainWindow):
             self, "Файл прикреплён", f"Файл '{filename}' прикреплён к заметке."
         )
         self.save_note_quiet()
-        self.show_note_with_attachments(self.current_note)
+        self._rebuild_attachments_panel(self.current_note)
 
     def attach_file_to_note_external(self, file_path: str) -> None:
         if not self.current_note:
@@ -2515,7 +2542,7 @@ class NotesApp(QMainWindow):
             self, "Файл прикреплён", f"Файл '{filename}' прикреплён к заметке."
         )
         self.save_note_quiet()
-        self.show_note_with_attachments(self.current_note)
+        self._rebuild_attachments_panel(self.current_note)
 
     def align_left(self) -> None:
         self.text_edit.setAlignment(Qt.AlignLeft)
@@ -3212,6 +3239,74 @@ class NotesApp(QMainWindow):
         else:
             self.show_notes_by_tag(selected_tag)
 
+    def _rebuild_attachments_panel(self, note: Note | None) -> None:
+        if hasattr(self, "attachments_layout"):
+            for i in reversed(range(self.attachments_layout.count())):
+                w = self.attachments_layout.itemAt(i).widget()
+                if w:
+                    w.setParent(None)
+                    w.deleteLater()
+        if not note:
+            self.attachments_scroll.setVisible(False)
+            return
+        note_dir = os.path.join(
+            NOTES_DIR,
+            NotesApp.safe_folder_name(note.title, note.uuid, note.timestamp)
+        )
+        attachments_found = False
+        if os.path.isdir(note_dir):
+            ignored_files = {"note.json", ".DS_Store", "Thumbs.db"}
+            ignored_prefixes = ("~$", ".~")
+            ignored_suffixes = ("~", ".tmp", ".temp")
+            for filename in os.listdir(note_dir):
+                if (
+                    filename in ignored_files
+                    or filename.startswith(ignored_prefixes)
+                    or filename.endswith(ignored_suffixes)
+                ):
+                    continue
+                attachments_found = True
+                file_path = os.path.join(note_dir, filename)
+                item_widget = QWidget()
+                layout = QHBoxLayout(item_widget)
+                icon_label = QLabel()
+                if filename.lower().endswith((".png", ".jpg", ".jpeg", ".bmp", ".gif")):
+                    pixmap = QPixmap(file_path)
+                    icon_label.setPixmap(
+                        pixmap.scaled(48, 48, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                    )
+                else:
+                    if os.path.exists(FILE_ICON_PATH):
+                        icon_label.setPixmap(
+                            QPixmap(FILE_ICON_PATH).scaled(
+                                48, 48, Qt.KeepAspectRatio, Qt.SmoothTransformation
+                            )
+                        )
+                    else:
+                        icon_label.setPixmap(
+                            self.style().standardIcon(QStyle.SP_FileIcon).pixmap(32, 32)
+                        )
+                layout.addWidget(icon_label)
+                label = QLabel(filename)
+                label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+                layout.addWidget(label)
+                open_btn = QPushButton("Открыть")
+                open_btn.setToolTip("Открыть вложение")
+                open_btn.setFixedSize(60, 24)
+                open_btn.clicked.connect(
+                    lambda _, path=file_path: QDesktopServices.openUrl(QUrl.fromLocalFile(path))
+                )
+                layout.addWidget(open_btn)
+                del_btn = QPushButton("❌")
+                del_btn.setToolTip("Удалить вложение")
+                del_btn.setFixedSize(28, 24)
+                del_btn.clicked.connect(
+                    lambda _, p=file_path, n=note: self.delete_attachment(p, n)
+                )
+                layout.addWidget(del_btn)
+                self.attachments_layout.addWidget(item_widget)
+        self.attachments_scroll.setVisible(attachments_found)
+
     def insert_link(self) -> None:
         cursor = self.text_edit.textCursor()
         url, ok = QInputDialog.getText(self, "Вставить ссылку", "URL:")
@@ -3482,7 +3577,7 @@ class NotesApp(QMainWindow):
         add_tool_button("", "🔄 - Обновить", self.refresh_notes_list)
         add_tool_button("", "➕ - Новая", self.create_new_note)
         add_tool_button("", "💾 - Сохранить", self.save_note)
-        add_tool_button("📎", "📎 - Приерепть файл", self.attach_file_to_note)
+        add_tool_button("📎", "📎 - Приерепить файл", self.attach_file_to_note)
         add_tool_button("", "🖼 - Картинка", self.attach_file_to_note)
         self.audio_button = QPushButton("🎤")
         self.audio_button.setToolTip("🎤 - Записать аудио")
@@ -3500,14 +3595,14 @@ class NotesApp(QMainWindow):
         add_tool_button("", "← - Расположить слева", self.align_left)
         add_tool_button("", "→← - Центрировать", self.align_center)
         add_tool_button("", "→ - Расположить справа", self.align_right)
-        add_tool_button("", "☰ - По ширине", self.align_justify)
+        add_tool_button("", "≡ - По ширине", self.align_justify)
         add_tool_button("", "H1 - Заголовок 1", lambda: self.apply_heading(1))
         add_tool_button("", "H2 - Заголовок 2", lambda: self.apply_heading(2))
         add_tool_button("", "H3 - Заголовок 3", lambda: self.apply_heading(3))
         add_tool_button("", "Aa - Изменить регистр", self.toggle_case)
-        add_tool_button("", "• - маркированный  список", self.insert_bullet_list)
-        add_tool_button("", "1. - нумерованный список", self.insert_numbered_list)
-        add_tool_button("", "☑ - чекбокс", self.insert_checkbox)
+        add_tool_button("", "• - Маркированный  список", self.insert_bullet_list)
+        add_tool_button("", "1. - Нумерованный список", self.insert_numbered_list)
+        add_tool_button("", "☑ - Чекбокс", self.insert_checkbox)
         add_tool_button("", "📅 - Таблица", self.insert_table)
         add_tool_button("", "🔗 - Ссылка", self.insert_link)
         add_tool_button("", "❌ - Удалить ссылку", self.remove_link)
@@ -3650,6 +3745,11 @@ class NotesApp(QMainWindow):
     def show_note_context_menu(self, position):
         item = self.notes_list.itemAt(position)
         if not item:
+            menu = QMenu(self)
+            create_action = QAction("Создать", self)
+            create_action.triggered.connect(self.create_new_note)
+            menu.addAction(create_action)
+            menu.exec(self.notes_list.viewport().mapToGlobal(position))
             return
         note = item.data(Qt.UserRole)
         menu = QMenu()
@@ -6358,9 +6458,9 @@ class PasswordGeneratorApp:
         self.idle_timer = self.master.after(self.idle_timeout, self.lock_application)
 
     def lock_application(self):
+        self.master.withdraw()
         if not hasattr(self, "password_manager") or not self.password_manager:
             return
-        self.master.withdraw()
         auth_window = tk.Toplevel(self.master)
         auth_window.title("Блокировка")
         auth_window.protocol("WM_DELETE_WINDOW", lambda: None)
@@ -6875,4 +6975,4 @@ if __name__ == "__main__":
     window.show()
     sys.exit(app.exec())
 
-    #UPD 20.08.2025|14:39
+    #UPD 21.08.2025|16L58
