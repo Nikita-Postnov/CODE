@@ -141,6 +141,14 @@ os.makedirs(NOTES_DIR, exist_ok=True)
 os.makedirs(PASSWORDS_DIR, exist_ok=True)
 MAX_HISTORY = 250
 
+# File type extensions used in file dialogs
+IMAGE_EXTENSIONS = [".png", ".jpg", ".jpeg", ".bmp", ".gif"]
+AUDIO_EXTENSIONS = [".wav", ".mp3", ".ogg"]
+ATTACH_FILE_FILTER = (
+    f"Изображения ({' '.join('*' + ext for ext in IMAGE_EXTENSIONS)})"
+    f";;Аудио ({' '.join('*' + ext for ext in AUDIO_EXTENSIONS)})"
+)
+
 def handle_exception(exc_type, exc_value, exc_traceback):
     traceback.print_exception(exc_type, exc_value, exc_traceback)
 sys.excepthook = lambda t, v, tb: print("Uncaught exception:", t, v)
@@ -2264,9 +2272,7 @@ class NotesApp(QMainWindow):
                     file_path = os.path.join(note_dir, filename)
                     item_widget = QWidget()
                     layout = QHBoxLayout(item_widget)
-                    if filename.lower().endswith(
-                        (".png", ".jpg", ".jpeg", ".bmp", ".gif")
-                    ):
+                    if filename.lower().endswith(tuple(IMAGE_EXTENSIONS)):
                         pixmap = QPixmap(file_path)
                         icon_label = QLabel()
                         icon_label.setPixmap(
@@ -2331,7 +2337,7 @@ class NotesApp(QMainWindow):
         )
         if reply == QMessageBox.Yes:
             b64_data = None
-            if file_path.lower().endswith((".png", ".jpg", ".jpeg", ".bmp", ".gif")):
+            if file_path.lower().endswith(tuple(IMAGE_EXTENSIONS)):
                 try:
                     pixmap = QPixmap(file_path)
                     if not pixmap.isNull():
@@ -2457,7 +2463,12 @@ class NotesApp(QMainWindow):
     def attach_file_to_note(self) -> None:
         if not self.current_note:
             return
-        file_path, _ = QFileDialog.getOpenFileName(self, "Прикрепить файл")
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Прикрепить файл",
+            "",
+            ATTACH_FILE_FILTER,
+        )
         if not file_path:
             return
         note_dir = os.path.join(NOTES_DIR, NotesApp.safe_folder_name(self.current_note.title, self.current_note.uuid, self.current_note.timestamp))
@@ -2469,7 +2480,7 @@ class NotesApp(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "Ошибка", f"Не удалось скопировать файл: {e}")
             return
-        is_image = filename.lower().endswith((".png", ".jpg", ".jpeg", ".bmp", ".gif"))
+        is_image = filename.lower().endswith(tuple(IMAGE_EXTENSIONS))
         cursor = self.text_edit.textCursor()
         self.text_edit.setTextCursor(cursor)
         if is_image:
@@ -2510,7 +2521,7 @@ class NotesApp(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "Ошибка", f"Не удалось скопировать файл: {e}")
             return
-        is_image = filename.lower().endswith((".png", ".jpg", ".jpeg", ".bmp", ".gif"))
+        is_image = filename.lower().endswith(tuple(IMAGE_EXTENSIONS))
         cursor = self.text_edit.textCursor()
         self.text_edit.setTextCursor(cursor)
         if is_image:
@@ -3260,7 +3271,7 @@ class NotesApp(QMainWindow):
                 item_widget = QWidget()
                 layout = QHBoxLayout(item_widget)
                 icon_label = QLabel()
-                if filename.lower().endswith((".png", ".jpg", ".jpeg", ".bmp", ".gif")):
+                if filename.lower().endswith(tuple(IMAGE_EXTENSIONS)):
                     pixmap = QPixmap(file_path)
                     icon_label.setPixmap(
                         pixmap.scaled(48, 48, Qt.KeepAspectRatio, Qt.SmoothTransformation)
@@ -4775,7 +4786,7 @@ class NotesApp(QMainWindow):
                 filename = os.path.basename(file_path)
                 dest = os.path.join(note_dir, filename)
                 shutil.copy(file_path, dest)
-                if filename.lower().endswith((".png", ".jpg", ".jpeg", ".bmp", ".gif")):
+                if filename.lower().endswith(tuple(IMAGE_EXTENSIONS)):
                     pixmap = QPixmap(dest)
                     if not pixmap.isNull():
                         buffer = QBuffer()
