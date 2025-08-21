@@ -167,6 +167,11 @@ EXAMPLE_NUMBERS = create_list(1, 2, 3, 4)
 EXAMPLE_WORDS = create_list("alpha", "beta", "gamma")
 EXAMPLE_MIXED = create_list("hello", 42, 3.14)
 
+def create_dropdown_combo(items, parent=None):
+    combo = QComboBox(parent)
+    combo.addItems([str(i) for i in items])
+    return combo
+
 def handle_exception(exc_type, exc_value, exc_traceback):
     traceback.print_exception(exc_type, exc_value, exc_traceback)
 sys.excepthook = lambda t, v, tb: print("Uncaught exception:", t, v)
