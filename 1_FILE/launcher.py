@@ -149,17 +149,13 @@ def copy_default_icons():
     app_root = os.path.dirname(sys.executable) if getattr(sys, "frozen", False) \
                else os.path.abspath(os.path.dirname(__file__))
     src_root = os.path.join(app_root, "Data")
-    pairs = [
-        ("icon.ico", ICON_PATH),
-        ("tray_icon.ico", TRAY_ICON_PATH),
-        ("file.ico", FILE_ICON_PATH),
-    ]
-    for name, dst in pairs:
+    icon_names = ["icon.ico", "tray_icon.ico", "file.ico"]
+    destination_paths = [ICON_PATH, TRAY_ICON_PATH, FILE_ICON_PATH]
+    for name, dst in zip(icon_names, destination_paths):
         src = os.path.join(src_root, name)
         if os.path.isfile(src) and not os.path.isfile(dst):
             os.makedirs(os.path.dirname(dst), exist_ok=True)
             shutil.copy(src, dst)
-
 copy_default_icons()
 
 def paste_from_clipboard(widget):
@@ -621,9 +617,9 @@ class Note:
         note = Note(
             title=data.get("title", ""),
             content=data.get("content", ""),
-            tags=data.get("tags", []),
+            tags=list(data.get("tags", [])),
             favorite=data.get("favorite", False),
-            history=data.get("history", []),
+            history=list(data.get("history", [])),
             timestamp=data.get("timestamp"),
             reminder=data.get("reminder"),
             uuid=data.get("uuid"),
@@ -636,7 +632,7 @@ class Note:
         note.password_manager_visible = bool(data.get("password_manager_visible", False))
         note.rdp_1c8_visible = bool(data.get("rdp_1c8_visible", False))
         note.rdp_1c8_removed = bool(data.get("rdp_1c8_removed", False))
-        note.custom_fields = data.get("custom_fields", [])
+        note.custom_fields = list(data.get("custom_fields", []))
         return note
 
 
@@ -5148,32 +5144,31 @@ class PasswordGenerator:
             self.load_config()
 
     def generate_password(self):
-        char_sets = []
+        char_sets: list[list[str]] = []
         if self.use_uppercase:
-            char_sets.append(string.ascii_uppercase)
+            char_sets.append(list(string.ascii_uppercase))
         if self.use_lowercase:
-            char_sets.append(string.ascii_lowercase)
+            char_sets.append(list(string.ascii_lowercase))
         if self.use_digits:
-            char_sets.append(string.digits)
+            char_sets.append(list(string.digits))
         if self.use_symbols:
-            char_sets.append(string.punctuation)
+            char_sets.append(list(string.punctuation))
         if not char_sets:
             return ""
-        charset = "".join(char_sets)
-        for char in self.excluded_chars:
-            charset = charset.replace(char, "")
+        charset = [c for subset in char_sets for c in subset]
+        charset = [c for c in charset if c not in self.excluded_chars]
         if not charset:
             return ""
-        password = []
+        password_chars: list[str] = []
         for char_set in char_sets:
-            valid_chars = "".join(c for c in char_set if c not in self.excluded_chars)
+            valid_chars = [c for c in char_set if c not in self.excluded_chars]
             if valid_chars:
-                password.append(random.choice(valid_chars))
-        remaining_length = max(0, self.password_length - len(password))
+                password_chars.append(random.choice(valid_chars))
+        remaining_length = max(0, self.password_length - len(password_chars))
         if remaining_length > 0:
-            password += random.choices(charset, k=remaining_length)
-        random.shuffle(password)
-        return "".join(password)
+            password_chars += random.choices(charset, k=remaining_length)
+        random.shuffle(password_chars)
+        return "".join(password_chars)
 
     def evaluate_password_strength(self, password):
         score = 0
