@@ -167,9 +167,15 @@ EXAMPLE_NUMBERS = create_list(1, 2, 3, 4)
 EXAMPLE_WORDS = create_list("alpha", "beta", "gamma")
 EXAMPLE_MIXED = create_list("hello", 42, 3.14)
 
-def create_dropdown_combo(items, parent=None):
+def create_dropdown_combo(*items, parent=None):
     combo = QComboBox(parent)
-    combo.addItems([str(i) for i in items])
+    flat_items = []
+    for item in items:
+        if isinstance(item, (list, tuple, set)):
+            flat_items.extend(item)
+        else:
+            flat_items.append(item)
+    combo.addItems([str(i) for i in flat_items])
     return combo
 
 def handle_exception(exc_type, exc_value, exc_traceback):
