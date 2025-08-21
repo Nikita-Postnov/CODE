@@ -140,14 +140,32 @@ os.makedirs(DATA_DIR, exist_ok=True)
 os.makedirs(NOTES_DIR, exist_ok=True)
 os.makedirs(PASSWORDS_DIR, exist_ok=True)
 MAX_HISTORY = 250
-
-# File type extensions used in file dialogs
 IMAGE_EXTENSIONS = [".png", ".jpg", ".jpeg", ".bmp", ".gif"]
 AUDIO_EXTENSIONS = [".wav", ".mp3", ".ogg"]
 ATTACH_FILE_FILTER = (
     f"Изображения ({' '.join('*' + ext for ext in IMAGE_EXTENSIONS)})"
     f";;Аудио ({' '.join('*' + ext for ext in AUDIO_EXTENSIONS)})"
 )
+
+def create_list(*items):
+    """Return a new list containing the provided ``items``.
+
+    This helper makes it easy to define lists with arbitrary elements while
+    keeping the syntax concise.  It is primarily intended for situations where
+    multiple lists with different item types are needed.
+
+    Examples
+    --------
+    >>> numbers = create_list(1, 2, 3)
+    >>> words = create_list("foo", "bar")
+    >>> mixed = create_list(1, "two", 3.0)
+    """
+
+    return list(items)
+
+EXAMPLE_NUMBERS = create_list(1, 2, 3, 4)
+EXAMPLE_WORDS = create_list("alpha", "beta", "gamma")
+EXAMPLE_MIXED = create_list("hello", 42, 3.14)
 
 def handle_exception(exc_type, exc_value, exc_traceback):
     traceback.print_exception(exc_type, exc_value, exc_traceback)
@@ -3601,18 +3619,6 @@ class NotesApp(QMainWindow):
         add_tool_button("", "H2 - Заголовок 2", lambda: self.apply_heading(2))
         add_tool_button("", "H3 - Заголовок 3", lambda: self.apply_heading(3))
         add_tool_button("", "Aa - Изменить регистр", self.toggle_case)
-        list_button = QToolButton()
-        list_button.setText("Список")
-        list_button.setToolTip("Вставить список")
-        list_button.setFixedSize(32, 32)
-        list_menu = QMenu(list_button)
-        act_bullet = list_menu.addAction("• Маркированный")
-        act_bullet.triggered.connect(lambda _: self.insert_list(QTextListFormat.ListDisc))
-        act_numbered = list_menu.addAction("1. Нумерованный")
-        act_numbered.triggered.connect(lambda _: self.insert_list(QTextListFormat.ListDecimal))
-        list_button.setMenu(list_menu)
-        list_button.setPopupMode(QToolButton.InstantPopup)
-        flow_layout.addWidget(list_button)
         add_tool_button("", "☑ - Чекбокс", self.insert_checkbox)
         add_tool_button("", "📅 - Таблица", self.insert_table)
         add_tool_button("", "🔗 - Ссылка", self.insert_link)
