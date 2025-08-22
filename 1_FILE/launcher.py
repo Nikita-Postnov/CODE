@@ -29,7 +29,7 @@ import shutil
 import datetime
 import sounddevice as sd
 import importlib.util
-from urllib.parse import quote
+from urllib.parse import quote, unquote
 from typing import Callable
 from PySide6.QtCore import (
     Qt,
@@ -2190,18 +2190,49 @@ class NotesApp(QMainWindow):
 
     def _ensure_dd_map(self) -> None:
         if not hasattr(self, "_dropdown_tokens"):
-            self._dropdown_tokens = {}  # id -> {"value": str}
+            # id -> {"value": str, "values": list[str]}
+            self._dropdown_tokens = {}
 
-    def _insert_dropdown_token(self, value: str, dd_id: str | None = None) -> str:
+    def _get_dropdown_token_info(self, dd_id: str) -> dict | None:
+        """Retrieve dropdown token info, populating cache from the document if needed."""
+        self._ensure_dd_map()
+        if dd_id in self._dropdown_tokens:
+            return self._dropdown_tokens[dd_id]
+        href = f'dropdown://{re.escape(dd_id)}'
+        html = self.text_edit.toHtml()
+        match = re.search(rf'<a[^>]*href="{href}"[^>]*>(.*?)</a>', html, flags=re.S)
+        if not match:
+            return None
+        full_tag = match.group(0)
+        inner = match.group(1)
+        title_match = re.search(r'title="([^"]*)"', full_tag)
+        if title_match:
+            try:
+                vals = json.loads(unquote(title_match.group(1)))
+            except Exception:
+                vals = self._load_dropdown_values()
+        else:
+            vals = self._load_dropdown_values()
+        text = re.sub(r'<[^>]+>', '', inner)
+        text = text.replace('▼', '').replace('&#9662;', '').strip()
+        info = {"value": text, "values": vals}
+        self._dropdown_tokens[dd_id] = info
+        return info
+
+    def _insert_dropdown_token(self, value: str, dd_id: str | None = None, values: list[str] | None = None) -> str:
         self._ensure_dd_map()
         if dd_id is None:
             dd_id = uuid.uuid4().hex[:8]
-        self._dropdown_tokens[dd_id] = {"value": value}
+        if values is None:
+            values = self._load_dropdown_values()
+        self._dropdown_tokens[dd_id] = {"value": value, "values": list(values)}
         bg, fg, br = self._dropdown_palette()
         inner = (f'<span style="display:inline-block; padding:2px 8px; '
                 f'border-radius:6px; border:1px solid {br}; '
                 f'background:{bg}; color:{fg};">{self._html_escape(value)} &#9662;</span>')
-        html = f'<a href="dropdown://{dd_id}" style="text-decoration:none;">{inner}</a>&nbsp;'
+        encoded = quote(json.dumps(values, ensure_ascii=False))
+        html = (f'<a href="dropdown://{dd_id}" title="{encoded}" '
+                f'style="text-decoration:none;">{inner}</a>&nbsp;')
         c = self.text_edit.textCursor()
         c.insertHtml(html)
         self.text_edit.setTextCursor(c)
@@ -2211,17 +2242,23 @@ class NotesApp(QMainWindow):
         return dd_id
 
     def _update_dropdown_token(self, dd_id: str, new_value: str) -> None:
-        self._ensure_dd_map()
-        self._dropdown_tokens.get(dd_id, {})["value"] = new_value
+        info = self._get_dropdown_token_info(dd_id)
+        if not info:
+            return
+        info["value"] = new_value
+        values = info.get("values", [])
         bg, fg, br = self._dropdown_palette()
         inner = (f'<span style="display:inline-block; padding:2px 8px; '
                 f'border-radius:6px; border:1px solid {br}; '
                 f'background:{bg}; color:{fg};">{self._html_escape(new_value)} &#9662;</span>')
 
         href = f'dropdown://{re.escape(dd_id)}'
+        encoded = quote(json.dumps(values, ensure_ascii=False))
+        new_anchor = (f'<a href="dropdown://{dd_id}" title="{encoded}" '
+                      f'style="text-decoration:none;">{inner}</a>')
         html = self.text_edit.toHtml()
-        new_html = re.sub(rf'(<a[^>]+href="{href}"[^>]*>)(.*?)(</a>)',
-                        r'\1' + inner + r'\3', html, flags=re.S)
+        new_html = re.sub(rf'<a[^>]*href="{href}"[^>]*>.*?</a>',
+                          new_anchor, html, flags=re.S)
         self.text_edit.blockSignals(True)
         self.text_edit.setHtml(new_html)
         self.text_edit.blockSignals(False)
@@ -2230,12 +2267,19 @@ class NotesApp(QMainWindow):
             self.debounce_timer.start(self.debounce_ms)
 
     def _edit_values_and_reopen(self, dd_id: str) -> None:
-        vals = self._open_dropdown_values_editor()
+        info = self._get_dropdown_token_info(dd_id)
+        if not info:
+            return
+        vals = self._open_dropdown_values_editor(info.get("values"))
         if vals is not None:
+            info["values"] = vals
+            # Refresh HTML to store new list
+            self._update_dropdown_token(dd_id, info.get("value", ""))
             self.show_dropdown_menu_for_token(dd_id)
 
     def show_dropdown_menu_for_token(self, dd_id: str, global_pos=None) -> None:
-        values = self._load_dropdown_values()
+        info = self._get_dropdown_token_info(dd_id)
+        values = info.get("values", self._load_dropdown_values()) if info else self._load_dropdown_values()
         menu = QMenu(self)
         menu.setStyleSheet(CUSTOM_MENU_STYLE)
         for v in values:
@@ -3460,25 +3504,28 @@ class NotesApp(QMainWindow):
             return
         values = self._load_dropdown_values()
         initial = values[0] if values else "Выбрать…"
-        dd_id = self._insert_dropdown_token(initial)
+        dd_id = self._insert_dropdown_token(initial, values=values)
         cr = self.text_edit.cursorRect(self.text_edit.textCursor())
         pos = self.text_edit.viewport().mapToGlobal(cr.bottomLeft())
         self.show_dropdown_menu_for_token(dd_id, pos)
 
-    def _open_dropdown_values_editor(self) -> list[str] | None:
+    def _open_dropdown_values_editor(self, initial_values: list[str] | None = None) -> list[str] | None:
         dlg = QDialog(self)
         dlg.setWindowTitle("Значения выпадающего списка")
         v = QVBoxLayout(dlg)
         lst = QListWidget(dlg)
         v.addWidget(lst)
-        try:
-            last = json.loads(self.settings.value("dropdown_values", "[]"))
-            if not isinstance(last, list):
+        if initial_values is None:
+            try:
+                last = json.loads(self.settings.value("dropdown_values", "[]"))
+                if not isinstance(last, list):
+                    last = []
+            except Exception:
                 last = []
-        except Exception:
-            last = []
-        if not last:
-            last = ["Вариант 1", "Вариант 2", "Вариант 3"]
+            if not last:
+                last = ["Вариант 1", "Вариант 2", "Вариант 3"]
+        else:
+            last = list(initial_values) if initial_values else ["Вариант 1", "Вариант 2", "Вариант 3"]
         for s in last:
             lst.addItem(str(s))
         btns_line = QHBoxLayout()
@@ -3540,7 +3587,8 @@ class NotesApp(QMainWindow):
         dlg.move(fg.topLeft())
         if dlg.exec() == QDialog.Accepted:
             values = [lst.item(i).text().strip() for i in range(lst.count()) if lst.item(i).text().strip()]
-            self.settings.setValue("dropdown_values", json.dumps(values, ensure_ascii=False))
+            if initial_values is None:
+                self.settings.setValue("dropdown_values", json.dumps(values, ensure_ascii=False))
             return values
         return None
 
@@ -3617,7 +3665,6 @@ class NotesApp(QMainWindow):
         add_tool_button("", "➕ - Новая", self.create_new_note)
         add_tool_button("", "💾 - Сохранить", self.save_note)
         add_tool_button("📎", "📎 - Приерепить файл", self.attach_file_to_note)
-        add_tool_button("", "🖼 - Картинка", self.attach_file_to_note)
         self.audio_button = QPushButton("🎤")
         self.audio_button.setToolTip("🎤 - Записать аудио")
         self.audio_button.setFixedSize(32, 32)
@@ -3632,13 +3679,15 @@ class NotesApp(QMainWindow):
         add_tool_button("", "🌈 - Цвет текста", self.change_text_color)
         add_tool_button("", "🅰️ - Фон текста", self.change_background_color)
         add_tool_button("", "← - Расположить слева", self.align_left)
-        add_tool_button("", "→← - Центрировать", self.align_center)
+        add_tool_button("", "→← - Расположить по центру", self.align_center)
         add_tool_button("", "→ - Расположить справа", self.align_right)
         add_tool_button("", "≡ - По ширине", self.align_justify)
         add_tool_button("", "H1 - Заголовок 1", lambda: self.apply_heading(1))
         add_tool_button("", "H2 - Заголовок 2", lambda: self.apply_heading(2))
         add_tool_button("", "H3 - Заголовок 3", lambda: self.apply_heading(3))
         add_tool_button("", "Aa - Изменить регистр", self.toggle_case)
+        add_tool_button("", "• - Маркированный  список", self.insert_bullet_list)
+        add_tool_button("", "1. - Нумерованный список", self.insert_numbered_list)
         add_tool_button("", "☑ - Чекбокс", self.insert_checkbox)
         add_tool_button("", "📅 - Таблица", self.insert_table)
         add_tool_button("", "🔗 - Ссылка", self.insert_link)
@@ -7011,4 +7060,4 @@ if __name__ == "__main__":
     window.show()
     sys.exit(app.exec())
 
-    #UPD 21.08.2025|16L58
+    #UPD 22.08.2025|12:05
