@@ -168,7 +168,13 @@ class SpellCheckHighlighter(QSyntaxHighlighter):
         self.err_fmt = QTextCharFormat()
         self.err_fmt.setUnderlineColor(Qt.red)
         self.err_fmt.setUnderlineStyle(QTextCharFormat.SpellCheckUnderline)
-        self.spell_checker = SpellChecker() if SpellChecker is not None else None
+        if SpellChecker is not None:
+            try:
+                self.spell_checker = SpellChecker(language="ru")
+            except Exception:
+                self.spell_checker = SpellChecker()
+        else:
+            self.spell_checker = None
 
     def highlightBlock(self, text: str) -> None:
         if not self.spell_checker:
@@ -591,9 +597,13 @@ class CustomTextEdit(QTextEdit):
         word_cursor = self.cursorForPosition(event.pos())
         word_cursor.select(QTextCursor.WordUnderCursor)
         word = word_cursor.selectedText()
-        if word and SpellChecker:
-            spell = SpellChecker()
-            suggestions = sorted(spell.candidates(word))
+        if word and SpellChecker is not None:
+            try:
+                spell = SpellChecker(language="ru")
+            except Exception:
+                spell = SpellChecker()
+            suggestions_iter = spell.candidates(word)
+            suggestions = sorted(suggestions_iter) if suggestions_iter else []
             if suggestions:
                 menu.addSeparator()
                 for suggestion in suggestions[:5]:
@@ -602,7 +612,6 @@ class CustomTextEdit(QTextEdit):
                         lambda checked=False, s=suggestion, c=QTextCursor(word_cursor): self.replace_word(c, s)
                     )
                     menu.addAction(action)
-
         menu.exec(event.globalPos())
 
     def createMimeDataFromSelection(self):
@@ -7161,4 +7170,4 @@ if __name__ == "__main__":
     window.show()
     sys.exit(app.exec())
 
-    #UPD 22.08.2025|20:31
+    #UPD 22.08.2025|20:44
