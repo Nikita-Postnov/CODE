@@ -168,10 +168,19 @@ class SpellCheckHighlighter(QSyntaxHighlighter):
         self.err_fmt = QTextCharFormat()
         self.err_fmt.setUnderlineColor(Qt.red)
         self.err_fmt.setUnderlineStyle(QTextCharFormat.SpellCheckUnderline)
+        self.spell_checker = SpellChecker() if SpellChecker is not None else None
 
     def highlightBlock(self, text: str) -> None:
-        for match in re.finditer(r"[A-Za-zА-Яа-яЁё']+", text):
-            self.setFormat(match.start(), match.end() - match.start(), self.err_fmt)
+        if not self.spell_checker:
+            return
+        matches = list(re.finditer(r"[A-Za-zА-Яа-яЁё']+", text))
+        if not matches:
+            return
+        words = [m.group().lower() for m in matches]
+        misspelled = self.spell_checker.unknown(words)
+        for match in matches:
+            if match.group().lower() in misspelled:
+                self.setFormat(match.start(), match.end() - match.start(), self.err_fmt)
 
 def create_dropdown_combo(*items, parent=None):
 
