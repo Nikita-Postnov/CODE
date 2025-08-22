@@ -209,8 +209,7 @@ class SpellCheckHighlighter(QSyntaxHighlighter):
                 f.write(w + "\n")
         except Exception:
             return
-        self.spell_checker.word_frequency.add(w)
-        self.user_words.add(w)
+        self._load_user_dictionary()
         self.rehighlight()
 
     def _reload_user_dictionary(self, path: str) -> None:
@@ -7238,4 +7237,4 @@ if __name__ == "__main__":
     window.show()
     sys.exit(app.exec())
 
-    #UPD 22.08.2025|23:13
+    #UPD 22.08.2025|23:23
