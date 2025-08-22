@@ -187,14 +187,25 @@ class SpellCheckHighlighter(QSyntaxHighlighter):
             self.spell_checker = None
 
     def _load_user_dictionary(self) -> None:
+        """Load the custom dictionary and update the spell checker.
+
+        The previous implementation attempted to add each word using
+        ``WordFrequency.add``.  However, ``pyspellchecker`` exposes the
+        ``load_words`` API for bulk loading custom words, and using ``add``
+        does not reliably register the new vocabulary.  As a result, words
+        appeared to be checked correctly during a session but were not
+        persisted in the dictionary file.  By collecting all words and
+        loading them in a single call we ensure both persistence and correct
+        spell checking behaviour.
+        """
+
         self.user_words = set()
         try:
             with open(USER_DICT_PATH, "r", encoding="utf-8") as f:
-                for line in f:
-                    word = line.strip().lower()
-                    if word:
-                        self.spell_checker.word_frequency.add(word)
-                        self.user_words.add(word)
+                words = [line.strip().lower() for line in f if line.strip()]
+            self.user_words.update(words)
+            if self.spell_checker and words:
+                self.spell_checker.word_frequency.load_words(words)
         except Exception:
             pass
 
@@ -209,7 +220,11 @@ class SpellCheckHighlighter(QSyntaxHighlighter):
                 f.write(w + "\n")
         except Exception:
             return
-        self._load_user_dictionary()
+        self.user_words.add(w)
+        try:
+            self.spell_checker.word_frequency.load_words([w])
+        except Exception:
+            pass
         self.rehighlight()
 
     def _reload_user_dictionary(self, path: str) -> None:
@@ -7237,4 +7252,4 @@ if __name__ == "__main__":
     window.show()
     sys.exit(app.exec())
 
-    #UPD 22.08.2025|23:26
+    #UPD 22.08.2025|23:33
