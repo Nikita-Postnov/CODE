@@ -215,8 +215,10 @@ class SpellCheckHighlighter(QSyntaxHighlighter):
             return
         words = [m.group().lower() for m in matches]
         misspelled = self.spell_checker.unknown(words)
+        misspelled -= getattr(self, "user_words", set())
         for match in matches:
-            if match.group().lower() in misspelled:
+            word = match.group().lower()
+            if word in misspelled:
                 self.setFormat(match.start(), match.end() - match.start(), self.err_fmt)
 
 def create_dropdown_combo(*items, parent=None):
@@ -631,6 +633,13 @@ class CustomTextEdit(QTextEdit):
         select_all_action.setShortcut("Ctrl+A")
         select_all_action.triggered.connect(self.selectAll)
         menu.addAction(select_all_action)
+
+        menu.addSeparator()
+        view_dict_action = QAction("View Dictionary", self)
+        view_dict_action.triggered.connect(
+            lambda checked=False: QDesktopServices.openUrl(QUrl.fromLocalFile(USER_DICT_PATH))
+        )
+        menu.addAction(view_dict_action)
 
         word_cursor = self.cursorForPosition(event.pos())
         word_cursor.select(QTextCursor.WordUnderCursor)
@@ -7213,4 +7222,4 @@ if __name__ == "__main__":
     window.show()
     sys.exit(app.exec())
 
-    #UPD 22.08.2025|22:47
+    #UPD 22.08.2025|22:56
