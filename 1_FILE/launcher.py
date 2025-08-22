@@ -639,8 +639,9 @@ class CustomTextEdit(QTextEdit):
             highlighter = getattr(self.parent(), "spell_highlighter", None)
             spell = highlighter.spell_checker if highlighter else None
             if spell:
-                if word.lower() in spell.unknown([word]):
-                    suggestions = sorted(spell.candidates(word))
+                lower_word = word.lower()
+                if lower_word in spell.unknown([lower_word]):
+                    suggestions = sorted(spell.candidates(lower_word))
                     menu.addSeparator()
                     add_dict_action = QAction("Add to Dictionary", self)
                     add_dict_action.triggered.connect(lambda w=word: self.add_to_dictionary(w))
