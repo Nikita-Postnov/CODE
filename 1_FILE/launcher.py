@@ -165,20 +165,13 @@ class SpellCheckHighlighter(QSyntaxHighlighter):
 
     def __init__(self, parent):
         super().__init__(parent)
-        self.spell = SpellChecker() if SpellChecker else None
         self.err_fmt = QTextCharFormat()
         self.err_fmt.setUnderlineColor(Qt.red)
         self.err_fmt.setUnderlineStyle(QTextCharFormat.SpellCheckUnderline)
 
     def highlightBlock(self, text: str) -> None:
-        if not self.spell:
-            return
-        words = re.findall(r"[A-Za-zА-Яа-яЁё']+", text)
-        misspelled = self.spell.unknown(w.lower() for w in words)
         for match in re.finditer(r"[A-Za-zА-Яа-яЁё']+", text):
-            if match.group().lower() in misspelled:
-                self.setFormat(match.start(), match.end() - match.start(), self.err_fmt)
-
+            self.setFormat(match.start(), match.end() - match.start(), self.err_fmt)
 
 def create_dropdown_combo(*items, parent=None):
 
@@ -538,6 +531,12 @@ class CustomTextEdit(QTextEdit):
         if cursor.hasSelection():
             cursor.removeSelectedText()
 
+    def replace_word(self, cursor: QTextCursor, new_word: str) -> None:
+        cursor.beginEditBlock()
+        cursor.removeSelectedText()
+        cursor.insertText(new_word)
+        cursor.endEditBlock()
+
     def contextMenuEvent(self, event: QContextMenuEvent) -> None:
         menu = QMenu(self)
         menu.setStyleSheet(CUSTOM_MENU_STYLE)
@@ -579,6 +578,21 @@ class CustomTextEdit(QTextEdit):
         select_all_action.setShortcut("Ctrl+A")
         select_all_action.triggered.connect(self.selectAll)
         menu.addAction(select_all_action)
+
+        word_cursor = self.cursorForPosition(event.pos())
+        word_cursor.select(QTextCursor.WordUnderCursor)
+        word = word_cursor.selectedText()
+        if word and SpellChecker:
+            spell = SpellChecker()
+            suggestions = sorted(spell.candidates(word))
+            if suggestions:
+                menu.addSeparator()
+                for suggestion in suggestions[:5]:
+                    action = QAction(suggestion, self)
+                    action.triggered.connect(
+                        lambda checked=False, s=suggestion, c=QTextCursor(word_cursor): self.replace_word(c, s)
+                    )
+                    menu.addAction(action)
 
         menu.exec(event.globalPos())
 
@@ -7138,4 +7152,4 @@ if __name__ == "__main__":
     window.show()
     sys.exit(app.exec())
 
-    #UPD 22.08.2025|16:20
+    #UPD 22.08.2025|20:31
