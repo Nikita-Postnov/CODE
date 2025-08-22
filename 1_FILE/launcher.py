@@ -6,10 +6,10 @@ import string
 import random
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
-import webbrowser
 import wave
 import traceback
 import base64
+
 try:
     import pyperclip
 except ImportError:
@@ -20,6 +20,7 @@ from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from cryptography.hazmat.backends import default_backend
 from PySide6.QtPrintSupport import QPrinter
 from docx import Document
+
 try:
     from spellchecker import SpellChecker
 except ImportError:
@@ -130,7 +131,7 @@ from PySide6.QtWidgets import (
     QFrame,
 )
 
-if getattr(sys, 'frozen', False):
+if getattr(sys, "frozen", False):
     APPDIR = os.path.dirname(sys.executable)
 else:
     APPDIR = os.path.abspath(os.path.dirname(__file__))
@@ -157,8 +158,10 @@ ATTACH_FILE_FILTER = (
     f";;Аудио ({' '.join('*' + ext for ext in AUDIO_EXTENSIONS)})"
 )
 
+
 def create_list(*items):
     return list(items)
+
 
 EXAMPLE_NUMBERS = create_list(1, 2, 3, 4)
 EXAMPLE_WORDS = create_list("alpha", "beta", "gamma")
@@ -252,6 +255,7 @@ class SpellCheckHighlighter(QSyntaxHighlighter):
             if word in misspelled:
                 self.setFormat(match.start(), match.end() - match.start(), self.err_fmt)
 
+
 def create_dropdown_combo(*items, parent=None):
 
     combo = QComboBox(parent)
@@ -269,16 +273,24 @@ def create_dropdown_combo(*items, parent=None):
         if text and combo.findText(text) == -1:
             combo.addItem(text)
             combo.setCurrentText(text)
+
     combo.lineEdit().editingFinished.connect(_commit_new_item)
     return combo
 
+
 def handle_exception(exc_type, exc_value, exc_traceback):
     traceback.print_exception(exc_type, exc_value, exc_traceback)
+
+
 sys.excepthook = lambda t, v, tb: print("Uncaught exception:", t, v)
 
+
 def copy_default_icons():
-    app_root = os.path.dirname(sys.executable) if getattr(sys, "frozen", False) \
-               else os.path.abspath(os.path.dirname(__file__))
+    app_root = (
+        os.path.dirname(sys.executable)
+        if getattr(sys, "frozen", False)
+        else os.path.abspath(os.path.dirname(__file__))
+    )
     src_root = os.path.join(app_root, "Data")
     icon_names = ["icon.ico", "tray_icon.ico", "file.ico"]
     destination_paths = [ICON_PATH, TRAY_ICON_PATH, FILE_ICON_PATH]
@@ -287,7 +299,10 @@ def copy_default_icons():
         if os.path.isfile(src) and not os.path.isfile(dst):
             os.makedirs(os.path.dirname(dst), exist_ok=True)
             shutil.copy(src, dst)
+
+
 copy_default_icons()
+
 
 def paste_from_clipboard(widget):
     if pyperclip is None:
@@ -306,6 +321,7 @@ def paste_from_clipboard(widget):
             widget.insert(tk.INSERT, text)
     except (tk.TclError, pyperclip.PyperclipException) as exc:
         messagebox.showerror("Ошибка", f"Не удалось вставить из буфера: {exc}")
+
 
 CUSTOM_MENU_STYLE = """
 QMenu {
@@ -333,6 +349,7 @@ QMenu::separator {
     margin: 8px 0;
 }
 """
+
 
 class AudioRecorderThread(QThread):
     recording_finished = Signal(str)
@@ -550,7 +567,9 @@ class CustomTextEdit(QTextEdit):
                 if image_path.startswith("Data:image"):
                     header, b64data = image_path.split(",", 1)
                     suffix = ".png" if "png" in header else ".jpg"
-                    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmpfile:
+                    with tempfile.NamedTemporaryFile(
+                        delete=False, suffix=suffix
+                    ) as tmpfile:
                         tmpfile.write(base64.b64decode(b64data))
                         tmpfile_path = tmpfile.name
                     QDesktopServices.openUrl(QUrl.fromLocalFile(tmpfile_path))
@@ -668,7 +687,9 @@ class CustomTextEdit(QTextEdit):
         menu.addSeparator()
         view_dict_action = QAction("View Dictionary", self)
         view_dict_action.triggered.connect(
-            lambda checked=False: QDesktopServices.openUrl(QUrl.fromLocalFile(USER_DICT_PATH))
+            lambda checked=False: QDesktopServices.openUrl(
+                QUrl.fromLocalFile(USER_DICT_PATH)
+            )
         )
         menu.addAction(view_dict_action)
 
@@ -692,7 +713,9 @@ class CustomTextEdit(QTextEdit):
             for suggestion in suggestions:
                 action = QAction(suggestion, self)
                 action.triggered.connect(
-                    lambda checked=False, s=suggestion, c=QTextCursor(word_cursor): self.replace_word(c, s)
+                    lambda checked=False, s=suggestion, c=QTextCursor(
+                        word_cursor
+                    ): self.replace_word(c, s)
                 )
                 menu.addAction(action)
         menu.exec(event.globalPos())
@@ -803,7 +826,9 @@ class Note:
         note.history_index = data.get("history_index", len(note.history) - 1)
         note.password_manager = data.get("password_manager", "")
         note.rdp_1c8 = data.get("rdp_1c8", "")
-        note.password_manager_visible = bool(data.get("password_manager_visible", False))
+        note.password_manager_visible = bool(
+            data.get("password_manager_visible", False)
+        )
         note.rdp_1c8_visible = bool(data.get("rdp_1c8_visible", False))
         note.rdp_1c8_removed = bool(data.get("rdp_1c8_removed", False))
         note.custom_fields = list(data.get("custom_fields", []))
@@ -826,7 +851,9 @@ class NotesApp(QMainWindow):
         self.debounce_timer = QTimer(self)
         self.debounce_timer.setSingleShot(True)
         self.debounce_timer.timeout.connect(self.autosave_current_note)
-        self.text_edit.textChanged.connect(lambda: self.debounce_timer.start(self.debounce_ms))
+        self.text_edit.textChanged.connect(
+            lambda: self.debounce_timer.start(self.debounce_ms)
+        )
         self.current_note = None
         self.attachments_watcher = QFileSystemWatcher(self)
         self.attachments_watcher.directoryChanged.connect(self._refresh_attachments)
@@ -835,7 +862,7 @@ class NotesApp(QMainWindow):
         self.load_plugins()
         self.init_theme()
         self.load_settings()
-        self.tray_icon = QSystemTrayIcon(QIcon(TRAY_ICON_PATH), self) 
+        self.tray_icon = QSystemTrayIcon(QIcon(TRAY_ICON_PATH), self)
         self.tray_icon.activated.connect(self.on_tray_icon_activated)
         self.tray_icon.setToolTip("Мои Заметки")
         self.tray_icon.setVisible(True)
@@ -937,7 +964,7 @@ class NotesApp(QMainWindow):
         self.attachments_scroll.setWidgetResizable(True)
         self.attachments_scroll.setWidget(self.attachments_panel)
         self.attachments_scroll.setVisible(False)
-        self.attachments_layout.setContentsMargins(0,0,0,0)
+        self.attachments_layout.setContentsMargins(0, 0, 0, 0)
         self.attachments_scroll.setSizePolicy(
             QSizePolicy.Expanding, QSizePolicy.Minimum
         )
@@ -991,13 +1018,17 @@ class NotesApp(QMainWindow):
         self.password_manager_label.setStyleSheet("background: transparent;")
         self.password_manager_label.textChanged.connect(self.on_pm_label_changed)
         self.password_manager_label.editingFinished.connect(
-            lambda: self.settings.setValue("password_manager_label", self.password_manager_label.text())
+            lambda: self.settings.setValue(
+                "password_manager_label", self.password_manager_label.text()
+            )
         )
         _pm_row_layout.addWidget(self.password_manager_label)
         _pm_row_layout.addWidget(self.password_manager_field, 1)
         self.password_manager_copy_btn = QPushButton("Копировать")
         self.password_manager_copy_btn.setFixedHeight(24)
-        self.password_manager_copy_btn.clicked.connect(self.copy_password_manager_to_clipboard)
+        self.password_manager_copy_btn.clicked.connect(
+            self.copy_password_manager_to_clipboard
+        )
         self.password_manager_copy_btn.setEnabled(False)
         self.password_manager_field.textChanged.connect(
             lambda t: self.password_manager_copy_btn.setEnabled(bool(t))
@@ -1064,7 +1095,9 @@ class NotesApp(QMainWindow):
         self.visibility_toolbar.setObjectName("visibility_toolbar")
         self.visibility_toolbar.setMovable(False)
         self.addToolBar(Qt.TopToolBarArea, self.visibility_toolbar)
-        self.action_toggle_pm = QAction(f"🙈 {self.password_manager_label.text()}", self)
+        self.action_toggle_pm = QAction(
+            f"🙈 {self.password_manager_label.text()}", self
+        )
         self.action_toggle_pm.setCheckable(True)
         self.action_toggle_pm.toggled.connect(self.on_toggle_pm_visible)
         self.action_toggle_rdp = QAction(f"🙈 {self.rdp_1c8_label.text()}", self)
@@ -1088,7 +1121,11 @@ class NotesApp(QMainWindow):
             QToolTip.showText(QCursor.pos(), "Поле пустое")
             return
         QApplication.clipboard().setText(text)
-        self.show_toast("Скопировано", boundary_widget=self.dock_editor.widget(), anchor_widget=self.password_manager_copy_btn)
+        self.show_toast(
+            "Скопировано",
+            boundary_widget=self.dock_editor.widget(),
+            anchor_widget=self.password_manager_copy_btn,
+        )
 
     def copy_rdp_1c8_to_clipboard(self) -> None:
         text = self.rdp_1c8_field.text().strip()
@@ -1096,7 +1133,11 @@ class NotesApp(QMainWindow):
             QToolTip.showText(QCursor.pos(), "Поле пустое")
             return
         QApplication.clipboard().setText(text)
-        self.show_toast("Скопировано", boundary_widget=self.dock_editor.widget(), anchor_widget=self.rdp_1c8_copy_btn)
+        self.show_toast(
+            "Скопировано",
+            boundary_widget=self.dock_editor.widget(),
+            anchor_widget=self.rdp_1c8_copy_btn,
+        )
 
     def delete_rdp_1c8_field(self) -> None:
         self.rdp_1c8_field.clear()
@@ -1109,7 +1150,9 @@ class NotesApp(QMainWindow):
         if hasattr(self, "action_toggle_rdp"):
             self.action_toggle_rdp.blockSignals(True)
             self.action_toggle_rdp.setChecked(False)
-            self._update_eye_action(self.action_toggle_rdp, False, self.rdp_1c8_label.text())
+            self._update_eye_action(
+                self.action_toggle_rdp, False, self.rdp_1c8_label.text()
+            )
             self.action_toggle_rdp.setEnabled(False)
             self.action_toggle_rdp.setVisible(False)
             self.action_toggle_rdp.blockSignals(False)
@@ -1132,18 +1175,26 @@ class NotesApp(QMainWindow):
         copy_btn.setFixedHeight(24)
         copy_btn.setEnabled(bool(value))
         copy_btn.clicked.connect(
-            lambda _, e=value_edit, b=copy_btn: self.copy_custom_field_to_clipboard(e, b)
+            lambda _, e=value_edit, b=copy_btn: self.copy_custom_field_to_clipboard(
+                e, b
+            )
         )
         value_edit.textChanged.connect(lambda t, b=copy_btn: b.setEnabled(bool(t)))
-        value_edit.textChanged.connect(lambda _: self.update_current_note_custom_fields())
-        value_edit.textChanged.connect(lambda _: self.debounce_timer.start(self.debounce_ms))
+        value_edit.textChanged.connect(
+            lambda _: self.update_current_note_custom_fields()
+        )
+        value_edit.textChanged.connect(
+            lambda _: self.debounce_timer.start(self.debounce_ms)
+        )
         remove_btn = QPushButton("✖")
         remove_btn.setFixedSize(24, 24)
         layout.addWidget(label_edit)
         layout.addWidget(value_edit, 1)
         layout.addWidget(copy_btn)
         layout.addWidget(remove_btn)
-        self.custom_fields_layout.insertWidget(self.custom_fields_layout.count() - 1, row)
+        self.custom_fields_layout.insertWidget(
+            self.custom_fields_layout.count() - 1, row
+        )
         action = QAction(f"🙈 {label}", self)
         action.setCheckable(True)
         widget = {
@@ -1154,8 +1205,12 @@ class NotesApp(QMainWindow):
             "remove_btn": remove_btn,
             "action": action,
         }
-        action.toggled.connect(lambda checked, w=widget: self.on_toggle_custom_field(w, checked))
-        label_edit.textChanged.connect(lambda text, w=widget: self.on_custom_field_label_changed(w, text))
+        action.toggled.connect(
+            lambda checked, w=widget: self.on_toggle_custom_field(w, checked)
+        )
+        label_edit.textChanged.connect(
+            lambda text, w=widget: self.on_custom_field_label_changed(w, text)
+        )
         remove_btn.clicked.connect(lambda _, w=widget: self.remove_custom_field(w))
         self.visibility_toolbar.addAction(action)
         self.custom_fields_widgets.append(widget)
@@ -1287,7 +1342,9 @@ class NotesApp(QMainWindow):
             return
         self.current_note.rdp_1c8_visible = bool(checked)
         self.rdp_1c8_row.setVisible(checked)
-        self._update_eye_action(self.action_toggle_rdp, checked, self.rdp_1c8_label.text())
+        self._update_eye_action(
+            self.action_toggle_rdp, checked, self.rdp_1c8_label.text()
+        )
         self.save_note_to_file(self.current_note)
 
     def delete_selected_history_entries(self) -> None:
@@ -1394,9 +1451,11 @@ class NotesApp(QMainWindow):
         w.show()
         w.raise_()
         w.activateWindow()
+
         def _restore():
             w.setWindowFlags(old)
             w.show()
+
         QTimer.singleShot(800, _restore)
 
     def record_state_for_undo(self) -> None:
@@ -1502,7 +1561,9 @@ class NotesApp(QMainWindow):
         self.deduplicate_notes()
 
     def save_note_to_file(self, note: Note) -> None:
-        note_dir = os.path.join(NOTES_DIR, NotesApp.safe_folder_name(note.title, note.uuid, note.timestamp))
+        note_dir = os.path.join(
+            NOTES_DIR, NotesApp.safe_folder_name(note.title, note.uuid, note.timestamp)
+        )
         os.makedirs(note_dir, exist_ok=True)
         file_path = os.path.join(note_dir, "note.json")
         if self.current_note and note.uuid == self.current_note.uuid:
@@ -1580,9 +1641,15 @@ class NotesApp(QMainWindow):
             self, "Переименовать", "Новое имя заметки:", text=note.title
         )
         if ok and new_title and new_title != note.title:
-            old_dir = os.path.join(NOTES_DIR, NotesApp.safe_folder_name(note.title, note.uuid, note.timestamp))
+            old_dir = os.path.join(
+                NOTES_DIR,
+                NotesApp.safe_folder_name(note.title, note.uuid, note.timestamp),
+            )
             note.title = new_title
-            new_dir = os.path.join(NOTES_DIR, NotesApp.safe_folder_name(note.title, note.uuid, note.timestamp))
+            new_dir = os.path.join(
+                NOTES_DIR,
+                NotesApp.safe_folder_name(note.title, note.uuid, note.timestamp),
+            )
             if os.path.exists(old_dir):
                 os.rename(old_dir, new_dir)
             self.save_note_to_file(note)
@@ -1676,8 +1743,13 @@ class NotesApp(QMainWindow):
         )
         new_note.password_manager_visible = note.password_manager_visible
         new_note.rdp_1c8_visible = note.rdp_1c8_visible
-        note_dir = os.path.join(NOTES_DIR, NotesApp.safe_folder_name(note.title, note.uuid, note.timestamp))
-        new_note_dir = os.path.join(NOTES_DIR, NotesApp.safe_folder_name(new_title, new_uuid, new_note.timestamp))
+        note_dir = os.path.join(
+            NOTES_DIR, NotesApp.safe_folder_name(note.title, note.uuid, note.timestamp)
+        )
+        new_note_dir = os.path.join(
+            NOTES_DIR,
+            NotesApp.safe_folder_name(new_title, new_uuid, new_note.timestamp),
+        )
         if os.path.exists(note_dir):
             shutil.copytree(note_dir, new_note_dir)
             self.save_note_to_file(new_note)
@@ -1889,7 +1961,7 @@ class NotesApp(QMainWindow):
             with open(templates_path, "w", encoding="utf-8") as f:
                 json.dump(templates, f, ensure_ascii=False, indent=4)
         return templates
-    
+
     def save_templates(self, templates: list[dict]) -> None:
         templates_path = os.path.join(DATA_DIR, "templates.json")
         os.makedirs(DATA_DIR, exist_ok=True)
@@ -1922,6 +1994,7 @@ class NotesApp(QMainWindow):
                 preview.setHtml(frag.toHtml())
             else:
                 preview.setHtml(self.text_edit.toHtml())
+
         only_selection.toggled.connect(fill_preview)
         fill_preview()
         buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
@@ -1939,12 +2012,15 @@ class NotesApp(QMainWindow):
                 "content_html": preview.toHtml(),
             }
             templates = self.load_templates()
-            exist_idx = next((i for i, t in enumerate(templates) if t.get("name") == name), -1)
+            exist_idx = next(
+                (i for i, t in enumerate(templates) if t.get("name") == name), -1
+            )
             if exist_idx >= 0:
                 r = QMessageBox.question(
-                    dialog, "Перезаписать?",
+                    dialog,
+                    "Перезаписать?",
                     f"Шаблон «{name}» уже существует. Перезаписать?",
-                    QMessageBox.Yes | QMessageBox.No
+                    QMessageBox.Yes | QMessageBox.No,
                 )
                 if r == QMessageBox.No:
                     return
@@ -1954,9 +2030,12 @@ class NotesApp(QMainWindow):
             self.save_templates(templates)
             dialog.accept()
             QMessageBox.information(self, "Готово", f"Шаблон «{name}» сохранён.")
+
         buttons.accepted.connect(on_accept)
         buttons.rejected.connect(dialog.reject)
-        fg = dialog.frameGeometry(); fg.moveCenter(self.frameGeometry().center()); dialog.move(fg.topLeft())
+        fg = dialog.frameGeometry()
+        fg.moveCenter(self.frameGeometry().center())
+        dialog.move(fg.topLeft())
         dialog.exec()
 
     def insert_template(self) -> None:
@@ -2050,16 +2129,19 @@ class NotesApp(QMainWindow):
                     cursor.clearSelection()
                     self.text_edit.setTextCursor(cursor)
                 self.record_state_for_undo()
+
     def manage_templates_dialog(self) -> None:
         templates = self.load_templates()
         dlg = QDialog(self)
         dlg.setWindowTitle("Шаблоны")
         v = QVBoxLayout(dlg)
         lst = QListWidget()
+
         def refresh():
             lst.clear()
             for t in templates:
                 lst.addItem(f"{t.get('name','')} — {t.get('category','Без категории')}")
+
         refresh()
         v.addWidget(lst)
         form = QFormLayout()
@@ -2084,26 +2166,37 @@ class NotesApp(QMainWindow):
 
         def load_current(i):
             if i < 0 or i >= len(templates):
-                name_edit.clear(); category_edit.clear(); desc_edit.clear(); content.clear()
+                name_edit.clear()
+                category_edit.clear()
+                desc_edit.clear()
+                content.clear()
                 return
             t = templates[i]
-            name_edit.setText(t.get("name",""))
-            category_edit.setText(t.get("category",""))
-            desc_edit.setText(t.get("description",""))
-            content.setHtml(t.get("content_html",""))
+            name_edit.setText(t.get("name", ""))
+            category_edit.setText(t.get("category", ""))
+            desc_edit.setText(t.get("description", ""))
+            content.setHtml(t.get("content_html", ""))
+
         lst.currentRowChanged.connect(load_current)
         if templates:
             lst.setCurrentRow(0)
 
         def on_new():
-            templates.append({"name": "Новый шаблон", "category": "Без категории",
-                            "description": "", "content_html": ""})
+            templates.append(
+                {
+                    "name": "Новый шаблон",
+                    "category": "Без категории",
+                    "description": "",
+                    "content_html": "",
+                }
+            )
             refresh()
-            lst.setCurrentRow(len(templates)-1)
+            lst.setCurrentRow(len(templates) - 1)
 
         def on_save():
             i = lst.currentRow()
-            if i < 0: return
+            if i < 0:
+                return
             templates[i] = {
                 "name": name_edit.text().strip() or "Без имени",
                 "category": category_edit.text().strip() or "Без категории",
@@ -2117,19 +2210,27 @@ class NotesApp(QMainWindow):
 
         def on_del():
             i = lst.currentRow()
-            if i < 0: return
-            r = QMessageBox.question(dlg, "Удалить", "Удалить выбранный шаблон?",
-                                    QMessageBox.Yes | QMessageBox.No)
+            if i < 0:
+                return
+            r = QMessageBox.question(
+                dlg,
+                "Удалить",
+                "Удалить выбранный шаблон?",
+                QMessageBox.Yes | QMessageBox.No,
+            )
             if r == QMessageBox.Yes:
                 templates.pop(i)
                 self.save_templates(templates)
                 refresh()
-                lst.setCurrentRow(min(i, len(templates)-1))
+                lst.setCurrentRow(min(i, len(templates) - 1))
+
         btn_new.clicked.connect(on_new)
         btn_save.clicked.connect(on_save)
         btn_del.clicked.connect(on_del)
         btn_close.clicked.connect(dlg.accept)
-        fg = dlg.frameGeometry(); fg.moveCenter(self.frameGeometry().center()); dlg.move(fg.topLeft())
+        fg = dlg.frameGeometry()
+        fg.moveCenter(self.frameGeometry().center())
+        dlg.move(fg.topLeft())
         dlg.exec()
 
     def show_trash(self) -> None:
@@ -2303,14 +2404,13 @@ class NotesApp(QMainWindow):
                 break
 
     def _html_escape(self, s: str) -> str:
-        return (s.replace("&", "&amp;")
-                .replace("<", "&lt;")
-                .replace(">", "&gt;"))
+        return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
     def _load_dropdown_values(self) -> list[str]:
         try:
             vals = json.loads(self.settings.value("dropdown_values", "[]"))
-            if not isinstance(vals, list): vals = []
+            if not isinstance(vals, list):
+                vals = []
         except Exception:
             vals = []
         if not vals:
@@ -2333,7 +2433,7 @@ class NotesApp(QMainWindow):
         self._ensure_dd_map()
         if dd_id in self._dropdown_tokens:
             return self._dropdown_tokens[dd_id]
-        href = f'dropdown://{re.escape(dd_id)}'
+        href = f"dropdown://{re.escape(dd_id)}"
         html = self.text_edit.toHtml()
         match = re.search(rf'<a[^>]*href="{href}"[^>]*>(.*?)</a>', html, flags=re.S)
         if not match:
@@ -2348,13 +2448,15 @@ class NotesApp(QMainWindow):
                 vals = self._load_dropdown_values()
         else:
             vals = self._load_dropdown_values()
-        text = re.sub(r'<[^>]+>', '', inner)
-        text = text.replace('▼', '').replace('&#9662;', '').strip()
+        text = re.sub(r"<[^>]+>", "", inner)
+        text = text.replace("▼", "").replace("&#9662;", "").strip()
         info = {"value": text, "values": vals}
         self._dropdown_tokens[dd_id] = info
         return info
 
-    def _insert_dropdown_token(self, value: str, dd_id: str | None = None, values: list[str] | None = None) -> str:
+    def _insert_dropdown_token(
+        self, value: str, dd_id: str | None = None, values: list[str] | None = None
+    ) -> str:
         self._ensure_dd_map()
         if dd_id is None:
             dd_id = uuid.uuid4().hex[:8]
@@ -2362,12 +2464,16 @@ class NotesApp(QMainWindow):
             values = self._load_dropdown_values()
         self._dropdown_tokens[dd_id] = {"value": value, "values": list(values)}
         bg, fg, br = self._dropdown_palette()
-        inner = (f'<span style="display:inline-block; padding:2px 8px; '
-                f'border-radius:6px; border:1px solid {br}; '
-                f'background:{bg}; color:{fg};">{self._html_escape(value)} &#9662;</span>')
+        inner = (
+            f'<span style="display:inline-block; padding:2px 8px; '
+            f"border-radius:6px; border:1px solid {br}; "
+            f'background:{bg}; color:{fg};">{self._html_escape(value)} &#9662;</span>'
+        )
         encoded = quote(json.dumps(values, ensure_ascii=False))
-        html = (f'<a href="dropdown://{dd_id}" title="{encoded}" '
-                f'style="text-decoration:none;">{inner}</a>&nbsp;')
+        html = (
+            f'<a href="dropdown://{dd_id}" title="{encoded}" '
+            f'style="text-decoration:none;">{inner}</a>&nbsp;'
+        )
         c = self.text_edit.textCursor()
         c.insertHtml(html)
         self.text_edit.setTextCursor(c)
@@ -2383,17 +2489,22 @@ class NotesApp(QMainWindow):
         info["value"] = new_value
         values = info.get("values", [])
         bg, fg, br = self._dropdown_palette()
-        inner = (f'<span style="display:inline-block; padding:2px 8px; '
-                f'border-radius:6px; border:1px solid {br}; '
-                f'background:{bg}; color:{fg};">{self._html_escape(new_value)} &#9662;</span>')
+        inner = (
+            f'<span style="display:inline-block; padding:2px 8px; '
+            f"border-radius:6px; border:1px solid {br}; "
+            f'background:{bg}; color:{fg};">{self._html_escape(new_value)} &#9662;</span>'
+        )
 
-        href = f'dropdown://{re.escape(dd_id)}'
+        href = f"dropdown://{re.escape(dd_id)}"
         encoded = quote(json.dumps(values, ensure_ascii=False))
-        new_anchor = (f'<a href="dropdown://{dd_id}" title="{encoded}" '
-                      f'style="text-decoration:none;">{inner}</a>')
+        new_anchor = (
+            f'<a href="dropdown://{dd_id}" title="{encoded}" '
+            f'style="text-decoration:none;">{inner}</a>'
+        )
         html = self.text_edit.toHtml()
-        new_html = re.sub(rf'<a[^>]*href="{href}"[^>]*>.*?</a>',
-                          new_anchor, html, flags=re.S)
+        new_html = re.sub(
+            rf'<a[^>]*href="{href}"[^>]*>.*?</a>', new_anchor, html, flags=re.S
+        )
         self.text_edit.blockSignals(True)
         self.text_edit.setHtml(new_html)
         self.text_edit.blockSignals(False)
@@ -2414,12 +2525,18 @@ class NotesApp(QMainWindow):
 
     def show_dropdown_menu_for_token(self, dd_id: str, global_pos=None) -> None:
         info = self._get_dropdown_token_info(dd_id)
-        values = info.get("values", self._load_dropdown_values()) if info else self._load_dropdown_values()
+        values = (
+            info.get("values", self._load_dropdown_values())
+            if info
+            else self._load_dropdown_values()
+        )
         menu = QMenu(self)
         menu.setStyleSheet(CUSTOM_MENU_STYLE)
         for v in values:
             act = menu.addAction(v)
-            act.triggered.connect(lambda _, val=v: self._update_dropdown_token(dd_id, val))
+            act.triggered.connect(
+                lambda _, val=v: self._update_dropdown_token(dd_id, val)
+            )
         menu.addSeparator()
         edit_act = menu.addAction("✏️ Редактировать список…")
         edit_act.triggered.connect(lambda: self._edit_values_and_reopen(dd_id))
@@ -2471,7 +2588,8 @@ class NotesApp(QMainWindow):
                     widget.setParent(None)
                     widget.deleteLater()
             note_dir = os.path.join(
-                NOTES_DIR, NotesApp.safe_folder_name(note.title, note.uuid, note.timestamp)
+                NOTES_DIR,
+                NotesApp.safe_folder_name(note.title, note.uuid, note.timestamp),
             )
             attachments_found = False
             if os.path.isdir(note_dir):
@@ -2529,7 +2647,9 @@ class NotesApp(QMainWindow):
                     del_btn.setToolTip("Удалить вложение")
                     del_btn.setFixedSize(28, 24)
                     del_btn.clicked.connect(
-                        lambda _, path=file_path: self.delete_attachment_from_panel(path)
+                        lambda _, path=file_path: self.delete_attachment_from_panel(
+                            path
+                        )
                     )
                     layout.addWidget(del_btn)
                     item_widget.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Maximum)
@@ -2620,7 +2740,8 @@ class NotesApp(QMainWindow):
         tmp = path + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=4)
-            f.flush(); os.fsync(f.fileno())
+            f.flush()
+            os.fsync(f.fileno())
         os.replace(tmp, path)
 
     def _update_editor_visibility(self):
@@ -2634,7 +2755,9 @@ class NotesApp(QMainWindow):
         if not has:
             self.tags_label.setText("Теги: нет")
         self.add_field_btn.setEnabled(has)
-        self.attachments_scroll.setVisible(False if not has else self.attachments_scroll.isVisible())
+        self.attachments_scroll.setVisible(
+            False if not has else self.attachments_scroll.isVisible()
+        )
         if not has:
             self.password_manager_row.setVisible(False)
             self.rdp_1c8_row.setVisible(False)
@@ -2649,7 +2772,9 @@ class NotesApp(QMainWindow):
         if hasattr(self, "action_toggle_pm"):
             self.action_toggle_pm.setEnabled(True)
             self.action_toggle_pm.blockSignals(True)
-            self.action_toggle_pm.setChecked(bool(self.current_note.password_manager_visible))
+            self.action_toggle_pm.setChecked(
+                bool(self.current_note.password_manager_visible)
+            )
             self.action_toggle_pm.blockSignals(False)
         if hasattr(self, "action_toggle_rdp"):
             self.action_toggle_rdp.setEnabled(True)
@@ -2658,8 +2783,8 @@ class NotesApp(QMainWindow):
             self.action_toggle_rdp.blockSignals(False)
         if hasattr(self, "action_toggle_rdp"):
             rdp_removed = bool(getattr(self.current_note, "rdp_1c8_removed", False))
-            self.action_toggle_rdp.setVisible(not rdp_removed)               # <— НОВОЕ
-            self.action_toggle_rdp.setEnabled(not rdp_removed)               # <— НОВОЕ
+            self.action_toggle_rdp.setVisible(not rdp_removed)  # <— НОВОЕ
+            self.action_toggle_rdp.setEnabled(not rdp_removed)  # <— НОВОЕ
             self.action_toggle_rdp.blockSignals(True)
             self.action_toggle_rdp.setChecked(
                 False if rdp_removed else bool(self.current_note.rdp_1c8_visible)
@@ -2669,7 +2794,9 @@ class NotesApp(QMainWindow):
         self.rdp_1c8_row.setVisible(
             False if rdp_removed else bool(self.current_note.rdp_1c8_visible)
         )
-        self.password_manager_row.setVisible(bool(self.current_note.password_manager_visible))
+        self.password_manager_row.setVisible(
+            bool(self.current_note.password_manager_visible)
+        )
         self.rdp_1c8_row.setVisible(bool(self.current_note.rdp_1c8_visible))
         for w in self.custom_fields_widgets:
             w["action"].setEnabled(True)
@@ -2688,7 +2815,14 @@ class NotesApp(QMainWindow):
         )
         if not file_path:
             return
-        note_dir = os.path.join(NOTES_DIR, NotesApp.safe_folder_name(self.current_note.title, self.current_note.uuid, self.current_note.timestamp))
+        note_dir = os.path.join(
+            NOTES_DIR,
+            NotesApp.safe_folder_name(
+                self.current_note.title,
+                self.current_note.uuid,
+                self.current_note.timestamp,
+            ),
+        )
         os.makedirs(note_dir, exist_ok=True)
         filename = os.path.basename(file_path)
         dest = os.path.join(note_dir, filename)
@@ -2728,8 +2862,14 @@ class NotesApp(QMainWindow):
     def attach_file_to_note_external(self, file_path: str) -> None:
         if not self.current_note:
             return
-        note_dir = os.path.join(NOTES_DIR, NotesApp.safe_folder_name(
-        self.current_note.title, self.current_note.uuid, self.current_note.timestamp))
+        note_dir = os.path.join(
+            NOTES_DIR,
+            NotesApp.safe_folder_name(
+                self.current_note.title,
+                self.current_note.uuid,
+                self.current_note.timestamp,
+            ),
+        )
         os.makedirs(note_dir, exist_ok=True)
         filename = os.path.basename(file_path)
         dest = os.path.join(note_dir, filename)
@@ -2947,8 +3087,11 @@ class NotesApp(QMainWindow):
 
     @staticmethod
     def _app_dir():
-        return os.path.dirname(sys.executable) if getattr(sys, "frozen", False) \
+        return (
+            os.path.dirname(sys.executable)
+            if getattr(sys, "frozen", False)
             else os.path.abspath(os.path.dirname(__file__))
+        )
 
     def open_readme(self):
         path = os.path.join(APPDIR, "README.md")
@@ -2963,6 +3106,7 @@ class NotesApp(QMainWindow):
         dlg.setWindowTitle("README.md")
         dlg.resize(900, 700)
         from PySide6.QtWidgets import QVBoxLayout, QTextBrowser, QDialogButtonBox
+
         v = QVBoxLayout(dlg)
         view = QTextBrowser(dlg)
         view.setOpenLinks(False)
@@ -2997,10 +3141,12 @@ class NotesApp(QMainWindow):
                 QDesktopServices.openUrl(view.document().baseUrl().resolved(url))
                 return
             QDesktopServices.openUrl(url)
+
         view.anchorClicked.connect(_on_anchor_clicked)
 
         def _open_external():
             QDesktopServices.openUrl(QUrl.fromLocalFile(os.path.abspath(path)))
+
         btns.rejected.connect(dlg.reject)
         for b in btns.buttons():
             if btns.buttonRole(b) == QDialogButtonBox.ActionRole:
@@ -3016,21 +3162,22 @@ class NotesApp(QMainWindow):
 
         def slugify(text: str) -> str:
             s = text.strip().lower()
-            s = re.sub(r'[^0-9a-zа-яё \-]+', '', s, flags=re.IGNORECASE)
-            s = re.sub(r'\s+', '-', s)
-            s = re.sub(r'-{2,}', '-', s)
-            return s.strip('-')
+            s = re.sub(r"[^0-9a-zа-яё \-]+", "", s, flags=re.IGNORECASE)
+            s = re.sub(r"\s+", "-", s)
+            s = re.sub(r"-{2,}", "-", s)
+            return s.strip("-")
 
         def repl(m):
             tag, attrs, inner = m.group(1), m.group(2), m.group(3)
-            if re.search(r'\b(id|name)\s*=', attrs, flags=re.I):
+            if re.search(r"\b(id|name)\s*=", attrs, flags=re.I):
                 return m.group(0)
-            text_only = re.sub(r'<[^>]*>', '', inner)
+            text_only = re.sub(r"<[^>]*>", "", inner)
             anchor = slugify(text_only)
             if not anchor:
                 return m.group(0)
             return f'<{tag}{attrs} id="{anchor}" name="{anchor}">{inner}</{tag}>'
-        html = re.sub(r'<(h[1-6])([^>]*)>(.*?)</\1>', repl, html, flags=re.I | re.S)
+
+        html = re.sub(r"<(h[1-6])([^>]*)>(.*?)</\1>", repl, html, flags=re.I | re.S)
         view.setHtml(html)
         base = view.document().baseUrl()
         view.document().setBaseUrl(base)
@@ -3040,10 +3187,12 @@ class NotesApp(QMainWindow):
     def _linkify_urls_in_browser(self, view: QTextBrowser):
         html = view.toHtml()
         pattern = re.compile(r'(?<!href=")(?<!src=")((?:https?://|www\.)[^\s"<>]+)')
+
         def repl(m):
             url = m.group(1)
-            href = url if url.startswith(('http://', 'https://')) else f'http://{url}'
+            href = url if url.startswith(("http://", "https://")) else f"http://{url}"
             return f'<a href="{href}">{url}</a>'
+
         html = pattern.sub(repl, html)
         view.setHtml(html)
         view.setOpenExternalLinks(True)
@@ -3499,8 +3648,7 @@ class NotesApp(QMainWindow):
             self.attachments_scroll.setVisible(False)
             return
         note_dir = os.path.join(
-            NOTES_DIR,
-            NotesApp.safe_folder_name(note.title, note.uuid, note.timestamp)
+            NOTES_DIR, NotesApp.safe_folder_name(note.title, note.uuid, note.timestamp)
         )
         attachments_found = False
         if os.path.isdir(note_dir):
@@ -3522,7 +3670,9 @@ class NotesApp(QMainWindow):
                 if filename.lower().endswith(tuple(IMAGE_EXTENSIONS)):
                     pixmap = QPixmap(file_path)
                     icon_label.setPixmap(
-                        pixmap.scaled(48, 48, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                        pixmap.scaled(
+                            48, 48, Qt.KeepAspectRatio, Qt.SmoothTransformation
+                        )
                     )
                 else:
                     if os.path.exists(FILE_ICON_PATH):
@@ -3543,7 +3693,9 @@ class NotesApp(QMainWindow):
                 open_btn.setToolTip("Открыть вложение")
                 open_btn.setFixedSize(60, 24)
                 open_btn.clicked.connect(
-                    lambda _, path=file_path: QDesktopServices.openUrl(QUrl.fromLocalFile(path))
+                    lambda _, path=file_path: QDesktopServices.openUrl(
+                        QUrl.fromLocalFile(path)
+                    )
                 )
                 layout.addWidget(open_btn)
                 del_btn = QPushButton("❌")
@@ -3621,11 +3773,15 @@ class NotesApp(QMainWindow):
             return
         fmt = full.charFormat()
         old_url = fmt.anchorHref()
-        new_url, ok = QInputDialog.getText(self, "Изменить ссылку", "URL:", text=old_url)
+        new_url, ok = QInputDialog.getText(
+            self, "Изменить ссылку", "URL:", text=old_url
+        )
         if not (ok and new_url):
             return
         visible = full.selectedText()
-        if visible.strip() == old_url.strip() or re.match(r'^\s*(https?://|www\.)', visible, flags=re.I):
+        if visible.strip() == old_url.strip() or re.match(
+            r"^\s*(https?://|www\.)", visible, flags=re.I
+        ):
             new_visible = new_url
         else:
             new_visible = visible
@@ -3666,7 +3822,9 @@ class NotesApp(QMainWindow):
 
     def insert_dropdown(self) -> None:
         if not self.current_note:
-            QMessageBox.warning(self, "Нет заметки", "Сначала выбери или создай заметку.")
+            QMessageBox.warning(
+                self, "Нет заметки", "Сначала выбери или создай заметку."
+            )
             return
         values = self._load_dropdown_values()
         initial = values[0] if values else "Выбрать…"
@@ -3675,7 +3833,9 @@ class NotesApp(QMainWindow):
         pos = self.text_edit.viewport().mapToGlobal(cr.bottomLeft())
         self.show_dropdown_menu_for_token(dd_id, pos)
 
-    def _open_dropdown_values_editor(self, initial_values: list[str] | None = None) -> list[str] | None:
+    def _open_dropdown_values_editor(
+        self, initial_values: list[str] | None = None
+    ) -> list[str] | None:
         dlg = QDialog(self)
         dlg.setWindowTitle("Значения выпадающего списка")
         v = QVBoxLayout(dlg)
@@ -3691,15 +3851,19 @@ class NotesApp(QMainWindow):
             if not last:
                 last = ["Вариант 1", "Вариант 2", "Вариант 3"]
         else:
-            last = list(initial_values) if initial_values else ["Вариант 1", "Вариант 2", "Вариант 3"]
+            last = (
+                list(initial_values)
+                if initial_values
+                else ["Вариант 1", "Вариант 2", "Вариант 3"]
+            )
         for s in last:
             lst.addItem(str(s))
         btns_line = QHBoxLayout()
         btn_add = QPushButton("Добавить")
         btn_ren = QPushButton("Переименовать")
         btn_del = QPushButton("Удалить")
-        btn_up  = QPushButton("↑")
-        btn_dn  = QPushButton("↓")
+        btn_up = QPushButton("↑")
+        btn_dn = QPushButton("↓")
         btns_line.addWidget(btn_add)
         btns_line.addWidget(btn_ren)
         btns_line.addWidget(btn_del)
@@ -3717,7 +3881,9 @@ class NotesApp(QMainWindow):
             it = lst.currentItem()
             if not it:
                 return
-            text, ok = QInputDialog.getText(dlg, "Переименовать", "Текст:", text=it.text())
+            text, ok = QInputDialog.getText(
+                dlg, "Переименовать", "Текст:", text=it.text()
+            )
             if ok and text.strip():
                 it.setText(text.strip())
 
@@ -3739,6 +3905,7 @@ class NotesApp(QMainWindow):
                 it = lst.takeItem(row)
                 lst.insertItem(row + 1, it)
                 lst.setCurrentRow(row + 1)
+
         btn_add.clicked.connect(add_item)
         btn_ren.clicked.connect(rename_item)
         btn_del.clicked.connect(delete_item)
@@ -3752,26 +3919,35 @@ class NotesApp(QMainWindow):
         fg.moveCenter(self.frameGeometry().center())
         dlg.move(fg.topLeft())
         if dlg.exec() == QDialog.Accepted:
-            values = [lst.item(i).text().strip() for i in range(lst.count()) if lst.item(i).text().strip()]
+            values = [
+                lst.item(i).text().strip()
+                for i in range(lst.count())
+                if lst.item(i).text().strip()
+            ]
             if initial_values is None:
-                self.settings.setValue("dropdown_values", json.dumps(values, ensure_ascii=False))
+                self.settings.setValue(
+                    "dropdown_values", json.dumps(values, ensure_ascii=False)
+                )
             return values
         return None
 
     def _show_combo_popup(self, values: list[str]) -> None:
         menu = QMenu(self)
         fm = self.text_edit.fontMetrics()
-        w = max([180] + [fm.horizontalAdvance(v) for v in values]) + fm.averageCharWidth() * 3
+        w = (
+            max([180] + [fm.horizontalAdvance(v) for v in values])
+            + fm.averageCharWidth() * 3
+        )
         menu.setFixedWidth(int(w))
         for val in values:
             act = menu.addAction(val)
             act.triggered.connect(lambda _, v=val: self._insert_dropdown_plain(v))
         cr = self.text_edit.cursorRect(self.text_edit.textCursor())
         pos = self.text_edit.viewport().mapToGlobal(cr.bottomLeft())
-        menu.exec(pos) 
+        menu.exec(pos)
 
     def _insert_dropdown_plain(self, value: str) -> None:
-        fmt = self.text_edit.currentCharFormat() 
+        fmt = self.text_edit.currentCharFormat()
         c = self.text_edit.textCursor()
         c.insertText(value, fmt)
         self.text_edit.setTextCursor(c)
@@ -3780,7 +3956,7 @@ class NotesApp(QMainWindow):
             self.debounce_timer.start(self.debounce_ms)
 
     def _commit_dropdown_value(self, combo: QComboBox, value: str) -> None:
-        fmt = self.text_edit.currentCharFormat() 
+        fmt = self.text_edit.currentCharFormat()
         cursor = self.text_edit.textCursor()
         cursor.insertText(value, fmt)
         self.text_edit.setTextCursor(cursor)
@@ -3788,7 +3964,7 @@ class NotesApp(QMainWindow):
         self.record_state_for_undo()
         if hasattr(self, "debounce_timer"):
             self.debounce_timer.start(self.debounce_ms)
-            
+
     def _insert_dropdown_plain(self, value: str) -> None:
         fmt = self.text_edit.currentCharFormat()
         c = self.text_edit.textCursor()
@@ -4255,7 +4431,7 @@ class NotesApp(QMainWindow):
             action = dock.toggleViewAction()
             action.setText(name)
             view_menu.addAction(action)
-        
+
         settings_action = QAction("Настройки:", self)
         settings_action.setShortcut("Ctrl+,")
         settings_action.triggered.connect(self.show_settings_window)
@@ -4286,7 +4462,9 @@ class NotesApp(QMainWindow):
         mass_manage_action = QAction("Массовое удаление", self)
         mass_manage_action.triggered.connect(self.open_mass_reminders_dialog)
         reminders_menu.addAction(mass_manage_action)
-        reminders_menu.addActions([add_reminder_action, edit_reminder_action, remove_reminder_action])
+        reminders_menu.addActions(
+            [add_reminder_action, edit_reminder_action, remove_reminder_action]
+        )
         reminders_menu.addSeparator()
         reminders_menu.addAction(mass_manage_action)
 
@@ -4650,7 +4828,9 @@ class NotesApp(QMainWindow):
         )
         if attachment_links:
             cursor = self.text_edit.textCursor()
-            html = "<br>--- Attachments ---<br>" + attachment_links.replace("\n", "<br>")
+            html = "<br>--- Attachments ---<br>" + attachment_links.replace(
+                "\n", "<br>"
+            )
             cursor.insertHtml(html)
             self.text_edit.setTextCursor(cursor)
 
@@ -4728,10 +4908,18 @@ class NotesApp(QMainWindow):
         datetime_edit.setCalendarPopup(True)
         layout.addRow("Напоминание:", datetime_edit)
         repeat_combo = QComboBox()
-        options = ["Однократно", "По будням", "Каждый день", "Каждую неделю", "Каждый месяц"]
+        options = [
+            "Однократно",
+            "По будням",
+            "Каждый день",
+            "Каждую неделю",
+            "Каждый месяц",
+        ]
         repeat_combo.addItems(options)
         if getattr(self.current_note, "reminder_repeat", None) in options:
-            repeat_combo.setCurrentText(self.current_note.reminder_repeat or "Однократно")
+            repeat_combo.setCurrentText(
+                self.current_note.reminder_repeat or "Однократно"
+            )
         else:
             repeat_combo.setCurrentIndex(0)
         layout.addRow("Повторять:", repeat_combo)
@@ -4744,10 +4932,14 @@ class NotesApp(QMainWindow):
             dt = datetime_edit.dateTime()
             self.current_note.reminder = dt.toString("yyyy-MM-dd HH:mm")
             selected = repeat_combo.currentText()
-            self.current_note.reminder_repeat = None if selected == "Однократно" else selected
+            self.current_note.reminder_repeat = (
+                None if selected == "Однократно" else selected
+            )
             self.save_note_to_file(self.current_note)
             self.refresh_notes_list()
-            QMessageBox.information(self, "Готово", f"Напоминание обновлено: {self.current_note.reminder}")
+            QMessageBox.information(
+                self, "Готово", f"Напоминание обновлено: {self.current_note.reminder}"
+            )
 
     def remove_reminder_from_note(self):
         if self.current_note:
@@ -4901,7 +5093,7 @@ class NotesApp(QMainWindow):
         self.text_edit.document().setDefaultStyleSheet("a { color: white; }")
         QApplication.instance().setPalette(dark_palette)
         self.setStyleSheet(
-        """
+            """
             QToolTip {
                         background-color: #2a2a2a;
                         color: white;
@@ -4934,7 +5126,8 @@ class NotesApp(QMainWindow):
         lbl = QLabel(text, overlay_parent)
         lbl.setObjectName("toast")
         lbl.setAttribute(Qt.WA_TransparentForMouseEvents)
-        lbl.setStyleSheet("""
+        lbl.setStyleSheet(
+            """
             QLabel {
                 background: #ffffff;
                 color: #000000;
@@ -4943,11 +5136,14 @@ class NotesApp(QMainWindow):
                 padding: 4px 8px;
                 font-size: 12px;
             }
-        """)
+        """
+        )
         lbl.setWordWrap(False)
         lbl.adjustSize()
         if anchor_widget is not None:
-            anchor_center = anchor_widget.mapTo(overlay_parent, anchor_widget.rect().center())
+            anchor_center = anchor_widget.mapTo(
+                overlay_parent, anchor_widget.rect().center()
+            )
             x = anchor_center.x() - lbl.width() - 8
             y = anchor_center.y() - lbl.height() // 2
         else:
@@ -4969,6 +5165,7 @@ class NotesApp(QMainWindow):
                 if lbl in self._live_toasts:
                     self._live_toasts.remove(lbl)
                 lbl.deleteLater()
+
         QTimer.singleShot(ms, _close)
 
     def exit_note(self):
@@ -4992,7 +5189,7 @@ class NotesApp(QMainWindow):
         self.new_note_button.setStyleSheet("")
         self.save_note_button.setStyleSheet("")
         self.setStyleSheet(
-        """
+            """
             QToolTip {
                         background-color: #ffffff;
                         color: black;
@@ -5047,7 +5244,11 @@ class NotesApp(QMainWindow):
             if os.path.isfile(file_path):
                 note_dir = os.path.join(
                     NOTES_DIR,
-                    NotesApp.safe_folder_name(self.current_note.title, self.current_note.uuid, self.current_note.timestamp)
+                    NotesApp.safe_folder_name(
+                        self.current_note.title,
+                        self.current_note.uuid,
+                        self.current_note.timestamp,
+                    ),
                 )
                 if not os.path.exists(note_dir):
                     os.makedirs(note_dir)
@@ -5248,6 +5449,7 @@ class NotesApp(QMainWindow):
 
     def load_plugins(self):
         import importlib
+
         importlib.invalidate_caches()
         self.clear_plugin_menu_actions()
         for module in getattr(self, "active_plugins", {}).values():
@@ -5255,7 +5457,9 @@ class NotesApp(QMainWindow):
                 if hasattr(module, "on_disable"):
                     module.on_disable(parent=self)
             except Exception as e:
-                print(f"Ошибка при деинициализации плагина {getattr(module, '__name__', '')}: {e}")
+                print(
+                    f"Ошибка при деинициализации плагина {getattr(module, '__name__', '')}: {e}"
+                )
         plugins_folder = os.path.join(APPDIR, "Plugins")
         plugins_state_path = os.path.join(DATA_DIR, "plugins_state.json")
         if os.path.exists(plugins_state_path):
@@ -5271,7 +5475,9 @@ class NotesApp(QMainWindow):
                 plugin_name = fname[:-3]
                 plugin_path = os.path.join(plugins_folder, fname)
                 try:
-                    spec = importlib.util.spec_from_file_location(plugin_name, plugin_path)
+                    spec = importlib.util.spec_from_file_location(
+                        plugin_name, plugin_path
+                    )
                     module = importlib.util.module_from_spec(spec)
                     spec.loader.exec_module(module)
                     self.active_plugins[plugin_name] = module
@@ -7074,7 +7280,7 @@ class PasswordGeneratorApp:
                 ttk.Button(
                     link_frame,
                     text="Открыть ссылку",
-                    command=lambda: webbrowser.open(url),
+                    command=lambda: QDesktopServices.openUrl(QUrl(url)),
                     cursor="hand2",
                 ).pack(side=tk.TOP, fill=tk.X)
             ttk.Button(dialog, text="Закрыть", command=dialog.destroy).grid(
@@ -7253,4 +7459,4 @@ if __name__ == "__main__":
     window.show()
     sys.exit(app.exec())
 
-    #UPD 22.08.2025|23:38
+    # UPD 22.08.2025|23:50
