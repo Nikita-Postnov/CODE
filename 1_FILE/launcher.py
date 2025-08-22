@@ -142,9 +142,13 @@ SETTINGS_PATH = os.path.join(DATA_DIR, "settings.ini")
 ICON_PATH = os.path.join(DATA_DIR, "icon.ico")
 TRAY_ICON_PATH = os.path.join(DATA_DIR, "tray_icon.ico")
 FILE_ICON_PATH = os.path.join(DATA_DIR, "file.ico")
+USER_DICT_PATH = os.path.join(DATA_DIR, "user_dictionary.txt")
 os.makedirs(DATA_DIR, exist_ok=True)
 os.makedirs(NOTES_DIR, exist_ok=True)
 os.makedirs(PASSWORDS_DIR, exist_ok=True)
+if not os.path.exists(USER_DICT_PATH):
+    with open(USER_DICT_PATH, "a", encoding="utf-8"):
+        pass
 MAX_HISTORY = 250
 IMAGE_EXTENSIONS = [".png", ".jpg", ".jpeg", ".bmp", ".gif"]
 AUDIO_EXTENSIONS = [".wav", ".mp3", ".ogg"]
@@ -173,8 +177,35 @@ class SpellCheckHighlighter(QSyntaxHighlighter):
                 self.spell_checker = SpellChecker(language="ru")
             except Exception:
                 self.spell_checker = SpellChecker()
+            self._load_user_dictionary()
         else:
             self.spell_checker = None
+
+    def _load_user_dictionary(self) -> None:
+        self.user_words = set()
+        try:
+            with open(USER_DICT_PATH, "r", encoding="utf-8") as f:
+                for line in f:
+                    word = line.strip().lower()
+                    if word:
+                        self.spell_checker.word_frequency.add(word)
+                        self.user_words.add(word)
+        except Exception:
+            pass
+
+    def add_to_dictionary(self, word: str) -> None:
+        if not self.spell_checker:
+            return
+        w = word.strip().lower()
+        if not w or w in getattr(self, "user_words", set()):
+            return
+        self.spell_checker.word_frequency.add(w)
+        self.user_words.add(w)
+        try:
+            with open(USER_DICT_PATH, "a", encoding="utf-8") as f:
+                f.write(w + "\n")
+        except Exception:
+            pass
 
     def highlightBlock(self, text: str) -> None:
         if not self.spell_checker:
@@ -552,6 +583,13 @@ class CustomTextEdit(QTextEdit):
         cursor.insertText(new_word)
         cursor.endEditBlock()
 
+    def add_to_dictionary(self, word: str) -> None:
+        parent = self.parent()
+        highlighter = getattr(parent, "spell_highlighter", None)
+        if highlighter:
+            highlighter.add_to_dictionary(word)
+            highlighter.rehighlight()
+
     def contextMenuEvent(self, event: QContextMenuEvent) -> None:
         menu = QMenu(self)
         menu.setStyleSheet(CUSTOM_MENU_STYLE)
@@ -598,20 +636,21 @@ class CustomTextEdit(QTextEdit):
         word_cursor.select(QTextCursor.WordUnderCursor)
         word = word_cursor.selectedText()
         if word and SpellChecker is not None:
-            try:
-                spell = SpellChecker(language="ru")
-            except Exception:
-                spell = SpellChecker()
-            suggestions_iter = spell.candidates(word)
-            suggestions = sorted(suggestions_iter) if suggestions_iter else []
-            if suggestions:
-                menu.addSeparator()
-                for suggestion in suggestions[:5]:
-                    action = QAction(suggestion, self)
-                    action.triggered.connect(
-                        lambda checked=False, s=suggestion, c=QTextCursor(word_cursor): self.replace_word(c, s)
-                    )
-                    menu.addAction(action)
+            highlighter = getattr(self.parent(), "spell_highlighter", None)
+            spell = highlighter.spell_checker if highlighter else None
+            if spell:
+                if word.lower() in spell.unknown([word]):
+                    suggestions = sorted(spell.candidates(word))
+                    menu.addSeparator()
+                    add_dict_action = QAction("Add to Dictionary", self)
+                    add_dict_action.triggered.connect(lambda w=word: self.add_to_dictionary(w))
+                    menu.addAction(add_dict_action)
+                    for suggestion in suggestions[:5]:
+                        action = QAction(suggestion, self)
+                        action.triggered.connect(
+                            lambda checked=False, s=suggestion, c=QTextCursor(word_cursor): self.replace_word(c, s)
+                        )
+                        menu.addAction(action)
         menu.exec(event.globalPos())
 
     def createMimeDataFromSelection(self):
@@ -7170,4 +7209,4 @@ if __name__ == "__main__":
     window.show()
     sys.exit(app.exec())
 
-    #UPD 22.08.2025|20:44
+    #UPD 22.08.2025|20:52
