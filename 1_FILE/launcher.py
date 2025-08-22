@@ -218,6 +218,8 @@ class SpellCheckHighlighter(QSyntaxHighlighter):
         try:
             with open(USER_DICT_PATH, "a", encoding="utf-8") as f:
                 f.write(w + "\n")
+                f.flush()
+                os.fsync(f.fileno())
         except Exception:
             return
         self.user_words.add(w)
@@ -234,7 +236,6 @@ class SpellCheckHighlighter(QSyntaxHighlighter):
             except Exception:
                 pass
         self._load_user_dictionary()
-        self.rehighlight()
         self.rehighlight()
 
     def highlightBlock(self, text: str) -> None:
@@ -7252,4 +7253,4 @@ if __name__ == "__main__":
     window.show()
     sys.exit(app.exec())
 
-    #UPD 22.08.2025|23:33
+    #UPD 22.08.2025|23:38
