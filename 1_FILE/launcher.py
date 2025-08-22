@@ -638,20 +638,23 @@ class CustomTextEdit(QTextEdit):
         if word and SpellChecker is not None:
             highlighter = getattr(self.parent(), "spell_highlighter", None)
             spell = highlighter.spell_checker if highlighter else None
+            suggestions: list[str] = []
             if spell:
                 lower_word = word.lower()
                 if lower_word in spell.unknown([lower_word]):
-                    suggestions = sorted(spell.candidates(lower_word))
-                    menu.addSeparator()
-                    add_dict_action = QAction("Add to Dictionary", self)
-                    add_dict_action.triggered.connect(lambda w=word: self.add_to_dictionary(w))
-                    menu.addAction(add_dict_action)
-                    for suggestion in suggestions[:5]:
-                        action = QAction(suggestion, self)
-                        action.triggered.connect(
-                            lambda checked=False, s=suggestion, c=QTextCursor(word_cursor): self.replace_word(c, s)
-                        )
-                        menu.addAction(action)
+                    suggestions = sorted(spell.candidates(lower_word))[:5]
+            menu.addSeparator()
+            add_dict_action = QAction("Add to Dictionary", self)
+            add_dict_action.triggered.connect(
+                lambda checked=False, w=word: self.add_to_dictionary(w)
+            )
+            menu.addAction(add_dict_action)
+            for suggestion in suggestions:
+                action = QAction(suggestion, self)
+                action.triggered.connect(
+                    lambda checked=False, s=suggestion, c=QTextCursor(word_cursor): self.replace_word(c, s)
+                )
+                menu.addAction(action)
         menu.exec(event.globalPos())
 
     def createMimeDataFromSelection(self):
@@ -7210,4 +7213,4 @@ if __name__ == "__main__":
     window.show()
     sys.exit(app.exec())
 
-    #UPD 22.08.2025|22:34
+    #UPD 22.08.2025|22:47
