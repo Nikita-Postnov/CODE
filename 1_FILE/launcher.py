@@ -204,13 +204,13 @@ class SpellCheckHighlighter(QSyntaxHighlighter):
         w = word.strip().lower()
         if not w or w in getattr(self, "user_words", set()):
             return
-        self.spell_checker.word_frequency.add(w)
-        self.user_words.add(w)
         try:
             with open(USER_DICT_PATH, "a", encoding="utf-8") as f:
                 f.write(w + "\n")
         except Exception:
-            pass
+            return
+        self.spell_checker.word_frequency.add(w)
+        self.user_words.add(w)
         self.rehighlight()
 
     def _reload_user_dictionary(self, path: str) -> None:
@@ -7238,4 +7238,4 @@ if __name__ == "__main__":
     window.show()
     sys.exit(app.exec())
 
-    #UPD 22.08.2025|23:03
+    #UPD 22.08.2025|23:09
