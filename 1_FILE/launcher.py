@@ -20,6 +20,10 @@ from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from cryptography.hazmat.backends import default_backend
 from PySide6.QtPrintSupport import QPrinter
 from docx import Document
+try:
+    from spellchecker import SpellChecker
+except ImportError:
+    SpellChecker = None
 import numpy as np
 import time
 import math
@@ -78,6 +82,7 @@ from PySide6.QtGui import (
     QPainter,
     QPalette,
     QTextDocument,
+    QSyntaxHighlighter,
 )
 from scipy.io.wavfile import write
 from PySide6.QtWidgets import (
@@ -122,6 +127,7 @@ from PySide6.QtWidgets import (
     QToolBar,
     QDockWidget,
     QToolButton,
+    QFrame,
 )
 
 if getattr(sys, 'frozen', False):
@@ -148,24 +154,31 @@ ATTACH_FILE_FILTER = (
 )
 
 def create_list(*items):
-    """Return a new list containing the provided ``items``.
-
-    This helper makes it easy to define lists with arbitrary elements while
-    keeping the syntax concise.  It is primarily intended for situations where
-    multiple lists with different item types are needed.
-
-    Examples
-    --------
-    >>> numbers = create_list(1, 2, 3)
-    >>> words = create_list("foo", "bar")
-    >>> mixed = create_list(1, "two", 3.0)
-    """
-
     return list(items)
 
 EXAMPLE_NUMBERS = create_list(1, 2, 3, 4)
 EXAMPLE_WORDS = create_list("alpha", "beta", "gamma")
 EXAMPLE_MIXED = create_list("hello", 42, 3.14)
+
+
+class SpellCheckHighlighter(QSyntaxHighlighter):
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.spell = SpellChecker() if SpellChecker else None
+        self.err_fmt = QTextCharFormat()
+        self.err_fmt.setUnderlineColor(Qt.red)
+        self.err_fmt.setUnderlineStyle(QTextCharFormat.SpellCheckUnderline)
+
+    def highlightBlock(self, text: str) -> None:
+        if not self.spell:
+            return
+        words = re.findall(r"[A-Za-zА-Яа-яЁё']+", text)
+        misspelled = self.spell.unknown(w.lower() for w in words)
+        for match in re.finditer(r"[A-Za-zА-Яа-яЁё']+", text):
+            if match.group().lower() in misspelled:
+                self.setFormat(match.start(), match.end() - match.start(), self.err_fmt)
+
 
 def create_dropdown_combo(*items, parent=None):
 
@@ -786,6 +799,7 @@ class NotesApp(QMainWindow):
         self.text_edit = CustomTextEdit(
             parent=self, paste_image_callback=self.insert_image_from_clipboard
         )
+        self.spell_highlighter = SpellCheckHighlighter(self.text_edit.document())
         self._save_debouncer = QTimer(self)
         self._save_debouncer.setSingleShot(True)
         self._save_debouncer.setInterval(400)
@@ -2166,6 +2180,12 @@ class NotesApp(QMainWindow):
         self.tags_label.setText(f"Теги: {', '.join(note.tags) if note.tags else 'нет'}")
         self.password_manager_field.setText(note.password_manager)
         self.rdp_1c8_field.setText(note.rdp_1c8)
+        for i in range(self.notes_list.count()):
+            item = self.notes_list.item(i)
+            n = item.data(Qt.UserRole)
+            if n and n.uuid == note.uuid:
+                self.notes_list.setCurrentItem(item)
+                break
 
     def _html_escape(self, s: str) -> str:
         return (s.replace("&", "&amp;")
@@ -2766,8 +2786,12 @@ class NotesApp(QMainWindow):
         font = fmt.font()
         family = font.family() if font.family() else "Times New Roman"
         size = int(font.pointSize() if font.pointSize() > 0 else 14)
+        self.font_combo.blockSignals(True)
         self.font_combo.setCurrentFont(QFont(family))
+        self.font_combo.blockSignals(False)
+        self.font_size_spin.blockSignals(True)
         self.font_size_spin.setValue(size)
+        self.font_size_spin.blockSignals(False)
 
     def get_current_formatting(self):
         cursor = self.text_edit.textCursor()
@@ -3142,7 +3166,9 @@ class NotesApp(QMainWindow):
         pinned_notes = [note for note in filtered_notes if note.pinned]
         unpinned_notes = [note for note in filtered_notes if not note.pinned]
         fav_color = self.get_contrast_favorite_color()
-        for note in pinned_notes + unpinned_notes:
+        current_uuid = self.current_note.uuid if self.current_note else None
+
+        def _add_note(note):
             title = note.title
             timestamp = QDateTime.fromString(note.timestamp, Qt.ISODate)
             date_str = timestamp.toString("dd.MM.yyyy")
@@ -3154,6 +3180,31 @@ class NotesApp(QMainWindow):
             if note.favorite:
                 item.setForeground(fav_color)
             self.notes_list.addItem(item)
+            return item
+
+        for note in pinned_notes:
+            _add_note(note)
+
+        if pinned_notes and unpinned_notes:
+            sep_item = QListWidgetItem()
+            sep_item.setFlags(Qt.NoItemFlags)
+            line = QFrame()
+            line.setFrameShape(QFrame.HLine)
+            line.setFrameShadow(QFrame.Sunken)
+            sep_item.setSizeHint(line.sizeHint())
+            self.notes_list.addItem(sep_item)
+            self.notes_list.setItemWidget(sep_item, line)
+
+        for note in unpinned_notes:
+            _add_note(note)
+
+        if current_uuid:
+            for i in range(self.notes_list.count()):
+                it = self.notes_list.item(i)
+                n = it.data(Qt.UserRole)
+                if n and n.uuid == current_uuid:
+                    self.notes_list.setCurrentItem(it)
+                    break
 
     def get_contrast_favorite_color(self) -> QColor:
         bg = self.notes_list.palette().color(self.notes_list.backgroundRole())
@@ -4725,10 +4776,14 @@ class NotesApp(QMainWindow):
             QPalette.ColorRole.Highlight, QColor(142, 45, 197).lighter()
         )
         dark_palette.setColor(QPalette.ColorRole.HighlightedText, Qt.GlobalColor.black)
+        dark_palette.setColor(QPalette.ColorRole.Link, Qt.GlobalColor.white)
+        dark_palette.setColor(QPalette.ColorRole.LinkVisited, Qt.GlobalColor.white)
         self.notes_list.setStyleSheet("color: white; background-color: #2b2b2b;")
+        self.text_edit.setFont(QFont("Times New Roman", 14))
         self.text_edit.setStyleSheet(
-            "font-size: 14px; color: white; background-color: #2b2b2b;"
+            "font-size: 14px; font-family: 'Times New Roman'; color: white; background-color: #2b2b2b;"
         )
+        self.text_edit.document().setDefaultStyleSheet("a { color: white; }")
         QApplication.instance().setPalette(dark_palette)
         self.setStyleSheet(
         """
@@ -4738,6 +4793,15 @@ class NotesApp(QMainWindow):
                         border: 1px solid white;
                         padding: 5px;
                         font-size: 12px;
+                    }
+            QCheckBox { color: white; }
+            QCheckBox::indicator {
+                        background-color: #2b2b2b;
+                        border: 1px solid white;
+                    }
+            QCheckBox::indicator:checked {
+                        background-color: #2b2b2b;
+                        border: 1px solid white;
                     }
         """
         )
@@ -4801,26 +4865,40 @@ class NotesApp(QMainWindow):
     def apply_light_theme(self):
         self.setStyle(QStyleFactory.create("Fusion"))
         default_palette = QApplication.style().standardPalette()
+        default_palette.setColor(QPalette.ColorRole.Link, Qt.GlobalColor.black)
+        default_palette.setColor(QPalette.ColorRole.LinkVisited, Qt.GlobalColor.black)
         QApplication.instance().setPalette(default_palette)
         self.notes_list.setStyleSheet("color: black; background-color: white;")
+        self.text_edit.setFont(QFont("Times New Roman", 14))
         self.text_edit.setStyleSheet(
-            "font-size: 14px; color: black; background-color: white;"
+            "font-size: 14px; font-family: 'Times New Roman'; color: black; background-color: white;"
         )
+        self.text_edit.document().setDefaultStyleSheet("a { color: black; }")
         self.new_note_button.setStyleSheet("")
         self.save_note_button.setStyleSheet("")
+        self.setStyleSheet(
+        """
+            QToolTip {
+                        background-color: #ffffff;
+                        color: black;
+                        border: 1px solid black;
+                        padding: 5px;
+                        font-size: 12px;
+                    }
+            QCheckBox { color: black; }
+            QCheckBox::indicator {
+                        background-color: white;
+                        border: 1px solid black;
+                    }
+            QCheckBox::indicator:checked {
+                        background-color: white;
+                        border: 1px solid black;
+                    }
+        """
+        )
         self.delete_note_button.setStyleSheet("")
         self.audio_button.setStyleSheet("")
         self.menuBar().setStyleSheet("")
-        self.setStyleSheet(
-            """
-                                QToolTip {
-                                    background-color: #ffffff;
-                                    color: #000000;
-                                    border: 1px solid #999;
-                                    padding: 5px;
-                                    font-size: 12px;
-                                }"""
-        )
         self.rebuild_toolbar()
 
     def autosave_current_note(self):
@@ -7060,4 +7138,4 @@ if __name__ == "__main__":
     window.show()
     sys.exit(app.exec())
 
-    #UPD 22.08.2025|12:05
+    #UPD 22.08.2025|16:20
