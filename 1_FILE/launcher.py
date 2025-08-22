@@ -178,6 +178,11 @@ class SpellCheckHighlighter(QSyntaxHighlighter):
             except Exception:
                 self.spell_checker = SpellChecker()
             self._load_user_dictionary()
+            try:
+                self._dict_watcher = QFileSystemWatcher([USER_DICT_PATH])
+                self._dict_watcher.fileChanged.connect(self._reload_user_dictionary)
+            except Exception:
+                self._dict_watcher = None
         else:
             self.spell_checker = None
 
@@ -206,6 +211,17 @@ class SpellCheckHighlighter(QSyntaxHighlighter):
                 f.write(w + "\n")
         except Exception:
             pass
+        self.rehighlight()
+
+    def _reload_user_dictionary(self, path: str) -> None:
+        if self._dict_watcher and path not in self._dict_watcher.files():
+            try:
+                self._dict_watcher.addPath(path)
+            except Exception:
+                pass
+        self._load_user_dictionary()
+        self.rehighlight()
+        self.rehighlight()
 
     def highlightBlock(self, text: str) -> None:
         if not self.spell_checker:
@@ -7222,4 +7238,4 @@ if __name__ == "__main__":
     window.show()
     sys.exit(app.exec())
 
-    #UPD 22.08.2025|22:56
+    #UPD 22.08.2025|23:03
