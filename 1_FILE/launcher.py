@@ -4,6 +4,7 @@ import json
 import re
 import string
 import random
+import difflib
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 import wave
@@ -704,25 +705,44 @@ class CustomTextEdit(QTextEdit):
         if word and SpellChecker is not None:
             highlighter = getattr(self.parent(), "spell_highlighter", None)
             spell = highlighter.spell_checker if highlighter else None
+            lower_word = word.lower()
+            is_misspelled = bool(spell and lower_word in spell.unknown([lower_word]))
             suggestions: list[str] = []
-            if spell:
-                lower_word = word.lower()
-                if lower_word in spell.unknown([lower_word]):
-                    suggestions = sorted(spell.candidates(lower_word))[:5]
+            if is_misspelled:
+                user_suggestions: list[str] = []
+                if highlighter and getattr(highlighter, "user_words", None):
+                    try:
+                        user_suggestions = difflib.get_close_matches(
+                            lower_word, highlighter.user_words, n=5
+                        )
+                    except Exception:
+                        user_suggestions = []
+                spell_suggestions = (
+                    sorted(spell.candidates(lower_word)) if spell else []
+                )
+                seen: set[str] = set()
+                for s in user_suggestions + spell_suggestions:
+                    s_lower = s.lower()
+                    if s_lower != lower_word and s_lower not in seen:
+                        suggestions.append(s)
+                        seen.add(s_lower)
+                    if len(suggestions) >= 5:
+                        break
             menu.addSeparator()
             add_dict_action = QAction("Add to Dictionary", self)
             add_dict_action.triggered.connect(
                 lambda checked=False, w=word: self.add_to_dictionary(w)
             )
             menu.addAction(add_dict_action)
-            for suggestion in suggestions:
-                action = QAction(suggestion, self)
-                action.triggered.connect(
-                    lambda checked=False, s=suggestion, c=QTextCursor(
-                        word_cursor
-                    ): self.replace_word(c, s)
-                )
-                menu.addAction(action)
+            if is_misspelled:
+                for suggestion in suggestions:
+                    action = QAction(suggestion, self)
+                    action.triggered.connect(
+                        lambda checked=False, s=suggestion, c=QTextCursor(
+                            word_cursor
+                        ): self.replace_word(c, s)
+                    )
+                    menu.addAction(action)
         menu.exec(event.globalPos())
 
     def createMimeDataFromSelection(self):
@@ -7464,4 +7484,4 @@ if __name__ == "__main__":
     window.show()
     sys.exit(app.exec())
 
-    # UPD 23.08.2025|10:10
+    # UPD 23.08.2025|10:43
