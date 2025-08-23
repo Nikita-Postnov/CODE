@@ -225,11 +225,7 @@ class SpellCheckHighlighter(QSyntaxHighlighter):
                 os.fsync(f.fileno())
         except Exception:
             return
-        self.user_words.add(w)
-        try:
-            self.spell_checker.word_frequency.load_words([w])
-        except Exception:
-            pass
+        self._load_user_dictionary()
         self.rehighlight()
 
     def _reload_user_dictionary(self, path: str) -> None:
