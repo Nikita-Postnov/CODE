@@ -632,8 +632,8 @@ class CustomTextEdit(QTextEdit):
         cursor.endEditBlock()
 
     def add_to_dictionary(self, word: str) -> None:
-        parent = self.parent()
-        highlighter = getattr(parent, "spell_highlighter", None)
+        main_window = self.window()
+        highlighter = getattr(main_window, "spell_highlighter", None)
         if highlighter:
             highlighter.add_to_dictionary(word)
             highlighter.rehighlight()
