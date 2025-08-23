@@ -157,6 +157,7 @@ AUDIO_EXTENSIONS = [".wav", ".mp3", ".ogg"]
 ATTACH_FILE_FILTER = (
     f"Изображения ({' '.join('*' + ext for ext in IMAGE_EXTENSIONS)})"
     f";;Аудио ({' '.join('*' + ext for ext in AUDIO_EXTENSIONS)})"
+    f";;Все файлы (*.*)"
 )
 
 
@@ -556,26 +557,33 @@ class CustomTextEdit(QTextEdit):
         pos = event.position().toPoint()
         cursor = self.cursorForPosition(pos)
         char_format = cursor.charFormat()
-        if event.button() == Qt.LeftButton and char_format.isAnchor():
-            link = char_format.anchorHref()
-            if link.startswith("dropdown://"):
-                dd_id = link.split("://", 1)[1]
-                main_window = self.window()
-                if hasattr(main_window, "show_dropdown_menu_for_token"):
-                    rect = self.cursorRect(cursor)
-                    global_pos = self.viewport().mapToGlobal(rect.bottomLeft())
-                    main_window.show_dropdown_menu_for_token(dd_id, global_pos)
+        if event.button() == Qt.LeftButton:
+            if char_format.isAnchor():
+                link = char_format.anchorHref()
+                if link.startswith("dropdown://"):
+                    dd_id = link.split("://", 1)[1]
+                    main_window = self.window()
+                    if hasattr(main_window, "show_dropdown_menu_for_token"):
+                        rect = self.cursorRect(cursor)
+                        global_pos = self.viewport().mapToGlobal(rect.bottomLeft())
+                        main_window.show_dropdown_menu_for_token(dd_id, global_pos)
+                    return
+                if link.startswith("file://"):
+                    local_path = QUrl(link).toLocalFile()
+                    if os.path.exists(local_path):
+                        QDesktopServices.openUrl(QUrl.fromLocalFile(local_path))
+                    else:
+                        QDesktopServices.openUrl(QUrl(link))
+                    return
+                QDesktopServices.openUrl(QUrl(link))
                 return
-        if event.button() == Qt.LeftButton and (event.modifiers() & Qt.ControlModifier):
             if char_format.isImageFormat():
                 image_format = char_format.toImageFormat()
                 image_path = image_format.name()
                 if image_path.startswith("Data:image"):
                     header, b64data = image_path.split(",", 1)
                     suffix = ".png" if "png" in header else ".jpg"
-                    with tempfile.NamedTemporaryFile(
-                        delete=False, suffix=suffix
-                    ) as tmpfile:
+                    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmpfile:
                         tmpfile.write(base64.b64decode(b64data))
                         tmpfile_path = tmpfile.name
                     QDesktopServices.openUrl(QUrl.fromLocalFile(tmpfile_path))
@@ -584,16 +592,6 @@ class CustomTextEdit(QTextEdit):
                     if os.path.exists(file_path):
                         QDesktopServices.openUrl(QUrl.fromLocalFile(file_path))
                 return
-            if char_format.isAnchor():
-                link = char_format.anchorHref()
-                if link.startswith("file://"):
-                    local_path = QUrl(link).toLocalFile()
-                    if os.path.exists(local_path):
-                        QDesktopServices.openUrl(QUrl.fromLocalFile(local_path))
-                        return
-                else:
-                    QDesktopServices.openUrl(QUrl(link))
-                    return
             block_cursor = self.cursorForPosition(pos)
             block_cursor.select(QTextCursor.SelectionType.BlockUnderCursor)
             block_html = block_cursor.selection().toHtml()
@@ -604,7 +602,6 @@ class CustomTextEdit(QTextEdit):
                 if os.path.exists(local_path):
                     QDesktopServices.openUrl(QUrl.fromLocalFile(local_path))
                     return
-        if event.button() == Qt.LeftButton:
             word_cursor = self.cursorForPosition(pos)
             word_cursor.select(QTextCursor.SelectionType.WordUnderCursor)
             word = word_cursor.selectedText()
@@ -7484,4 +7481,4 @@ if __name__ == "__main__":
     window.show()
     sys.exit(app.exec())
 
-    # UPD 23.08.2025|10:43
+    # UPD 23.08.2025|13:51
