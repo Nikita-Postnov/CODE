@@ -10,6 +10,7 @@ from tkinter import ttk, messagebox, filedialog
 import wave
 import traceback
 import base64
+import html as html_lib
 
 try:
     import pyperclip
@@ -553,10 +554,31 @@ class CustomTextEdit(QTextEdit):
         else:
             super().dropEvent(event)
 
+    def _open_file_url(self, link: str) -> bool:
+        try:
+            link = html_lib.unescape(link or "")
+            url = QUrl(link)
+            if not url.isValid() or url.scheme().lower() != "file":
+                try:
+                    url = QUrl.fromEncoded(link.encode("utf-8"))
+                except Exception:
+                    pass
+            local_path = url.toLocalFile()
+            if not local_path and link.lower().startswith("file://"):
+                raw_path = QUrl(link).path() or link[7:]  # после file://
+                raw_path = raw_path.lstrip("/")
+                local_path = unquote(raw_path).replace("/", os.sep)
+            if local_path and os.path.exists(local_path):
+                return QDesktopServices.openUrl(QUrl.fromLocalFile(local_path))
+            return QDesktopServices.openUrl(QUrl(link))
+        except Exception:
+            return False
+
     def mousePressEvent(self, event: QMouseEvent) -> None:
         pos = event.position().toPoint()
         cursor = self.cursorForPosition(pos)
         char_format = cursor.charFormat()
+
         if event.button() == Qt.LeftButton:
             if char_format.isAnchor():
                 link = char_format.anchorHref()
@@ -569,38 +591,39 @@ class CustomTextEdit(QTextEdit):
                         main_window.show_dropdown_menu_for_token(dd_id, global_pos)
                     return
                 if link.startswith("file://"):
-                    local_path = QUrl(link).toLocalFile()
-                    if os.path.exists(local_path):
-                        QDesktopServices.openUrl(QUrl.fromLocalFile(local_path))
-                    else:
-                        QDesktopServices.openUrl(QUrl(link))
+                    if event.modifiers() & Qt.ControlModifier:
+                        self._open_file_url(link)
+                    super().mousePressEvent(event)
                     return
                 QDesktopServices.openUrl(QUrl(link))
                 return
             if char_format.isImageFormat():
-                image_format = char_format.toImageFormat()
-                image_path = image_format.name()
-                if image_path.startswith("Data:image"):
-                    header, b64data = image_path.split(",", 1)
-                    suffix = ".png" if "png" in header else ".jpg"
-                    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmpfile:
-                        tmpfile.write(base64.b64decode(b64data))
-                        tmpfile_path = tmpfile.name
-                    QDesktopServices.openUrl(QUrl.fromLocalFile(tmpfile_path))
-                elif image_path.startswith("file://"):
-                    file_path = QUrl(image_path).toLocalFile()
-                    if os.path.exists(file_path):
-                        QDesktopServices.openUrl(QUrl.fromLocalFile(file_path))
+                if event.modifiers() & Qt.ControlModifier:
+                    image_format = char_format.toImageFormat()
+                    image_path = image_format.name()
+                    if image_path.startswith("Data:image"):
+                        header, b64data = image_path.split(",", 1)
+                        suffix = ".png" if "png" in header else ".jpg"
+                        with tempfile.NamedTemporaryFile(
+                            delete=False, suffix=suffix
+                        ) as tmpfile:
+                            tmpfile.write(base64.b64decode(b64data))
+                            tmpfile_path = tmpfile.name
+                        QDesktopServices.openUrl(QUrl.fromLocalFile(tmpfile_path))
+                    elif image_path.startswith("file://"):
+                        file_path = QUrl(image_path).toLocalFile()
+                        if os.path.exists(file_path):
+                            QDesktopServices.openUrl(QUrl.fromLocalFile(file_path))
+                else:
+                    super().mousePressEvent(event)
                 return
-            block_cursor = self.cursorForPosition(pos)
-            block_cursor.select(QTextCursor.SelectionType.BlockUnderCursor)
-            block_html = block_cursor.selection().toHtml()
-            match = re.search(r'href="(file://[^"]+)"', block_html)
-            if match:
-                link = match.group(1)
-                local_path = QUrl(link).toLocalFile()
-                if os.path.exists(local_path):
-                    QDesktopServices.openUrl(QUrl.fromLocalFile(local_path))
+            if event.modifiers() & Qt.ControlModifier:
+                block_cursor = self.cursorForPosition(pos)
+                block_cursor.select(QTextCursor.SelectionType.BlockUnderCursor)
+                block_html = block_cursor.selection().toHtml()
+                m = re.search(r'href="(file://[^"]+)"', block_html)
+                if m:
+                    self._open_file_url(html_lib.unescape(m.group(1)))
                     return
             word_cursor = self.cursorForPosition(pos)
             word_cursor.select(QTextCursor.SelectionType.WordUnderCursor)
@@ -873,9 +896,7 @@ class NotesApp(QMainWindow):
         self.debounce_timer = QTimer(self)
         self.debounce_timer.setSingleShot(True)
         self.debounce_timer.timeout.connect(self.autosave_current_note)
-        self.text_edit.textChanged.connect(
-            lambda: self.debounce_timer.start(self.debounce_ms)
-        )
+        self.text_edit.textChanged.connect(self._on_text_changed)
         self.current_note = None
         self.attachments_watcher = QFileSystemWatcher(self)
         self.attachments_watcher.directoryChanged.connect(self._refresh_attachments)
@@ -899,8 +920,13 @@ class NotesApp(QMainWindow):
         self.reminder_timer = QTimer(self)
         self.reminder_timer.timeout.connect(self.check_reminders)
         self.reminder_timer.start(60000)
-        self.autosave_timer.timeout.connect(self.autosave)
-        self.autosave_timer.start(self.autosave_interval)
+
+    #   self.autosave_timer.timeout.connect(self.autosave)
+    #   self.autosave_timer.start(self.autosave_interval)
+
+    def _on_text_changed(self):
+        if getattr(self, "autosave_enabled", True):
+            self.debounce_timer.start(self.debounce_ms)
 
     def exit_app(self) -> None:
         self.tray_icon.hide()
@@ -1871,7 +1897,9 @@ class NotesApp(QMainWindow):
             self.record_state_for_undo()
             QMessageBox.information(self, "Сохранено", "Заметка успешно сохранена.")
 
-    def save_note_quiet(self) -> None:
+    def save_note_quiet(self, *, force: bool = False) -> None:
+        if not force and not getattr(self, "autosave_enabled", True):
+            return
         if self.current_note:
             self.current_note.content = self.text_edit.toHtml()
             self.current_note.password_manager = self.password_manager_field.text()
@@ -2541,7 +2569,6 @@ class NotesApp(QMainWindow):
         vals = self._open_dropdown_values_editor(info.get("values"))
         if vals is not None:
             info["values"] = vals
-            # Refresh HTML to store new list
             self._update_dropdown_token(dd_id, info.get("value", ""))
             self.show_dropdown_menu_for_token(dd_id)
 
@@ -2560,9 +2587,15 @@ class NotesApp(QMainWindow):
                 lambda _, val=v: self._update_dropdown_token(dd_id, val)
             )
         menu.addSeparator()
+        add_act = menu.addAction("➕ Добавить значение…")
+        add_act.triggered.connect(lambda: self._add_value_to_dropdown(dd_id))
+        curr = (info or {}).get("value", "")
+        del_act = menu.addAction(f"➖ Удалить «{curr}» из списка")
+        del_act.setEnabled(bool(curr and curr in values))
+        del_act.triggered.connect(lambda: self._remove_value_from_dropdown(dd_id, curr))
+        menu.addSeparator()
         edit_act = menu.addAction("✏️ Редактировать список…")
         edit_act.triggered.connect(lambda: self._edit_values_and_reopen(dd_id))
-
         if global_pos is None:
             cr = self.text_edit.cursorRect(self.text_edit.textCursor())
             global_pos = self.text_edit.viewport().mapToGlobal(cr.bottomLeft())
@@ -2742,7 +2775,7 @@ class NotesApp(QMainWindow):
                 self.text_edit.blockSignals(True)
                 self.text_edit.setHtml(html)
                 self.text_edit.blockSignals(False)
-                self.save_note_quiet()
+                self.save_note_quiet(force=True)
                 self._rebuild_attachments_panel(self.current_note)
 
     def _safe_restore_cursor(self, anchor_pos: int, cursor_pos: int) -> None:
@@ -2878,7 +2911,7 @@ class NotesApp(QMainWindow):
         QMessageBox.information(
             self, "Файл прикреплён", f"Файл '{filename}' прикреплён к заметке."
         )
-        self.save_note_quiet()
+        self.save_note_quiet(force=True)
         self._rebuild_attachments_panel(self.current_note)
 
     def attach_file_to_note_external(self, file_path: str) -> None:
@@ -2925,7 +2958,7 @@ class NotesApp(QMainWindow):
         QMessageBox.information(
             self, "Файл прикреплён", f"Файл '{filename}' прикреплён к заметке."
         )
-        self.save_note_quiet()
+        self.save_note_quiet(force=True)
         self._rebuild_attachments_panel(self.current_note)
 
     def align_left(self) -> None:
@@ -2999,6 +3032,42 @@ class NotesApp(QMainWindow):
             fmt = self.text_edit.currentCharFormat()
             fmt.setFontUnderline(not fmt.fontUnderline())
             self.text_edit.setCurrentCharFormat(fmt)
+
+    def _set_dropdown_values(self, dd_id: str, values: list[str]) -> None:
+        info = self._get_dropdown_token_info(dd_id)
+        if not info:
+            return
+        cleaned = []
+        for v in values:
+            v = (v or "").strip()
+            if v and v not in cleaned:
+                cleaned.append(v)
+        info["values"] = cleaned
+        self._update_dropdown_token(dd_id, info.get("value", ""))
+
+    def _add_value_to_dropdown(self, dd_id: str) -> None:
+        text, ok = QInputDialog.getText(self, "Добавить значение", "Текст:")
+        if not ok:
+            return
+        val = (text or "").strip()
+        if not val:
+            return
+        info = self._get_dropdown_token_info(dd_id)
+        if not info:
+            return
+        values = list(info.get("values", []))
+        if val not in values:
+            values.append(val)
+            self._set_dropdown_values(dd_id, values)
+        self.show_dropdown_menu_for_token(dd_id)
+
+    def _remove_value_from_dropdown(self, dd_id: str, value: str) -> None:
+        info = self._get_dropdown_token_info(dd_id)
+        if not info:
+            return
+        values = [v for v in info.get("values", []) if v != value]
+        self._set_dropdown_values(dd_id, values)
+        self.show_dropdown_menu_for_token(dd_id)
 
     def change_text_color(self) -> None:
         color = QColorDialog.getColor(Qt.black, self.text_edit, "Выберите цвет текста")
@@ -4161,17 +4230,27 @@ class NotesApp(QMainWindow):
             dialog.accept()
 
     def rebuild_toolbar(self):
-        if hasattr(self, "dock_toolbar") and self.dock_toolbar:
-            self.removeDockWidget(self.dock_toolbar)
-            self.dock_toolbar.deleteLater()
+        dock = getattr(self, "dock_toolbar", None)
+        was_visible = bool(dock and dock.isVisible())
+        area = self.dockWidgetArea(dock) if dock else Qt.TopDockWidgetArea
+        old_scroll = getattr(self, "toolbar_scroll", None)
+        if old_scroll is not None:
+            try:
+                old_scroll.setParent(None)
+                old_scroll.deleteLater()
+            except Exception:
+                pass
         self.init_toolbar()
-        self.dock_toolbar = QDockWidget("Панель инструментов", self)
-        self.dock_toolbar.setObjectName("dock_toolbar")
-        self.dock_toolbar.setWidget(self.toolbar_scroll)
-        self.dock_toolbar.setAllowedAreas(
-            Qt.TopDockWidgetArea | Qt.BottomDockWidgetArea
-        )
-        self.addDockWidget(Qt.TopDockWidgetArea, self.dock_toolbar)
+        if dock is None:
+            self.dock_toolbar = QDockWidget("Панель инструментов", self)
+            self.dock_toolbar.setObjectName("dock_toolbar")
+            self.dock_toolbar.setAllowedAreas(
+                Qt.TopDockWidgetArea | Qt.BottomDockWidgetArea
+            )
+            self.addDockWidget(area, self.dock_toolbar)
+            dock = self.dock_toolbar
+        dock.setWidget(self.toolbar_scroll)
+        dock.setVisible(was_visible)
 
     def show_reminder_dialog(self, note):
         time_str = ""
@@ -4404,91 +4483,97 @@ class NotesApp(QMainWindow):
     def add_menu_bar(self):
         menu_bar = self.menuBar()
         plugins_menu = menu_bar.addMenu("Плагины")
-        manage_plugins_action = QAction("Управление плагинами", self)
-        manage_plugins_action.triggered.connect(self.manage_plugins_dialog)
-        plugins_menu.addAction(manage_plugins_action)
-        reload_plugins_action = QAction("Перезагрузить плагины", self)
-        reload_plugins_action.triggered.connect(self.load_plugins)
-        plugins_menu.addAction(reload_plugins_action)
+        act = QAction("Управление плагинами", self)
+        act.triggered.connect(self.manage_plugins_dialog)
+        plugins_menu.addAction(act)
+        act = QAction("Перезагрузить плагины", self)
+        act.triggered.connect(self.load_plugins)
+        plugins_menu.addAction(act)
         template_menu = self.menuBar().addMenu("Шаблоны")
-        insert_template_action = QAction("Вставить шаблон", self)
-        insert_template_action.triggered.connect(self.insert_template)
-        template_menu.addAction(insert_template_action)
-        save_tpl_action = QAction("Сохранить как шаблон…", self)
-        save_tpl_action.setShortcut("Ctrl+Shift+S")
-        save_tpl_action.triggered.connect(self.save_current_as_template)
-        template_menu.addAction(save_tpl_action)
-        manage_tpls_action = QAction("Управление шаблонами…", self)
-        manage_tpls_action.triggered.connect(self.manage_templates_dialog)
-        template_menu.addAction(manage_tpls_action)
+        act = QAction("Вставить шаблон", self)
+        act.triggered.connect(self.insert_template)
+        template_menu.addAction(act)
+        act = QAction("Сохранить как шаблон…", self)
+        act.setShortcut("Ctrl+Shift+S")
+        act.triggered.connect(self.save_current_as_template)
+        template_menu.addAction(act)
+        act = QAction("Управление шаблонами…", self)
+        act.triggered.connect(self.manage_templates_dialog)
+        template_menu.addAction(act)
         file_menu = menu_bar.addMenu("Файл")
-        import_action = QAction("Импорт...", self)
-        import_action.triggered.connect(self.import_note)
-        file_menu.addAction(import_action)
-        export_pdf_action = QAction("Экспорт в PDF", self)
-        export_pdf_action.triggered.connect(self.export_current_note_pdf)
-        file_menu.addAction(export_pdf_action)
-        export_txt_action = QAction("Экспорт в TXT", self)
-        export_txt_action.triggered.connect(self.export_current_note_txt)
-        file_menu.addAction(export_txt_action)
-        export_docx_action = QAction("Экспорт в DOCX", self)
-        export_docx_action.triggered.connect(self.export_current_note_docx)
-        file_menu.addAction(export_docx_action)
-        export_action = QAction("Экспорт в JSON", self)
-        export_action.triggered.connect(self.export_note)
-        file_menu.addAction(export_action)
+        act = QAction("Импорт.", self)
+        act.triggered.connect(self.import_note)
+        file_menu.addAction(act)
+        act = QAction("Экспорт в PDF", self)
+        act.triggered.connect(self.export_current_note_pdf)
+        file_menu.addAction(act)
+        act = QAction("Экспорт в TXT", self)
+        act.triggered.connect(self.export_current_note_txt)
+        file_menu.addAction(act)
+        act = QAction("Экспорт в DOCX", self)
+        act.triggered.connect(self.export_current_note_docx)
+        file_menu.addAction(act)
+        act = QAction("Экспорт в JSON", self)
+        act.triggered.connect(self.export_note)
+        file_menu.addAction(act)
         help_menu = menu_bar.addMenu("Справка")
-        readme_action = QAction("Открыть README.md", self)
-        readme_action.triggered.connect(self.open_readme)
-        help_menu.addAction(readme_action)
+        act = QAction("Открыть README.md", self)
+        act.triggered.connect(self.open_readme)
+        help_menu.addAction(act)
         settings_menu = menu_bar.addMenu("Настройки")
-        view_menu = menu_bar.addMenu("Вид")
-        for dock, name in [
-            (self.dock_notes_list, "Заметки"),
-            (self.dock_history, "История"),
-            (self.dock_buttons, "Кнопки"),
-            (self.dock_editor, "Редактор"),
-            (self.dock_toolbar, "Панель инструментов"),
-        ]:
-            action = dock.toggleViewAction()
-            action.setText(name)
-            view_menu.addAction(action)
-
         settings_action = QAction("Настройки:", self)
         settings_action.setShortcut("Ctrl+,")
         settings_action.triggered.connect(self.show_settings_window)
         settings_menu.addAction(settings_action)
+        self.view_menu = menu_bar.addMenu("Вид")
+        for dock in [
+            self.dock_notes_list,
+            self.dock_history,
+            self.dock_buttons,
+            self.dock_editor,
+        ]:
+            action = dock.toggleViewAction()
+            action.setText(dock.windowTitle())
+            self.view_menu.addAction(action)
+        self.toolbars_menu = self.view_menu.addMenu("Панели инструментов")
+        dock_action = self.dock_toolbar.toggleViewAction()
+        dock_action.setText(self.dock_toolbar.windowTitle() or "Панель инструментов")
+        self.toolbars_menu.addAction(dock_action)
+        if hasattr(self, "visibility_toolbar") and isinstance(
+            self.visibility_toolbar, QToolBar
+        ):
+            tb_action = self.visibility_toolbar.toggleViewAction()
+            tb_action.setText(
+                self.visibility_toolbar.windowTitle() or "Видимость полей"
+            )
+            self.toolbars_menu.addAction(tb_action)
         trash_menu = self.menuBar().addMenu("Корзина")
-        show_trash_action = QAction("Показать корзину", self)
-        show_trash_action.triggered.connect(self.show_trash)
-        trash_menu.addAction(show_trash_action)
-        restore_action = QAction("Восстановить заметку", self)
-        restore_action.triggered.connect(self.restore_note_from_trash)
-        trash_menu.addAction(restore_action)
-        delete_forever_action = QAction("Удалить безвозвратно", self)
-        delete_forever_action.triggered.connect(self.delete_note_permanently)
-        trash_menu.addAction(delete_forever_action)
-        empty_trash_action = QAction("Очистить корзину", self)
-        empty_trash_action.triggered.connect(self.empty_trash)
-        trash_menu.addAction(empty_trash_action)
+        act = QAction("Показать корзину", self)
+        act.triggered.connect(self.show_trash)
+        trash_menu.addAction(act)
+        act = QAction("Восстановить заметку", self)
+        act.triggered.connect(self.restore_note_from_trash)
+        trash_menu.addAction(act)
+        act = QAction("Удалить безвозвратно", self)
+        act.triggered.connect(self.delete_note_permanently)
+        trash_menu.addAction(act)
+        act = QAction("Очистить корзину", self)
+        act.triggered.connect(self.empty_trash)
+        trash_menu.addAction(act)
         reminders_menu = menu_bar.addMenu("Управление напоминаниями")
-        add_reminder_action = QAction("Добавить напоминание к текущей заметки", self)
-        add_reminder_action.triggered.connect(self.set_reminder_for_note)
-        reminders_menu.addAction(add_reminder_action)
-        edit_reminder_action = QAction("Изменить напоминание у текущей заметки", self)
-        edit_reminder_action.triggered.connect(self.edit_reminder_for_note)
-        remove_reminder_action = QAction("Удалить напоминание у текущей заметки", self)
-        remove_reminder_action.triggered.connect(self.remove_reminder_from_note)
-        reminders_menu.addAction(remove_reminder_action)
+        act = QAction("Добавить напоминание к текущей заметки", self)
+        act.triggered.connect(self.set_reminder_for_note)
+        reminders_menu.addAction(act)
+        act = QAction("Изменить напоминание у текущей заметки", self)
+        act.triggered.connect(self.edit_reminder_for_note)
+        reminders_menu.addAction(act)
+        act = QAction("Удалить напоминание у текущей заметки", self)
+        act.triggered.connect(self.remove_reminder_from_note)
+        reminders_menu.addAction(act)
         reminders_menu.addSeparator()
-        mass_manage_action = QAction("Массовое удаление", self)
-        mass_manage_action.triggered.connect(self.open_mass_reminders_dialog)
-        reminders_menu.addAction(mass_manage_action)
-        reminders_menu.addActions(
-            [add_reminder_action, edit_reminder_action, remove_reminder_action]
-        )
-        reminders_menu.addSeparator()
-        reminders_menu.addAction(mass_manage_action)
+        act = QAction("Массовое удаление", self)
+        act.triggered.connect(self.open_mass_reminders_dialog)
+        reminders_menu.addAction(act)
 
     def show_settings_window(self):
         dialog = QDialog(self)
@@ -4509,6 +4594,8 @@ class NotesApp(QMainWindow):
         interval_spinbox.setSuffix(" сек")
         interval_spinbox.setValue(self.autosave_interval // 1000)
         layout.addRow("Интервал автосохранения:", interval_spinbox)
+        interval_spinbox.setEnabled(autosave_checkbox.isChecked())
+        autosave_checkbox.toggled.connect(interval_spinbox.setEnabled)
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         buttons.accepted.connect(dialog.accept)
         buttons.rejected.connect(dialog.reject)
@@ -4525,6 +4612,8 @@ class NotesApp(QMainWindow):
                 self.autosave_timer.start(self.autosave_interval)
             else:
                 self.autosave_timer.stop()
+                if hasattr(self, "debounce_timer"):
+                    self.debounce_timer.stop()
             self.init_theme()
 
     def show_help_window(self):
@@ -5074,7 +5163,7 @@ class NotesApp(QMainWindow):
         self.setAcceptDrops(True)
         self.autosave_enabled = self.settings.value("autosave_enabled", True, type=bool)
         self.autosave_interval = self.settings.value(
-            "autosave_interval", 300000, type=int
+            "autosave_interval", 60000, type=int
         )
         self.autosave_timer = QTimer(self)
         self.autosave_timer.timeout.connect(self.autosave_current_note)
@@ -5117,21 +5206,13 @@ class NotesApp(QMainWindow):
         self.setStyleSheet(
             """
             QToolTip {
-                        background-color: #2a2a2a;
-                        color: white;
-                        border: 1px solid white;
-                        padding: 5px;
-                        font-size: 12px;
-                    }
+                background-color: #2a2a2a;
+                color: white;
+                border: 1px solid white;
+                padding: 5px;
+                font-size: 12px;
+            }
             QCheckBox { color: white; }
-            QCheckBox::indicator {
-                        background-color: #2b2b2b;
-                        border: 1px solid white;
-                    }
-            QCheckBox::indicator:checked {
-                        background-color: #2b2b2b;
-                        border: 1px solid white;
-                    }
         """
         )
         self.rebuild_toolbar()
@@ -5213,21 +5294,13 @@ class NotesApp(QMainWindow):
         self.setStyleSheet(
             """
             QToolTip {
-                        background-color: #ffffff;
-                        color: black;
-                        border: 1px solid black;
-                        padding: 5px;
-                        font-size: 12px;
-                    }
+                background-color: #ffffff;
+                color: black;
+                border: 1px solid black;
+                padding: 5px;
+                font-size: 12px;
+            }
             QCheckBox { color: black; }
-            QCheckBox::indicator {
-                        background-color: white;
-                        border: 1px solid black;
-                    }
-            QCheckBox::indicator:checked {
-                        background-color: white;
-                        border: 1px solid black;
-                    }
         """
         )
         self.delete_note_button.setStyleSheet("")
@@ -5236,6 +5309,8 @@ class NotesApp(QMainWindow):
         self.rebuild_toolbar()
 
     def autosave_current_note(self):
+        if not getattr(self, "autosave_enabled", True):
+            return
         for note in self.notes:
             if note == self.current_note:
                 note.content = self.text_edit.toHtml()
@@ -5305,6 +5380,7 @@ class NotesApp(QMainWindow):
         self.save_settings()
         if hasattr(self, "autosave_timer") and self.autosave_timer.isActive():
             self.autosave_timer.stop()
+            self.debounce_timer.stop()
         if hasattr(self, "reminder_timer") and self.reminder_timer.isActive():
             self.reminder_timer.stop()
         if self.audio_thread and self.audio_thread.isRunning():
@@ -7481,4 +7557,4 @@ if __name__ == "__main__":
     window.show()
     sys.exit(app.exec())
 
-    # UPD 23.08.2025|13:51
+    # UPD 23.08.2025|19:14
