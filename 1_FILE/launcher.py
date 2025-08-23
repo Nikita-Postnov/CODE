@@ -468,6 +468,15 @@ class CustomTextEdit(QTextEdit):
         if source.hasImage() and self.paste_image_callback:
             image = source.imageData()
             self.paste_image_callback(image)
+        elif source.hasHtml():
+            html = source.html()
+            html = re.sub(r"font-family:[^;\"]*;?", "", html, flags=re.IGNORECASE)
+            html = re.sub(r"font-size:[^;\"]*;?", "", html, flags=re.IGNORECASE)
+            self.textCursor().insertHtml(html)
+        elif source.hasText():
+            fmt = QTextCharFormat()
+            fmt.setFont(QFont("Times New Roman", 14))
+            self.textCursor().insertText(source.text(), fmt)
         else:
             super().insertFromMimeData(source)
 
@@ -7455,4 +7464,4 @@ if __name__ == "__main__":
     window.show()
     sys.exit(app.exec())
 
-    # UPD 23.08.2025|09:53
+    # UPD 23.08.2025|10:10
