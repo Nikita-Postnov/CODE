@@ -193,19 +193,8 @@ class SpellCheckHighlighter(QSyntaxHighlighter):
             self.spell_checker = None
 
     def _load_user_dictionary(self) -> None:
-        """Load the custom dictionary and update the spell checker.
-
-        The previous implementation attempted to add each word using
-        ``WordFrequency.add``.  However, ``pyspellchecker`` exposes the
-        ``load_words`` API for bulk loading custom words, and using ``add``
-        does not reliably register the new vocabulary.  As a result, words
-        appeared to be checked correctly during a session but were not
-        persisted in the dictionary file.  By collecting all words and
-        loading them in a single call we ensure both persistence and correct
-        spell checking behaviour.
-        """
-
         self.user_words = set()
+        self.local_ignored = set()
         try:
             with open(USER_DICT_PATH, "r", encoding="utf-8") as f:
                 words = [line.strip().lower() for line in f if line.strip()]
@@ -231,6 +220,10 @@ class SpellCheckHighlighter(QSyntaxHighlighter):
         self._load_user_dictionary()
         self.rehighlight()
 
+    def set_local_ignored(self, words: list[str] | set[str]) -> None:
+        self.local_ignored = {w.strip().lower() for w in words if w.strip()}
+        self.rehighlight()
+
     def _reload_user_dictionary(self, path: str) -> None:
         if self._dict_watcher and path not in self._dict_watcher.files():
             try:
@@ -249,6 +242,7 @@ class SpellCheckHighlighter(QSyntaxHighlighter):
         words = [m.group().lower() for m in matches]
         misspelled = self.spell_checker.unknown(words)
         misspelled -= getattr(self, "user_words", set())
+        misspelled -= getattr(self, "local_ignored", set())
         for match in matches:
             word = match.group().lower()
             if word in misspelled:
@@ -483,6 +477,11 @@ class CustomTextEdit(QTextEdit):
         else:
             super().insertFromMimeData(source)
 
+    def ignore_in_this_note(self, word: str) -> None:  # NEW
+        mw = self.window()
+        if hasattr(mw, "add_word_to_note_ignore"):
+            mw.add_word_to_note_ignore(word)
+
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:
         if event.mimeData().hasUrls():
             event.acceptProposedAction()
@@ -578,7 +577,6 @@ class CustomTextEdit(QTextEdit):
         pos = event.position().toPoint()
         cursor = self.cursorForPosition(pos)
         char_format = cursor.charFormat()
-
         if event.button() == Qt.LeftButton:
             if char_format.isAnchor():
                 link = char_format.anchorHref()
@@ -590,12 +588,13 @@ class CustomTextEdit(QTextEdit):
                         global_pos = self.viewport().mapToGlobal(rect.bottomLeft())
                         main_window.show_dropdown_menu_for_token(dd_id, global_pos)
                     return
-                if link.startswith("file://"):
-                    if event.modifiers() & Qt.ControlModifier:
+                if event.modifiers() & Qt.ControlModifier:
+                    if link.startswith("file://"):
                         self._open_file_url(link)
-                    super().mousePressEvent(event)
+                    else:
+                        QDesktopServices.openUrl(QUrl(link))
                     return
-                QDesktopServices.openUrl(QUrl(link))
+                super().mousePressEvent(event)
                 return
             if char_format.isImageFormat():
                 if event.modifiers() & Qt.ControlModifier:
@@ -636,6 +635,35 @@ class CustomTextEdit(QTextEdit):
                 return
         super().mousePressEvent(event)
 
+    def mouseDoubleClickEvent(self, event: QMouseEvent) -> None:
+        pos = event.position().toPoint()
+        cursor = self.cursorForPosition(pos)
+        cf = cursor.charFormat()
+        if cf.isAnchor():
+            if event.modifiers() & Qt.ControlModifier:
+                link = cf.anchorHref()
+                if link.startswith("file://"):
+                    self._open_file_url(link)
+                else:
+                    QDesktopServices.openUrl(QUrl(link))
+                return
+            super().mouseDoubleClickEvent(event)
+            return
+        super().mouseDoubleClickEvent(event)
+
+    def mouseMoveEvent(self, event: QMouseEvent) -> None:
+        pos = event.position().toPoint()
+        cf = self.cursorForPosition(pos).charFormat()
+        if cf.isAnchor() and (event.modifiers() & Qt.ControlModifier):
+            self.viewport().setCursor(Qt.PointingHandCursor)
+        else:
+            self.viewport().setCursor(Qt.IBeamCursor)
+        super().mouseMoveEvent(event)
+
+    def leaveEvent(self, event: QEvent) -> None:
+        self.viewport().unsetCursor()
+        super().leaveEvent(event)
+
     def create_drag_image(self, widget: QWidget) -> QPixmap:
         pixmap = widget.grab()
         scale_factor = 0.4
@@ -671,45 +699,35 @@ class CustomTextEdit(QTextEdit):
     def contextMenuEvent(self, event: QContextMenuEvent) -> None:
         menu = QMenu(self)
         menu.setStyleSheet(CUSTOM_MENU_STYLE)
-
         undo_action = QAction("Undo", self)
         undo_action.setShortcut("Ctrl+Z")
         undo_action.triggered.connect(self.undo)
         menu.addAction(undo_action)
-
         redo_action = QAction("Redo", self)
         redo_action.setShortcut("Ctrl+Y")
         redo_action.triggered.connect(self.redo)
         menu.addAction(redo_action)
-
         menu.addSeparator()
-
         cut_action = QAction("Cut", self)
         cut_action.setShortcut("Ctrl+X")
         cut_action.triggered.connect(self.cut)
         menu.addAction(cut_action)
-
         copy_action = QAction("Copy", self)
         copy_action.setShortcut("Ctrl+C")
         copy_action.triggered.connect(self.copy)
         menu.addAction(copy_action)
-
         paste_action = QAction("Paste", self)
         paste_action.setShortcut("Ctrl+V")
         paste_action.triggered.connect(self.paste)
         menu.addAction(paste_action)
-
         delete_action = QAction("Delete", self)
         delete_action.triggered.connect(self.delete_selection)
         menu.addAction(delete_action)
-
         menu.addSeparator()
-
         select_all_action = QAction("Select All", self)
         select_all_action.setShortcut("Ctrl+A")
         select_all_action.triggered.connect(self.selectAll)
         menu.addAction(select_all_action)
-
         menu.addSeparator()
         view_dict_action = QAction("View Dictionary", self)
         view_dict_action.triggered.connect(
@@ -718,7 +736,6 @@ class CustomTextEdit(QTextEdit):
             )
         )
         menu.addAction(view_dict_action)
-
         word_cursor = self.cursorForPosition(event.pos())
         word_cursor.select(QTextCursor.WordUnderCursor)
         word = word_cursor.selectedText()
@@ -749,6 +766,11 @@ class CustomTextEdit(QTextEdit):
                     if len(suggestions) >= 5:
                         break
             menu.addSeparator()
+            ignore_action = QAction("Игнорировать слово в этой заметке", self)
+            ignore_action.triggered.connect(
+                lambda checked=False, w=word: self.ignore_in_this_note(w)
+            )
+            menu.addAction(ignore_action)
             add_dict_action = QAction("Add to Dictionary", self)
             add_dict_action.triggered.connect(
                 lambda checked=False, w=word: self.add_to_dictionary(w)
@@ -813,6 +835,7 @@ class Note:
         password_manager: str = "",
         rdp_1c8: str = "",
         custom_fields: list[dict] | None = None,
+        ignored_words: list[str] | None = None,
     ) -> None:
         self.reminder_shown = False
         self.title = title
@@ -832,6 +855,7 @@ class Note:
         self.password_manager_visible = False
         self.rdp_1c8_visible = False
         self.rdp_1c8_removed = False
+        self.ignored_words = ignored_words or []
 
     def to_dict(self) -> dict:
         return {
@@ -852,6 +876,7 @@ class Note:
             "rdp_1c8_visible": bool(self.rdp_1c8_visible),
             "rdp_1c8_removed": bool(self.rdp_1c8_removed),
             "custom_fields": self.custom_fields,
+            "ignored_words": self.ignored_words,
         }
 
     @staticmethod
@@ -866,6 +891,7 @@ class Note:
             reminder=data.get("reminder"),
             uuid=data.get("uuid"),
             reminder_repeat=data.get("reminder_repeat", None),
+            ignored_words=data.get("ignored_words", []),
         )
         note.pinned = data.get("pinned", False)
         note.history_index = data.get("history_index", len(note.history) - 1)
@@ -921,10 +947,9 @@ class NotesApp(QMainWindow):
         self.reminder_timer.timeout.connect(self.check_reminders)
         self.reminder_timer.start(60000)
 
-    #   self.autosave_timer.timeout.connect(self.autosave)
-    #   self.autosave_timer.start(self.autosave_interval)
-
-    def _on_text_changed(self):
+    def _on_text_changed(self) -> None:
+        self.pending_save = True
+        self._set_unsaved(True)
         if getattr(self, "autosave_enabled", True):
             self.debounce_timer.start(self.debounce_ms)
 
@@ -933,8 +958,13 @@ class NotesApp(QMainWindow):
         self.close()
         QApplication.instance().quit()
 
+    def _set_unsaved(self, flag: bool) -> None:
+        self.setWindowModified(bool(flag))
+        if hasattr(self, "dock_editor"):
+            self.dock_editor.setWindowTitle("Редактор *" if flag else "Редактор")
+
     def init_ui(self) -> None:
-        self.setWindowTitle("Мои Заметки")
+        self.setWindowTitle("Мои Заметки — [*]")
         self.setMinimumSize(1250, 800)
         self.setWindowIcon(QIcon(ICON_PATH))
         self.settings = QSettings(SETTINGS_PATH, QSettings.IniFormat)
@@ -1003,6 +1033,7 @@ class NotesApp(QMainWindow):
         self.text_edit.setMinimumWidth(400)
         self.text_edit.setStyleSheet("font-size: 14px; font-family: 'Segoe UI Emoji';")
         self.text_edit.installEventFilter(self)
+        self.text_edit.textChanged.connect(lambda: self._set_unsaved(True))
         self.tags_label = QLabel("Теги: нет")
         self.tags_label.setAlignment(Qt.AlignLeft)
         self.attachments_panel = QWidget()
@@ -1186,6 +1217,18 @@ class NotesApp(QMainWindow):
             boundary_widget=self.dock_editor.widget(),
             anchor_widget=self.rdp_1c8_copy_btn,
         )
+
+    def add_word_to_note_ignore(self, word: str) -> None:  # NEW
+        if not getattr(self, "current_note", None):
+            return
+        w = (word or "").strip().lower()
+        if not w:
+            return
+        if w not in self.current_note.ignored_words:
+            self.current_note.ignored_words.append(w)
+            if hasattr(self, "spell_highlighter"):
+                self.spell_highlighter.set_local_ignored(self.current_note.ignored_words)
+            self.save_note_quiet(force=True)
 
     def delete_rdp_1c8_field(self) -> None:
         self.rdp_1c8_field.clear()
@@ -1896,6 +1939,7 @@ class NotesApp(QMainWindow):
             self.refresh_notes_list()
             self.record_state_for_undo()
             QMessageBox.information(self, "Сохранено", "Заметка успешно сохранена.")
+            self._set_unsaved(False)
 
     def save_note_quiet(self, *, force: bool = False) -> None:
         if not force and not getattr(self, "autosave_enabled", True):
@@ -1907,6 +1951,7 @@ class NotesApp(QMainWindow):
             self.update_current_note_custom_fields()
             self.save_note_to_file(self.current_note)
             self.record_state_for_undo()
+            self._set_unsaved(False)
 
     def open_note_folder(self, note: Note) -> None:
         if not note:
@@ -2376,6 +2421,8 @@ class NotesApp(QMainWindow):
 
     def load_note(self, item: QListWidgetItem | None) -> None:
         if item is None:
+            self.setWindowTitle("Мои Заметки — [*]")
+            self.setWindowModified(False)
             self.text_edit.blockSignals(True)
             self.text_edit.clear()
             self.text_edit.blockSignals(False)
@@ -2395,63 +2442,73 @@ class NotesApp(QMainWindow):
         self._update_editor_visibility()
 
     def select_note(self, note: Note | None) -> None:
-        self.password_manager_field.setText(note.password_manager)
-        self.rdp_1c8_field.setText(note.rdp_1c8)
+        if note is None:
+            return
+
+        # Сохраняем текущую, если была открыта
+        if getattr(self, "current_note", None):
+            self.current_note.content = self.text_edit.toHtml()
+            self.save_note_to_file(self.current_note)
+
+        # Присваиваем текущую заметку СРАЗУ
+        self.current_note = note
+
+        # Обновляем окно/тулбары/поля
+        self.text_edit.show()
+        self.text_edit.setReadOnly(False)
+        self.setWindowTitle(f"Мои Заметки — {note.title} [*]")
+        self.setWindowModified(False)  # сброс «звездочки» после загрузки
+        if hasattr(self, "dock_editor"):
+            self.dock_editor.setWindowTitle("Редактор")
+
         pm_vis = bool(getattr(note, "password_manager_visible", False))
         rdp_vis = bool(getattr(note, "rdp_1c8_visible", False))
         rdp_removed = bool(getattr(note, "rdp_1c8_removed", False))
-        self.rdp_1c8_row.setVisible(False if rdp_removed else rdp_vis)
         self.password_manager_row.setVisible(pm_vis)
-        self.rdp_1c8_row.setVisible(rdp_vis)
+        self.rdp_1c8_row.setVisible(False if rdp_removed else rdp_vis)
+
         if hasattr(self, "action_toggle_pm"):
             self.action_toggle_pm.blockSignals(True)
-            self.action_toggle_rdp.setVisible(not rdp_removed)
-            self.action_toggle_rdp.setEnabled(not rdp_removed)
             self.action_toggle_pm.setChecked(pm_vis)
-            self._update_eye_action(
-                self.action_toggle_pm, pm_vis, self.password_manager_label.text()
-            )
+            self._update_eye_action(self.action_toggle_pm, pm_vis, self.password_manager_label.text())
             self.action_toggle_pm.blockSignals(False)
         if hasattr(self, "action_toggle_rdp"):
             self.action_toggle_rdp.blockSignals(True)
+            self.action_toggle_rdp.setVisible(not rdp_removed)
+            self.action_toggle_rdp.setEnabled(not rdp_removed)
             self.action_toggle_rdp.setChecked(rdp_vis)
-            self._update_eye_action(
-                self.action_toggle_rdp, rdp_vis, self.rdp_1c8_label.text()
-            )
+            self._update_eye_action(self.action_toggle_rdp, rdp_vis, self.rdp_1c8_label.text())
             self.action_toggle_rdp.blockSignals(False)
-        self.text_edit.show()
-        if hasattr(self, "current_note") and self.current_note:
-            self.current_note.content = self.text_edit.toHtml()
-            self.save_note_to_file(self.current_note)
+
+        # Кастомные поля/теги/история/вложения
         fields_data = list(getattr(note, "custom_fields", []))
-        self.current_note = note
         self.clear_custom_fields()
         for field in fields_data:
             self.add_custom_field(field)
         self.add_field_btn.setEnabled(True)
+
         if hasattr(self, "settings"):
             self.settings.setValue("lastNoteUUID", note.uuid)
-        if (
-            not hasattr(note, "history")
-            or note.history is None
-            or len(note.history) == 0
-        ):
+
+        if not getattr(note, "history", None):
             note.history = [note.content]
             note.history_index = 0
         self.update_history_list()
         self.update_history_list_selection()
-
         self.show_note_with_attachments(note)
-        self.text_edit.setReadOnly(False)
+
         self.tags_label.setText(f"Теги: {', '.join(note.tags) if note.tags else 'нет'}")
         self.password_manager_field.setText(note.password_manager)
         self.rdp_1c8_field.setText(note.rdp_1c8)
+
+        # Выделяем элемент в списке заметок
         for i in range(self.notes_list.count()):
             item = self.notes_list.item(i)
             n = item.data(Qt.UserRole)
             if n and n.uuid == note.uuid:
                 self.notes_list.setCurrentItem(item)
                 break
+
 
     def _html_escape(self, s: str) -> str:
         return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
@@ -4371,7 +4428,6 @@ class NotesApp(QMainWindow):
 
             delete_action.triggered.connect(move_to_trash)
             menu.addAction(delete_action)
-
         menu.exec(self.notes_list.viewport().mapToGlobal(position))
 
     def autosave(self) -> None:
@@ -4493,15 +4549,15 @@ class NotesApp(QMainWindow):
         act = QAction("Вставить шаблон", self)
         act.triggered.connect(self.insert_template)
         template_menu.addAction(act)
-        act = QAction("Сохранить как шаблон…", self)
+        act = QAction("Сохранить как шаблон", self)
         act.setShortcut("Ctrl+Shift+S")
         act.triggered.connect(self.save_current_as_template)
         template_menu.addAction(act)
-        act = QAction("Управление шаблонами…", self)
+        act = QAction("Управление шаблонами", self)
         act.triggered.connect(self.manage_templates_dialog)
         template_menu.addAction(act)
         file_menu = menu_bar.addMenu("Файл")
-        act = QAction("Импорт.", self)
+        act = QAction("Импорт", self)
         act.triggered.connect(self.import_note)
         file_menu.addAction(act)
         act = QAction("Экспорт в PDF", self)
@@ -4622,11 +4678,9 @@ class NotesApp(QMainWindow):
         dialog.setWindowFlag(Qt.WindowStaysOnTopHint, True)
         dialog.setWindowTitle("Справка — Мои Заметки")
         dialog.setMinimumSize(600, 620)
-
         layout = QVBoxLayout(dialog)
         browser = QTextBrowser(dialog)
         browser.setOpenExternalLinks(True)
-
         browser.setHtml(
             """
                         <h2 style="text-align:center;">🗒️ Справка по приложению "Мои Заметки"</h2>
@@ -5318,6 +5372,7 @@ class NotesApp(QMainWindow):
                 note.rdp_1c8 = self.rdp_1c8_field.text()
                 self.update_current_note_custom_fields()
             self.save_note_to_file(note)
+        self._set_unsaved(False)
 
     def eventFilter(self, source, event):
         if source is self.text_edit and event.type() == QEvent.KeyPress:
@@ -7557,4 +7612,4 @@ if __name__ == "__main__":
     window.show()
     sys.exit(app.exec())
 
-    # UPD 23.08.2025|19:14
+    # UPD 24.08.2025|00:09
