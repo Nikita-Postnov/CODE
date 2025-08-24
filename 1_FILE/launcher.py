@@ -804,7 +804,7 @@ class CustomTextEdit(QTextEdit):
                     if len(suggestions) >= 5:
                         break
             menu.addSeparator()
-            ignore_action = QAction("Игнорировать слово в этой заметке", self)
+            ignore_action = QAction("Ignore the word in the current note", self)
             ignore_action.triggered.connect(
                 lambda checked=False, w=word: self.ignore_in_this_note(w)
             )
@@ -7644,5 +7644,4 @@ if __name__ == "__main__":
     window = LauncherWindow()
     window.show()
     sys.exit(app.exec())
-
-    # UPD 24.08.2025|15:38
+    # UPD 24.08.2025|15:45
