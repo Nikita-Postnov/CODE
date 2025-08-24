@@ -808,7 +808,7 @@ class CustomTextEdit(QTextEdit):
             menu.exec(self.mapToGlobal(event.pos()))
             return
         lw = m.group(0).lower()
-        highlighter = getattr(self.parent(), "spell_highlighter", None)
+        highlighter = getattr(self.window(), "spell_highlighter", None)
         spell = getattr(highlighter, "spell_checker", None)
         user_candidates = []
         if highlighter and getattr(highlighter, "user_words", None):
@@ -7714,4 +7714,4 @@ if __name__ == "__main__":
     window = LauncherWindow()
     window.show()
     sys.exit(app.exec())
-    # UPD 24.08.2025|18:00
+    # UPD 24.08.2025|18:07
