@@ -1907,10 +1907,37 @@ class NotesApp(QMainWindow):
             self, "Сохранить как DOCX", default_name, filter="Word Documents (*.docx)"
         )
         if file_path:
-            text = self.text_edit.toPlainText()
             doc = Document()
-            for line in text.splitlines():
-                doc.add_paragraph(line)
+            qt_doc = self.text_edit.document()
+            block = qt_doc.firstBlock()
+            while block.isValid():
+                paragraph = doc.add_paragraph()
+                it = block.begin()
+                while not it.atEnd():
+                    fragment = it.fragment()
+                    if fragment.isValid():
+                        char_format = fragment.charFormat()
+                        if char_format.isImageFormat():
+                            image_format = char_format.toImageFormat()
+                            image_path = image_format.name()
+                            run = paragraph.add_run()
+                            if image_path.startswith("data:image"):
+                                header, b64data = image_path.split(",", 1)
+                                suffix = ".png" if "png" in header else ".jpg"
+                                with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+                                    tmp.write(base64.b64decode(b64data))
+                                    tmp_path = tmp.name
+                                run.add_picture(tmp_path)
+                                os.unlink(tmp_path)
+                            else:
+                                if image_path.startswith("file://"):
+                                    image_path = QUrl(image_path).toLocalFile()
+                                if os.path.exists(image_path):
+                                    run.add_picture(image_path)
+                        else:
+                            paragraph.add_run(fragment.text())
+                    it += 1
+                block = block.next()
             doc.save(file_path)
             QMessageBox.information(
                 self,
@@ -4367,7 +4394,9 @@ class NotesApp(QMainWindow):
         layout.addWidget(list_widget)
         btn_remove = QPushButton("Удалить напоминание у выбранных")
         btn_remove.clicked.connect(
-            lambda _=False, lw=list_widget, dlg=dialog: self.mass_remove_reminders(lw, dlg)
+            lambda _=False, lw=list_widget, dlg=dialog: self.mass_remove_reminders(
+                lw, dlg
+            )
         )
         layout.addWidget(btn_remove)
         dialog.setLayout(layout)
@@ -7699,4 +7728,4 @@ if __name__ == "__main__":
     window = LauncherWindow()
     window.show()
     sys.exit(app.exec())
-    # UPD 24.08.2025|18:50
+    # UPD 24.08.2025|19:01
