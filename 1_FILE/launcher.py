@@ -4381,7 +4381,7 @@ class NotesApp(QMainWindow):
         layout.addWidget(list_widget)
         btn_remove = QPushButton("Удалить напоминание у выбранных")
         btn_remove.clicked.connect(
-            lambda: self.mass_remove_reminders(list_widget, dialog)
+            lambda _=False, lw=list_widget, dlg=dialog: self.mass_remove_reminders(lw, dlg)
         )
         layout.addWidget(btn_remove)
         dialog.setLayout(layout)
@@ -7714,4 +7714,4 @@ if __name__ == "__main__":
     window = LauncherWindow()
     window.show()
     sys.exit(app.exec())
-    # UPD 24.08.2025|18:07
+    # UPD 24.08.2025|18:17
