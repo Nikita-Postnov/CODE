@@ -4399,7 +4399,6 @@ class NotesApp(QMainWindow):
                 changed = True
         if changed:
             self.refresh_notes_list()
-            QMessageBox.information(self, "Готово", "Выбранные напоминания удалены.")
             dialog.accept()
 
     def rebuild_toolbar(self):
@@ -7714,4 +7713,4 @@ if __name__ == "__main__":
     window = LauncherWindow()
     window.show()
     sys.exit(app.exec())
-    # UPD 24.08.2025|18:17
+    # UPD 24.08.2025|18:23
