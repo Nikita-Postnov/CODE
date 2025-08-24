@@ -219,18 +219,6 @@ class SpellCheckHighlighter(QSyntaxHighlighter):
             return
         self._load_user_dictionary()
         self.rehighlight()
-        w = word.strip().lower()
-        if not w or w in getattr(self, "user_words", set()):
-            return
-        try:
-            with open(USER_DICT_PATH, "a", encoding="utf-8") as f:
-                f.write(w + "\n")
-                f.flush()
-                os.fsync(f.fileno())
-        except Exception:
-            return
-        self._load_user_dictionary()
-        self.rehighlight()
 
     def set_local_ignored(self, words: list[str] | set[str]) -> None:
         self.local_ignored = {w.strip().lower() for w in words if w.strip()}
@@ -754,11 +742,9 @@ class CustomTextEdit(QTextEdit):
         cursor.endEditBlock()
 
     def add_to_dictionary(self, word: str) -> None:
-        main_window = self.window()
-        highlighter = getattr(main_window, "spell_highlighter", None)
+        highlighter = getattr(self.window(), "spell_highlighter", None)
         if highlighter:
             highlighter.add_to_dictionary(word)
-            highlighter.rehighlight()
 
     def contextMenuEvent(self, event: QContextMenuEvent) -> None:
         menu = QMenu(self)
@@ -7713,4 +7699,4 @@ if __name__ == "__main__":
     window = LauncherWindow()
     window.show()
     sys.exit(app.exec())
-    # UPD 24.08.2025|18:23
+    # UPD 24.08.2025|18:50
