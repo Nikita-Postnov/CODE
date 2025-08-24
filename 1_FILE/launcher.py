@@ -553,23 +553,68 @@ class CustomTextEdit(QTextEdit):
         else:
             super().dropEvent(event)
 
-    def _open_file_url(self, link: str) -> bool:
+    def _sanitize_windows_path(self, p: str) -> str:
+        if not p:
+            return p
+        p = p.strip().strip('"')
+        bad = "\ufeff\u200b\u200c\u200d\u200e\u200f\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069"
+        p = p.translate({ord(ch): None for ch in bad})
+        p = p.replace("/", os.sep)
+        parts = [re.sub(r"[ \.]+$", "", part) for part in p.split(os.sep)]
+        p = os.sep.join(parts)
+        return os.path.normpath(p)
+
+    def _open_any_link(self, link: str) -> bool:
         try:
-            link = html_lib.unescape(link or "")
-            url = QUrl(link)
-            if not url.isValid() or url.scheme().lower() != "file":
-                try:
-                    url = QUrl.fromEncoded(link.encode("utf-8"))
-                except Exception:
-                    pass
-            local_path = url.toLocalFile()
-            if not local_path and link.lower().startswith("file://"):
-                raw_path = QUrl(link).path() or link[7:]  # после file://
-                raw_path = raw_path.lstrip("/")
-                local_path = unquote(raw_path).replace("/", os.sep)
-            if local_path and os.path.exists(local_path):
-                return QDesktopServices.openUrl(QUrl.fromLocalFile(local_path))
-            return QDesktopServices.openUrl(QUrl(link))
+            s = html_lib.unescape((link or "").strip())
+            url = QUrl.fromUserInput(s)
+            is_file_like = (url.scheme().lower() == "file") or re.match(r"^[a-zA-Z]:[\\/]", s)
+            if is_file_like:
+                if url.scheme().lower() == "file":
+                    local_path = url.toLocalFile()
+                    if not local_path:
+                        raw_path = QUrl(s).path() if s.lower().startswith("file://") else s
+                        raw_path = (raw_path or "")
+                        raw_path = unquote(raw_path).lstrip("/").replace("/", os.sep)
+                        local_path = raw_path
+                else:
+                    local_path = s
+                local_path = self._sanitize_windows_path(local_path)
+
+                def try_open(p: str) -> bool:
+                    if sys.platform.startswith("win"):
+                        try:
+                            os.startfile(p)
+                            return True
+                        except Exception:
+                            pass
+                        try:
+                            from PySide6.QtCore import QProcess
+                            return QProcess.startDetached("cmd", ["/c", "start", "", f'"{p}"'])
+                        except Exception:
+                            pass
+                    return QDesktopServices.openUrl(QUrl.fromLocalFile(p))
+                if os.path.exists(local_path):
+                    return try_open(local_path)
+                lower = local_path.replace("/", os.sep).replace("\\", os.sep).lower()
+                sep_notes = f"{os.sep}notes{os.sep}"
+                if sep_notes in lower:
+                    suffix = local_path[len(lower) - len(lower.split(sep_notes, 1)[1]):]
+                    candidate = os.path.join(NOTES_DIR, suffix)
+                    if os.path.exists(candidate):
+                        return try_open(candidate)
+                mw = self.window()
+                if hasattr(mw, "current_note") and mw.current_note:
+                    folder = NotesApp.safe_folder_name(
+                        mw.current_note.title, mw.current_note.uuid, mw.current_note.timestamp
+                    )
+                    candidate = os.path.join(NOTES_DIR, folder, os.path.basename(local_path))
+                    if os.path.exists(candidate):
+                        return try_open(candidate)
+                return try_open(local_path)
+            if not url.scheme():
+                url = QUrl.fromUserInput("https://" + s)
+            return QDesktopServices.openUrl(url)
         except Exception:
             return False
 
@@ -589,10 +634,7 @@ class CustomTextEdit(QTextEdit):
                         main_window.show_dropdown_menu_for_token(dd_id, global_pos)
                     return
                 if event.modifiers() & Qt.ControlModifier:
-                    if link.startswith("file://"):
-                        self._open_file_url(link)
-                    else:
-                        QDesktopServices.openUrl(QUrl(link))
+                    self._open_any_link(link)
                     return
                 super().mousePressEvent(event)
                 return
@@ -612,7 +654,7 @@ class CustomTextEdit(QTextEdit):
                     elif image_path.startswith("file://"):
                         file_path = QUrl(image_path).toLocalFile()
                         if os.path.exists(file_path):
-                            QDesktopServices.openUrl(QUrl.fromLocalFile(file_path))
+                            self._open_any_link(image_path)
                 else:
                     super().mousePressEvent(event)
                 return
@@ -620,9 +662,9 @@ class CustomTextEdit(QTextEdit):
                 block_cursor = self.cursorForPosition(pos)
                 block_cursor.select(QTextCursor.SelectionType.BlockUnderCursor)
                 block_html = block_cursor.selection().toHtml()
-                m = re.search(r'href="(file://[^"]+)"', block_html)
+                m = re.search(r'href="((?:file|https?)://[^"]+)"', block_html)
                 if m:
-                    self._open_file_url(html_lib.unescape(m.group(1)))
+                    self._open_any_link(html_lib.unescape(m.group(1)))
                     return
             word_cursor = self.cursorForPosition(pos)
             word_cursor.select(QTextCursor.SelectionType.WordUnderCursor)
@@ -641,11 +683,7 @@ class CustomTextEdit(QTextEdit):
         cf = cursor.charFormat()
         if cf.isAnchor():
             if event.modifiers() & Qt.ControlModifier:
-                link = cf.anchorHref()
-                if link.startswith("file://"):
-                    self._open_file_url(link)
-                else:
-                    QDesktopServices.openUrl(QUrl(link))
+                self._open_any_link(cf.anchorHref())
                 return
             super().mouseDoubleClickEvent(event)
             return
@@ -2348,6 +2386,7 @@ class NotesApp(QMainWindow):
                         date_str = timestamp.toString("dd.MM.yyyy")
                         item_text = f"{title} — {date_str} 🗑"
                         item = QListWidgetItem(item_text)
+                        item.setFont(QFont("Segoe UI Emoji", 10))
                         item.setData(Qt.UserRole, note)
                         item.setForeground(QColor("gray"))
                         self.notes_list.addItem(item)
@@ -2749,11 +2788,7 @@ class NotesApp(QMainWindow):
                     open_btn = QPushButton("Открыть")
                     open_btn.setToolTip("Открыть вложение")
                     open_btn.setFixedSize(60, 24)
-                    open_btn.clicked.connect(
-                        lambda _, path=file_path: QDesktopServices.openUrl(
-                            QUrl.fromLocalFile(path)
-                        )
-                    )
+                    open_btn.clicked.connect(lambda _, path=file_path: self.text_edit._open_any_link(path))
                     layout.addWidget(open_btn)
                     del_btn = QPushButton("❌")
                     del_btn.setToolTip("Удалить вложение")
@@ -3651,7 +3686,7 @@ class NotesApp(QMainWindow):
                 item_text = f"{note.title} — {date_str}{reminder_symbol}"
                 item = QListWidgetItem(item_text)
                 item.setData(Qt.UserRole, note)
-                item.setFont(QFont("Times New Roman", 14))
+                item.setFont(QFont("Segoe UI Emoji", 10))
                 item.setForeground(QColor("gold"))
                 self.notes_list.addItem(item)
 
@@ -3840,11 +3875,7 @@ class NotesApp(QMainWindow):
                 open_btn = QPushButton("Открыть")
                 open_btn.setToolTip("Открыть вложение")
                 open_btn.setFixedSize(60, 24)
-                open_btn.clicked.connect(
-                    lambda _, path=file_path: QDesktopServices.openUrl(
-                        QUrl.fromLocalFile(path)
-                    )
-                )
+                open_btn.clicked.connect(lambda _, path=file_path: self.text_edit._open_any_link(path))
                 layout.addWidget(open_btn)
                 del_btn = QPushButton("❌")
                 del_btn.setToolTip("Удалить вложение")
@@ -3859,55 +3890,57 @@ class NotesApp(QMainWindow):
     def insert_link(self) -> None:
         cursor = self.text_edit.textCursor()
         url, ok = QInputDialog.getText(self, "Вставить ссылку", "URL:")
-        if ok and url:
-            fmt = QTextCharFormat()
-            fmt.setAnchor(True)
-            fmt.setAnchorHref(url)
-            fmt.setForeground(Qt.blue)
-            fmt.setFontUnderline(True)
-            if cursor.hasSelection():
-                cursor.mergeCharFormat(fmt)
-            else:
-                cursor.select(QTextCursor.WordUnderCursor)
-                if cursor.selectedText().strip():
-                    cursor.mergeCharFormat(fmt)
-                    self.text_edit.setTextCursor(cursor)
-                else:
-                    cursor.insertHtml(f'<a href="{url}">{url}</a>')
-
-    def _select_entire_anchor(self, cursor: QTextCursor) -> QTextCursor | None:
-        fmt = cursor.charFormat()
-        if not fmt.isAnchor():
-            return None
-        href = fmt.anchorHref()
-        c = QTextCursor(cursor)
-        max_steps = cursor.document().characterCount() + 5  # страховка от зацикливания
-        steps = 0
-        while steps < max_steps:
-            steps += 1
-            left = QTextCursor(c)
-            moved = left.movePosition(QTextCursor.Left, QTextCursor.KeepAnchor, 1)
-            if (not moved) or left.atStart():
-                break
-            f = left.charFormat()
-            if not (f.isAnchor() and f.anchorHref() == href):
-                break
-            if left.position() == c.position() and left.anchor() == c.anchor():
-                break
-            c = left
-        while steps < max_steps:
-            steps += 1
-            right = QTextCursor(c)
-            moved = right.movePosition(QTextCursor.Right, QTextCursor.KeepAnchor, 1)
-            if (not moved) or right.atEnd():
-                break
-            f = right.charFormat()
-            if not (f.isAnchor() and f.anchorHref() == href):
-                break
-            if right.position() == c.position() and right.anchor() == c.anchor():
-                break
-            c = right
-        return c
+        if not (ok and url):
+            return
+        url = url.strip()
+        href = url
+        if os.path.isabs(url) or os.path.exists(url):
+            href = QUrl.fromLocalFile(os.path.abspath(url)).toString()
+        else:
+            if not re.match(r"^[a-zA-Z][a-zA-Z0-9+\-.]*://", url):
+                href = "https://" + url
+        fmt = QTextCharFormat()
+        fmt.setAnchor(True)
+        fmt.setAnchorHref(href)
+        fmt.setForeground(Qt.blue)
+        fmt.setFontUnderline(True)
+        if cursor.hasSelection() and cursor.selectedText().strip():
+            cursor.mergeCharFormat(fmt)
+        else:
+            cursor.insertHtml(f'<a href="{href}">{url}</a>')
+        def _select_entire_anchor(self, cursor: QTextCursor) -> QTextCursor | None:
+            fmt = cursor.charFormat()
+            if not fmt.isAnchor():
+                return None
+            href = fmt.anchorHref()
+            c = QTextCursor(cursor)
+            max_steps = cursor.document().characterCount() + 5
+            steps = 0
+            while steps < max_steps:
+                steps += 1
+                left = QTextCursor(c)
+                moved = left.movePosition(QTextCursor.Left, QTextCursor.KeepAnchor, 1)
+                if (not moved) or left.atStart():
+                    break
+                f = left.charFormat()
+                if not (f.isAnchor() and f.anchorHref() == href):
+                    break
+                if left.position() == c.position() and left.anchor() == c.anchor():
+                    break
+                c = left
+            while steps < max_steps:
+                steps += 1
+                right = QTextCursor(c)
+                moved = right.movePosition(QTextCursor.Right, QTextCursor.KeepAnchor, 1)
+                if (not moved) or right.atEnd():
+                    break
+                f = right.charFormat()
+                if not (f.isAnchor() and f.anchorHref() == href):
+                    break
+                if right.position() == c.position() and right.anchor() == c.anchor():
+                    break
+                c = right
+            return c
 
     def edit_link(self) -> None:
         cursor = self.text_edit.textCursor()
