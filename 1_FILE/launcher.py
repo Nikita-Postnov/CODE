@@ -1924,7 +1924,9 @@ class NotesApp(QMainWindow):
                             if image_path.startswith("data:image"):
                                 header, b64data = image_path.split(",", 1)
                                 suffix = ".png" if "png" in header else ".jpg"
-                                with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+                                with tempfile.NamedTemporaryFile(
+                                    delete=False, suffix=suffix
+                                ) as tmp:
                                     tmp.write(base64.b64decode(b64data))
                                     tmp_path = tmp.name
                                 run.add_picture(tmp_path)
@@ -7728,4 +7730,4 @@ if __name__ == "__main__":
     window = LauncherWindow()
     window.show()
     sys.exit(app.exec())
-    # UPD 24.08.2025|19:01
+    # UPD 24.08.2025|22:29
