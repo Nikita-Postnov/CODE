@@ -183,16 +183,17 @@ class SpellCheckHighlighter(QSyntaxHighlighter):
                 self.spell_checker = SpellChecker(language="ru")
             except Exception:
                 self.spell_checker = SpellChecker()
-            self._load_user_dictionary()
-            try:
-                self._dict_watcher = QFileSystemWatcher([USER_DICT_PATH])
-                self._dict_watcher.fileChanged.connect(self._reload_user_dictionary)
-            except Exception:
-                self._dict_watcher = None
         else:
             self.spell_checker = None
+        self._load_user_dictionary()
+        try:
+            self._dict_watcher = QFileSystemWatcher([USER_DICT_PATH])
+            self._dict_watcher.fileChanged.connect(self._reload_user_dictionary)
+        except Exception:
+            self._dict_watcher = None
 
     def _load_user_dictionary(self) -> None:
+        prev_local = getattr(self, "local_ignored", set())
         self.user_words = set()
         self.local_ignored = set()
         try:
@@ -203,10 +204,21 @@ class SpellCheckHighlighter(QSyntaxHighlighter):
                 self.spell_checker.word_frequency.load_words(words)
         except Exception:
             pass
+        self.local_ignored = prev_local
 
     def add_to_dictionary(self, word: str) -> None:
-        if not self.spell_checker:
+        w = (word or "").strip().lower()
+        if not w or w in getattr(self, "user_words", set()):
             return
+        try:
+            with open(USER_DICT_PATH, "a", encoding="utf-8") as f:
+                f.write(w + "\n")
+                f.flush()
+                os.fsync(f.fileno())
+        except Exception:
+            return
+        self._load_user_dictionary()
+        self.rehighlight()
         w = word.strip().lower()
         if not w or w in getattr(self, "user_words", set()):
             return
@@ -568,13 +580,17 @@ class CustomTextEdit(QTextEdit):
         try:
             s = html_lib.unescape((link or "").strip())
             url = QUrl.fromUserInput(s)
-            is_file_like = (url.scheme().lower() == "file") or re.match(r"^[a-zA-Z]:[\\/]", s)
+            is_file_like = (url.scheme().lower() == "file") or re.match(
+                r"^[a-zA-Z]:[\\/]", s
+            )
             if is_file_like:
                 if url.scheme().lower() == "file":
                     local_path = url.toLocalFile()
                     if not local_path:
-                        raw_path = QUrl(s).path() if s.lower().startswith("file://") else s
-                        raw_path = (raw_path or "")
+                        raw_path = (
+                            QUrl(s).path() if s.lower().startswith("file://") else s
+                        )
+                        raw_path = raw_path or ""
                         raw_path = unquote(raw_path).lstrip("/").replace("/", os.sep)
                         local_path = raw_path
                 else:
@@ -590,25 +606,35 @@ class CustomTextEdit(QTextEdit):
                             pass
                         try:
                             from PySide6.QtCore import QProcess
-                            return QProcess.startDetached("cmd", ["/c", "start", "", f'"{p}"'])
+
+                            return QProcess.startDetached(
+                                "cmd", ["/c", "start", "", f'"{p}"']
+                            )
                         except Exception:
                             pass
                     return QDesktopServices.openUrl(QUrl.fromLocalFile(p))
+
                 if os.path.exists(local_path):
                     return try_open(local_path)
                 lower = local_path.replace("/", os.sep).replace("\\", os.sep).lower()
                 sep_notes = f"{os.sep}notes{os.sep}"
                 if sep_notes in lower:
-                    suffix = local_path[len(lower) - len(lower.split(sep_notes, 1)[1]):]
+                    suffix = local_path[
+                        len(lower) - len(lower.split(sep_notes, 1)[1]) :
+                    ]
                     candidate = os.path.join(NOTES_DIR, suffix)
                     if os.path.exists(candidate):
                         return try_open(candidate)
                 mw = self.window()
                 if hasattr(mw, "current_note") and mw.current_note:
                     folder = NotesApp.safe_folder_name(
-                        mw.current_note.title, mw.current_note.uuid, mw.current_note.timestamp
+                        mw.current_note.title,
+                        mw.current_note.uuid,
+                        mw.current_note.timestamp,
                     )
-                    candidate = os.path.join(NOTES_DIR, folder, os.path.basename(local_path))
+                    candidate = os.path.join(
+                        NOTES_DIR, folder, os.path.basename(local_path)
+                    )
                     if os.path.exists(candidate):
                         return try_open(candidate)
                 return try_open(local_path)
@@ -776,54 +802,103 @@ class CustomTextEdit(QTextEdit):
         menu.addAction(view_dict_action)
         word_cursor = self.cursorForPosition(event.pos())
         word_cursor.select(QTextCursor.WordUnderCursor)
-        word = word_cursor.selectedText()
-        if word and SpellChecker is not None:
-            highlighter = getattr(self.parent(), "spell_highlighter", None)
-            spell = highlighter.spell_checker if highlighter else None
-            lower_word = word.lower()
-            is_misspelled = bool(spell and lower_word in spell.unknown([lower_word]))
-            suggestions: list[str] = []
-            if is_misspelled:
-                user_suggestions: list[str] = []
-                if highlighter and getattr(highlighter, "user_words", None):
-                    try:
-                        user_suggestions = difflib.get_close_matches(
-                            lower_word, highlighter.user_words, n=5
-                        )
-                    except Exception:
-                        user_suggestions = []
-                spell_suggestions = (
-                    sorted(spell.candidates(lower_word)) if spell else []
+        raw_word = word_cursor.selectedText()
+        m = re.search(r"[A-Za-zА-Яа-яЁё']+", raw_word or "")
+        if not m:
+            menu.exec(self.mapToGlobal(event.pos()))
+            return
+        lw = m.group(0).lower()
+        highlighter = getattr(self.parent(), "spell_highlighter", None)
+        spell = getattr(highlighter, "spell_checker", None)
+        user_candidates = []
+        if highlighter and getattr(highlighter, "user_words", None):
+            try:
+                user_candidates = difflib.get_close_matches(
+                    lw, list(highlighter.user_words), n=7, cutoff=0.6
                 )
-                seen: set[str] = set()
-                for s in user_suggestions + spell_suggestions:
-                    s_lower = s.lower()
-                    if s_lower != lower_word and s_lower not in seen:
-                        suggestions.append(s)
-                        seen.add(s_lower)
-                    if len(suggestions) >= 5:
-                        break
-            menu.addSeparator()
-            ignore_action = QAction("Ignore the word in the current note", self)
-            ignore_action.triggered.connect(
-                lambda checked=False, w=word: self.ignore_in_this_note(w)
-            )
-            menu.addAction(ignore_action)
-            add_dict_action = QAction("Add to Dictionary", self)
-            add_dict_action.triggered.connect(
-                lambda checked=False, w=word: self.add_to_dictionary(w)
-            )
-            menu.addAction(add_dict_action)
-            if is_misspelled:
-                for suggestion in suggestions:
-                    action = QAction(suggestion, self)
-                    action.triggered.connect(
-                        lambda checked=False, s=suggestion, c=QTextCursor(
-                            word_cursor
-                        ): self.replace_word(c, s)
-                    )
-                    menu.addAction(action)
-        menu.exec(event.globalPos())
+            except Exception:
+                user_candidates = []
+        spell_candidates = []
+        if spell:
+            try:
+                corr = spell.correction(lw)
+                cands = spell.candidates(lw) if hasattr(spell, "candidates") else set()
+                spell_candidates = [corr] + sorted(cands)
+            except Exception:
+                spell_candidates = []
+        doc_candidates = []
+        try:
+            plain = self.window().text_edit.toPlainText()
+            tokens = set(w.lower() for w in re.findall(r"[A-Za-zА-Яа-яЁё']+", plain))
+            if lw in tokens:
+                tokens.discard(lw)
+            sample = list(tokens)[:5000]
+            doc_candidates = difflib.get_close_matches(lw, sample, n=7, cutoff=0.65)
+        except Exception:
+            doc_candidates = []
+
+        def _clean(seq):
+            seen = set()
+            out = []
+            for s in seq:
+                if not s:
+                    continue
+                sl = s.lower()
+                if sl == lw or sl in seen:
+                    continue
+                out.append(s)
+                seen.add(sl)
+                if len(out) >= 7:
+                    break
+            return out
+
+        user_candidates = _clean(user_candidates)
+        spell_candidates = _clean(spell_candidates)
+        doc_candidates = _clean(doc_candidates)
+        menu.addSeparator()
+        ignore_action = QAction("Ignore the word in the current note", self)
+        ignore_action.triggered.connect(
+            lambda checked=False, w=raw_word: self.ignore_in_this_note(w)
+        )
+        menu.addAction(ignore_action)
+        add_dict_action = QAction("Add to Dictionary", self)
+        add_dict_action.triggered.connect(
+            lambda checked=False, w=raw_word: self.add_to_dictionary(w)
+        )
+        menu.addAction(add_dict_action)
+        replace_menu = menu.addMenu("Replace")
+        user_menu = replace_menu.addMenu("From your personal dictionary")
+        if user_candidates:
+            for s in user_candidates:
+                act = user_menu.addAction(s)
+                act.triggered.connect(
+                    lambda _, s=s, c=QTextCursor(word_cursor): self.replace_word(c, s)
+                )
+        else:
+            a = user_menu.addAction("— There are no options —")
+            a.setEnabled(False)
+
+        spell_menu = replace_menu.addMenu("Spelling options")
+        if spell_candidates:
+            for s in spell_candidates:
+                act = spell_menu.addAction(s)
+                act.triggered.connect(
+                    lambda _, s=s, c=QTextCursor(word_cursor): self.replace_word(c, s)
+                )
+        else:
+            a = spell_menu.addAction("— There are no options —")
+            a.setEnabled(False)
+        doc_menu = replace_menu.addMenu("From the current note")
+        if doc_candidates:
+            for s in doc_candidates:
+                act = doc_menu.addAction(s)
+                act.triggered.connect(
+                    lambda _, s=s, c=QTextCursor(word_cursor): self.replace_word(c, s)
+                )
+        else:
+            a = doc_menu.addAction("— There are no options —")
+            a.setEnabled(False)
+        menu.exec(self.mapToGlobal(event.pos()))
 
     def createMimeDataFromSelection(self):
         md = super().createMimeDataFromSelection()
@@ -1265,7 +1340,9 @@ class NotesApp(QMainWindow):
         if w not in self.current_note.ignored_words:
             self.current_note.ignored_words.append(w)
             if hasattr(self, "spell_highlighter"):
-                self.spell_highlighter.set_local_ignored(self.current_note.ignored_words)
+                self.spell_highlighter.set_local_ignored(
+                    self.current_note.ignored_words
+                )
             self.save_note_quiet(force=True)
 
     def delete_rdp_1c8_field(self) -> None:
@@ -1928,6 +2005,10 @@ class NotesApp(QMainWindow):
             os.makedirs(note_dir, exist_ok=True)
             self.notes.append(note)
             self.current_note = note
+            if hasattr(self, "spell_highlighter"):
+                self.spell_highlighter.set_local_ignored(
+                    self.current_note.ignored_words
+                )
             self.text_edit.blockSignals(True)
             self.text_edit.clear()
             self.text_edit.setFont(QFont("Times New Roman", 14))
@@ -2469,6 +2550,8 @@ class NotesApp(QMainWindow):
             self.text_edit.hide()
             self.tags_label.setText("Теги: нет")
             self.current_note = None
+            if hasattr(self, "spell_highlighter"):
+                self.spell_highlighter.set_local_ignored(note.ignored_words)
             self.clear_custom_fields()
             self.add_field_btn.setEnabled(False)
             if hasattr(self, "history_list"):
@@ -2483,43 +2566,39 @@ class NotesApp(QMainWindow):
     def select_note(self, note: Note | None) -> None:
         if note is None:
             return
-
-        # Сохраняем текущую, если была открыта
         if getattr(self, "current_note", None):
             self.current_note.content = self.text_edit.toHtml()
             self.save_note_to_file(self.current_note)
-
-        # Присваиваем текущую заметку СРАЗУ
         self.current_note = note
-
-        # Обновляем окно/тулбары/поля
+        if hasattr(self, "spell_highlighter"):
+            self.spell_highlighter.set_local_ignored(note.ignored_words)
         self.text_edit.show()
         self.text_edit.setReadOnly(False)
         self.setWindowTitle(f"Мои Заметки — {note.title} [*]")
-        self.setWindowModified(False)  # сброс «звездочки» после загрузки
+        self.setWindowModified(False)
         if hasattr(self, "dock_editor"):
             self.dock_editor.setWindowTitle("Редактор")
-
         pm_vis = bool(getattr(note, "password_manager_visible", False))
         rdp_vis = bool(getattr(note, "rdp_1c8_visible", False))
         rdp_removed = bool(getattr(note, "rdp_1c8_removed", False))
         self.password_manager_row.setVisible(pm_vis)
         self.rdp_1c8_row.setVisible(False if rdp_removed else rdp_vis)
-
         if hasattr(self, "action_toggle_pm"):
             self.action_toggle_pm.blockSignals(True)
             self.action_toggle_pm.setChecked(pm_vis)
-            self._update_eye_action(self.action_toggle_pm, pm_vis, self.password_manager_label.text())
+            self._update_eye_action(
+                self.action_toggle_pm, pm_vis, self.password_manager_label.text()
+            )
             self.action_toggle_pm.blockSignals(False)
         if hasattr(self, "action_toggle_rdp"):
             self.action_toggle_rdp.blockSignals(True)
             self.action_toggle_rdp.setVisible(not rdp_removed)
             self.action_toggle_rdp.setEnabled(not rdp_removed)
             self.action_toggle_rdp.setChecked(rdp_vis)
-            self._update_eye_action(self.action_toggle_rdp, rdp_vis, self.rdp_1c8_label.text())
+            self._update_eye_action(
+                self.action_toggle_rdp, rdp_vis, self.rdp_1c8_label.text()
+            )
             self.action_toggle_rdp.blockSignals(False)
-
-        # Кастомные поля/теги/история/вложения
         fields_data = list(getattr(note, "custom_fields", []))
         self.clear_custom_fields()
         for field in fields_data:
@@ -2547,7 +2626,6 @@ class NotesApp(QMainWindow):
             if n and n.uuid == note.uuid:
                 self.notes_list.setCurrentItem(item)
                 break
-
 
     def _html_escape(self, s: str) -> str:
         return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
@@ -2788,7 +2866,9 @@ class NotesApp(QMainWindow):
                     open_btn = QPushButton("Открыть")
                     open_btn.setToolTip("Открыть вложение")
                     open_btn.setFixedSize(60, 24)
-                    open_btn.clicked.connect(lambda _, path=file_path: self.text_edit._open_any_link(path))
+                    open_btn.clicked.connect(
+                        lambda _, path=file_path: self.text_edit._open_any_link(path)
+                    )
                     layout.addWidget(open_btn)
                     del_btn = QPushButton("❌")
                     del_btn.setToolTip("Удалить вложение")
@@ -3875,7 +3955,9 @@ class NotesApp(QMainWindow):
                 open_btn = QPushButton("Открыть")
                 open_btn.setToolTip("Открыть вложение")
                 open_btn.setFixedSize(60, 24)
-                open_btn.clicked.connect(lambda _, path=file_path: self.text_edit._open_any_link(path))
+                open_btn.clicked.connect(
+                    lambda _, path=file_path: self.text_edit._open_any_link(path)
+                )
                 layout.addWidget(open_btn)
                 del_btn = QPushButton("❌")
                 del_btn.setToolTip("Удалить вложение")
@@ -3908,6 +3990,7 @@ class NotesApp(QMainWindow):
             cursor.mergeCharFormat(fmt)
         else:
             cursor.insertHtml(f'<a href="{href}">{url}</a>')
+
         def _select_entire_anchor(self, cursor: QTextCursor) -> QTextCursor | None:
             fmt = cursor.charFormat()
             if not fmt.isAnchor():
@@ -5466,16 +5549,16 @@ class NotesApp(QMainWindow):
 
     def closeEvent(self, event: QCloseEvent):
         self.save_settings()
-        if hasattr(self, "autosave_timer") and self.autosave_timer.isActive():
-            self.autosave_timer.stop()
-            self.debounce_timer.stop()
-        if hasattr(self, "reminder_timer") and self.reminder_timer.isActive():
-            self.reminder_timer.stop()
-        if self.audio_thread and self.audio_thread.isRunning():
-            self.audio_thread.stop()
-            self.audio_thread.wait()
-            self.audio_thread = None
-        super().closeEvent(event)
+        try:
+            if getattr(self, "current_note", None):
+                self.save_note_quiet(force=True)
+            self.save_all_notes_to_disk()
+        except Exception as e:
+            print("Save on close failed:", e)
+        event.ignore()
+        self.hide()
+        self.tray_icon.show()
+        self.window_hidden.emit()
 
     @staticmethod
     def safe_folder_name(title, note_uuid, timestamp=None):
@@ -5703,15 +5786,6 @@ class NotesApp(QMainWindow):
             return
         self.current_note.content = self.text_edit.toHtml()
         self.record_state_for_undo()
-
-    def closeEvent(self, event):
-        self.save_settings()
-        event.accept()
-        event.ignore()
-        self.hide()
-        self.tray_icon.show()
-        self.window_hidden.emit()
-        super().closeEvent(event)
 
     def hideEvent(self, event):
         self.save_settings()
@@ -7611,10 +7685,6 @@ class LauncherWindow(QMainWindow):
             """
         )
 
-    def closeEvent(self, event):
-        event.ignore()
-        self.hide()
-
     def launch_notes(self):
         self.hide()
         if self.notes_window is None:
@@ -7644,4 +7714,4 @@ if __name__ == "__main__":
     window = LauncherWindow()
     window.show()
     sys.exit(app.exec())
-    # UPD 24.08.2025|15:45
+    # UPD 24.08.2025|18:00
