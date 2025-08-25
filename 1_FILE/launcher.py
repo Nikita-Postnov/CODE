@@ -482,6 +482,14 @@ class CustomTextEdit(QTextEdit):
         if hasattr(mw, "add_word_to_note_ignore"):
             mw.add_word_to_note_ignore(word)
 
+    def copy_without_formatting(self) -> None:
+        md = self.createMimeDataFromSelection()
+        QApplication.clipboard().setMimeData(md)
+
+    def copy_with_formatting(self) -> None:
+        base_md = QTextEdit.createMimeDataFromSelection(self)
+        QApplication.clipboard().setMimeData(base_md)
+
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:
         if event.mimeData().hasUrls():
             event.acceptProposedAction()
@@ -838,10 +846,16 @@ class CustomTextEdit(QTextEdit):
                 if len(out) >= 7:
                     break
             return out
-
         user_candidates = _clean(user_candidates)
         spell_candidates = _clean(spell_candidates)
         doc_candidates = _clean(doc_candidates)
+        menu.addSeparator()
+        copy_plain_action = QAction("Copy (without formatting)", self)
+        copy_plain_action.triggered.connect(self.copy_without_formatting)
+        copy_rich_action = QAction("Copy (with formatting)", self)
+        copy_rich_action.triggered.connect(self.copy_with_formatting)
+        menu.addAction(copy_plain_action)
+        menu.addAction(copy_rich_action)
         menu.addSeparator()
         ignore_action = QAction("Ignore the word in the current note", self)
         ignore_action.triggered.connect(
@@ -7800,4 +7814,4 @@ if __name__ == "__main__":
     window = LauncherWindow()
     window.show()
     sys.exit(app.exec())
-    # UPD 25.08.2025|17:12
+    # UPD 25.08.2025|17:59
