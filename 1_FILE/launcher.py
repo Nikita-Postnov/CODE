@@ -6,7 +6,7 @@ import string
 import random
 import difflib
 import tkinter as tk
-from tkinter import ttk, messagebox, filedialog
+from tkinter import ttk
 import wave
 import traceback
 import base64
@@ -20,21 +20,12 @@ from cryptography.fernet import Fernet, InvalidToken
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from cryptography.hazmat.backends import default_backend
-from PySide6.QtPrintSupport import QPrinter
-from docx import Document
-
-try:
-    from spellchecker import SpellChecker
-except ImportError:
-    SpellChecker = None
-import numpy as np
 import time
 import math
 import tempfile
 import uuid
 import shutil
 import datetime
-import sounddevice as sd
 import importlib.util
 from urllib.parse import quote, unquote
 from typing import Callable
@@ -87,7 +78,6 @@ from PySide6.QtGui import (
     QTextDocument,
     QSyntaxHighlighter,
 )
-from scipy.io.wavfile import write
 from PySide6.QtWidgets import (
     QApplication,
     QLayoutItem,
@@ -132,6 +122,34 @@ from PySide6.QtWidgets import (
     QToolButton,
     QFrame,
 )
+
+
+class MessageBox:
+    """Qt-based messagebox wrapper to replace tkinter.messagebox."""
+
+    @staticmethod
+    def showerror(title, message):
+        QMessageBox.critical(None, title, message)
+
+    @staticmethod
+    def showinfo(title, message):
+        QMessageBox.information(None, title, message)
+
+    @staticmethod
+    def askyesno(title, message):
+        return (
+            QMessageBox.question(
+                None, title, message, QMessageBox.Yes | QMessageBox.No
+            )
+            == QMessageBox.Yes
+        )
+
+    @staticmethod
+    def showwarning(title, message):
+        QMessageBox.warning(None, title, message)
+
+
+messagebox = MessageBox
 
 if getattr(sys, "frozen", False):
     APPDIR = os.path.dirname(sys.executable)
@@ -178,12 +196,14 @@ class SpellCheckHighlighter(QSyntaxHighlighter):
         self.err_fmt = QTextCharFormat()
         self.err_fmt.setUnderlineColor(Qt.red)
         self.err_fmt.setUnderlineStyle(QTextCharFormat.SpellCheckUnderline)
-        if SpellChecker is not None:
+        try:
+            from spellchecker import SpellChecker as _SpellChecker
+
             try:
-                self.spell_checker = SpellChecker(language="ru")
+                self.spell_checker = _SpellChecker(language="ru")
             except Exception:
-                self.spell_checker = SpellChecker()
-        else:
+                self.spell_checker = _SpellChecker()
+        except ImportError:
             self.spell_checker = None
         self._load_user_dictionary()
         try:
@@ -359,6 +379,8 @@ class AudioRecorderThread(QThread):
 
     def run(self):
         try:
+            import sounddevice as sd
+
             with wave.open(self.file_path, "wb") as wf:
                 self._wavefile = wf
                 wf.setnchannels(1)
@@ -1884,6 +1906,8 @@ class NotesApp(QMainWindow):
             self, "Сохранить как PDF", default_name, filter="PDF Files (*.pdf)"
         )
         if file_path:
+            from PySide6.QtPrintSupport import QPrinter
+
             doc = QTextDocument()
             html = self.text_edit.toHtml()
             html = re.sub(r'font-size\s*:[^;"]*;?', "", html)
@@ -1927,6 +1951,8 @@ class NotesApp(QMainWindow):
             self, "Сохранить как DOCX", default_name, filter="Word Documents (*.docx)"
         )
         if file_path:
+            from docx import Document
+
             doc = Document()
             qt_doc = self.text_edit.document()
             block = qt_doc.firstBlock()
@@ -6651,7 +6677,7 @@ class PasswordDialog(BasePasswordDialog):
         url = self.url_entry.get().strip()
         tags = [tag.strip() for tag in self.tags_entry.get().split(",") if tag.strip()]
         if not description or not password:
-            tk.messagebox.showerror("Ошибка", "Заполните описание и пароль!")
+            messagebox.showerror("Ошибка", "Заполните описание и пароль!")
             return
         if len(password) < 4:
             messagebox.showerror("Ошибка", "Пароль должен быть не короче 4 символов!")
@@ -6964,10 +6990,11 @@ class PasswordGeneratorApp:
                 )
 
     def _export_passwords_txt(self):
-        file_path = filedialog.asksaveasfilename(
-            defaultextension=".txt",
-            filetypes=[("Текстовые файлы", "*.txt"), ("Все файлы", "*.*")],
-            title="Сохранить пароли в TXT",
+        file_path, _ = QFileDialog.getSaveFileName(
+            None,
+            "Сохранить пароли в TXT",
+            "",
+            "Текстовые файлы (*.txt);;Все файлы (*.*)",
         )
         if not file_path:
             return
@@ -7447,9 +7474,11 @@ class PasswordGeneratorApp:
         messagebox.showinfo("О программе", "Менеджер паролей с шифрованием\n\n")
 
     def _import_passwords_txt(self):
-        file_path = filedialog.askopenfilename(
-            filetypes=[("Text files", "*.txt"), ("All files", "*.*")],
-            title="Выберите файл для импорта",
+        file_path, _ = QFileDialog.getOpenFileName(
+            None,
+            "Выберите файл для импорта",
+            "",
+            "Text files (*.txt);;All files (*.*)",
         )
         if not file_path:
             return
@@ -7814,4 +7843,4 @@ if __name__ == "__main__":
     window = LauncherWindow()
     window.show()
     sys.exit(app.exec())
-    # UPD 25.08.2025|17:59
+    # UPD 25.08.2025|22:06
