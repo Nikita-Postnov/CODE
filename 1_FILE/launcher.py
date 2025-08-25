@@ -640,7 +640,8 @@ class CustomTextEdit(QTextEdit):
             if char_format.isAnchor():
                 link = char_format.anchorHref()
                 if link.startswith("dropdown://"):
-                    dd_id = link.split("://", 1)[1]
+                    tail = link.split("://", 1)[1]
+                    dd_id = tail.split("?", 1)[0].split("#", 1)[0]
                     main_window = self.window()
                     if hasattr(main_window, "show_dropdown_menu_for_token"):
                         rect = self.cursorRect(cursor)
@@ -2065,7 +2066,9 @@ class NotesApp(QMainWindow):
 
     def save_note(self) -> None:
         if self.current_note:
-            self.current_note.content = self.text_edit.toHtml()
+            html = self.text_edit.toHtml()
+            html = self._persist_dropdown_values_in_html(html)
+            self.current_note.content = html
             self.current_note.password_manager = self.password_manager_field.text()
             self.current_note.rdp_1c8 = self.rdp_1c8_field.text()
             self.update_current_note_custom_fields()
@@ -2079,7 +2082,9 @@ class NotesApp(QMainWindow):
         if not force and not getattr(self, "autosave_enabled", True):
             return
         if self.current_note:
-            self.current_note.content = self.text_edit.toHtml()
+            html = self.text_edit.toHtml()
+            html = self._persist_dropdown_values_in_html(html)
+            self.current_note.content = html
             self.current_note.password_manager = self.password_manager_field.text()
             self.current_note.rdp_1c8 = self.rdp_1c8_field.text()
             self.update_current_note_custom_fields()
@@ -2582,7 +2587,9 @@ class NotesApp(QMainWindow):
         if note is None:
             return
         if getattr(self, "current_note", None):
-            self.current_note.content = self.text_edit.toHtml()
+            html = self.text_edit.toHtml()
+            html = self._persist_dropdown_values_in_html(html)
+            self.current_note.content = html
             self.save_note_to_file(self.current_note)
         self.current_note = note
         if hasattr(self, "spell_highlighter"):
@@ -2672,23 +2679,43 @@ class NotesApp(QMainWindow):
         self._ensure_dd_map()
         if dd_id in self._dropdown_tokens:
             return self._dropdown_tokens[dd_id]
-        href = f"dropdown://{re.escape(dd_id)}"
+
         html = self.text_edit.toHtml()
-        match = re.search(rf'<a[^>]*href="{href}"[^>]*>(.*?)</a>', html, flags=re.S)
-        if not match:
+        href_prefix = f"dropdown://{re.escape(dd_id)}"
+        m = re.search(rf'<a[^>]*href="{href_prefix}[^"]*"[^>]*>(.*?)</a>', html, flags=re.S)
+        if not m:
             return None
-        full_tag = match.group(0)
-        inner = match.group(1)
-        title_match = re.search(r'title="([^"]*)"', full_tag)
-        if title_match:
-            try:
-                vals = json.loads(unquote(title_match.group(1)))
-            except Exception:
-                vals = self._load_dropdown_values()
-        else:
+
+        full_tag = m.group(0)
+        inner = m.group(1)
+
+        vals = None
+        # 1) Пытаемся прочитать значения из href (?v=...)
+        href_m = re.search(r'href="([^"]+)"', full_tag)
+        if href_m:
+            href_val = href_m.group(1)
+            v_m = re.search(r'[?#]v=([^"&]*)', href_val)
+            if v_m:
+                try:
+                    vals = json.loads(unquote(v_m.group(1)))
+                except Exception:
+                    vals = None
+
+        # 2) Legacy: пробуем title="..."
+        if vals is None:
+            title_m = re.search(r'title=(["\'])(.*?)\1', full_tag)
+            if title_m:
+                try:
+                    vals = json.loads(unquote(title_m.group(2)))
+                except Exception:
+                    vals = None
+
+        if vals is None:
             vals = self._load_dropdown_values()
+
         text = re.sub(r"<[^>]+>", "", inner)
         text = text.replace("▼", "").replace("&#9662;", "").strip()
+
         info = {"value": text, "values": vals}
         self._dropdown_tokens[dd_id] = info
         return info
@@ -2733,23 +2760,53 @@ class NotesApp(QMainWindow):
             f"border-radius:6px; border:1px solid {br}; "
             f'background:{bg}; color:{fg};">{self._html_escape(new_value)} &#9662;</span>'
         )
-
-        href = f"dropdown://{re.escape(dd_id)}"
         encoded = quote(json.dumps(values, ensure_ascii=False))
         new_anchor = (
-            f'<a href="dropdown://{dd_id}" title="{encoded}" '
+            f'<a href="dropdown://{dd_id}?v={encoded}" '
             f'style="text-decoration:none;">{inner}</a>'
         )
         html = self.text_edit.toHtml()
-        new_html = re.sub(
-            rf'<a[^>]*href="{href}"[^>]*>.*?</a>', new_anchor, html, flags=re.S
-        )
+        href_prefix = f"dropdown://{re.escape(dd_id)}"
+        pattern = re.compile(rf'<a[^>]*href="{href_prefix}[^"]*"[^>]*>.*?</a>', re.S)
+        new_html, count = pattern.subn(new_anchor, html, count=1)
+        if count == 0:
+            return
         self.text_edit.blockSignals(True)
         self.text_edit.setHtml(new_html)
         self.text_edit.blockSignals(False)
         self.record_state_for_undo()
         if hasattr(self, "debounce_timer"):
             self.debounce_timer.start(self.debounce_ms)
+
+    def _persist_dropdown_values_in_html(self, html: str) -> str:
+        pattern = re.compile(
+            r'<a[^>]*href="dropdown://([0-9a-fA-F]{8})[^"]*"[^>]*>(.*?)</a>',
+            re.S
+        )
+
+        def repl(m):
+            dd_id = m.group(1)
+            _ = m.group(2)
+
+            info = self._get_dropdown_token_info(dd_id)
+            if not info:
+                return m.group(0)
+            value = info.get("value", "")
+            values = info.get("values", []) or []
+            bg, fg, br = self._dropdown_palette()
+            inner = (
+                f'<span style="display:inline-block; padding:2px 8px; '
+                f"border-radius:6px; border:1px solid {br}; "
+                f'background:{bg}; color:{fg};">{self._html_escape(value)} &#9662;</span>'
+            )
+
+            encoded = quote(json.dumps(values, ensure_ascii=False))
+            return (
+                f'<a href="dropdown://{dd_id}?v={encoded}" '
+                f'style="text-decoration:none;">{inner}</a>'
+            )
+
+        return pattern.sub(repl, html)
 
     def _edit_values_and_reopen(self, dd_id: str) -> None:
         info = self._get_dropdown_token_info(dd_id)
@@ -2822,6 +2879,9 @@ class NotesApp(QMainWindow):
             if hasattr(note, "content_html") and note.content_html
             else note.content
         )
+        self.text_edit.blockSignals(False)
+        if hasattr(self, "_dropdown_tokens"):
+            self._dropdown_tokens.clear()
         self.text_edit.blockSignals(False)
         if cursor_pos is not None and anchor_pos is not None:
             self._safe_restore_cursor(anchor_pos, cursor_pos)
@@ -5800,7 +5860,12 @@ class NotesApp(QMainWindow):
     def update_current_note_content(self):
         if not hasattr(self, "current_note") or self.current_note is None:
             return
-        self.current_note.content = self.text_edit.toHtml()
+        if not hasattr(self, "current_note") or self.current_note is None:
+            return
+        html = self.text_edit.toHtml()
+        html = self._persist_dropdown_values_in_html(html)
+        self.current_note.content = html
+        self.record_state_for_undo()
         self.record_state_for_undo()
 
     def hideEvent(self, event):
@@ -7730,4 +7795,4 @@ if __name__ == "__main__":
     window = LauncherWindow()
     window.show()
     sys.exit(app.exec())
-    # UPD 24.08.2025|22:29
+    # UPD 25.08.2025|12:27
