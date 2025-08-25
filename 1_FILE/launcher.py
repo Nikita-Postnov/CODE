@@ -887,21 +887,26 @@ class CustomTextEdit(QTextEdit):
             a.setEnabled(False)
         menu.exec(self.mapToGlobal(event.pos()))
 
+    def _sanitize_plain_for_copy(self, s: str) -> str:
+        s = s.replace("▾", "").replace("▼", "")
+        s = re.sub(r"[\u200b\u200c\u200d\u200e\u200f\u202a-\u202e\u2066-\u2069]", "", s)
+        s = re.sub(r"[ \t]+(\r?\n)", r"\1", s)
+        return s
+
     def createMimeDataFromSelection(self):
-        md = super().createMimeDataFromSelection()
-        try:
-            txt = md.text()
-            if txt:
-                md.setText(txt.replace("▾", ""))
-        except Exception:
-            pass
-        try:
-            html = md.html()
-            if html:
-                html = html.replace("▾", "").replace("&#9662;", "")
-                md.setHtml(html)
-        except Exception:
-            pass
+        if self.textCursor().charFormat().isImageFormat():
+            return super().createMimeDataFromSelection()
+
+        cur = self.textCursor()
+        if cur.hasSelection():
+            frag = cur.selection()
+            plain = frag.toPlainText()
+        else:
+            plain = self.toPlainText()
+
+        from PySide6.QtCore import QMimeData
+        md = QMimeData()
+        md.setText(self._sanitize_plain_for_copy(plain))
         return md
 
     def startDrag(self, supportedActions: Qt.DropActions) -> None:
@@ -7795,4 +7800,4 @@ if __name__ == "__main__":
     window = LauncherWindow()
     window.show()
     sys.exit(app.exec())
-    # UPD 25.08.2025|12:27
+    # UPD 25.08.2025|17:12
