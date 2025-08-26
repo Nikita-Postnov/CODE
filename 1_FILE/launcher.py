@@ -6104,6 +6104,18 @@ class PasswordManager:
         except Exception as e:
             return False, f"Ошибка резервного копирования: {str(e)}"
 
+    def move_password(self, from_idx: int, to_idx: int) -> bool:
+        n = len(self.passwords)
+        if n == 0:
+            return False
+        to_idx = max(0, min(to_idx, n - 1))
+        if not (0 <= from_idx < n) or from_idx == to_idx:
+            return False
+        item = self.passwords.pop(from_idx)
+        self.passwords.insert(to_idx, item)
+        self._save_passwords()
+        return True
+
     def regenerate_salt(self, master_password):
         new_salt = os.urandom(16)
         backup_passwords = self.get_all_passwords()
@@ -6344,6 +6356,21 @@ class PasswordManager:
                 "updated_at": p.get("updated_at", ""),
             }
             for p in self.passwords
+        ]
+    
+    def get_all_metadata(self):
+        for p in self.passwords:
+            if not p.get("updated_at"):
+                p["updated_at"] = datetime.datetime.now().strftime("%d.%m.%Y %H:%M")
+        return [
+            {
+                "index": i,
+                "description": p["description"],
+                "tags": p.get("tags", []),
+                "url": p.get("url", ""),
+                "updated_at": p.get("updated_at", ""),
+            }
+            for i, p in enumerate(self.passwords)
         ]
 
     def load_passwords(self):
@@ -6967,15 +6994,17 @@ class PasswordGeneratorApp:
         self._full_ui_initialization()
 
     def _full_ui_initialization(self):
+        self._cached_list = []
+        self._cached_has_plain = False
         self.password_generator = PasswordGenerator()
         self._setup_styles()
         self._create_tabs()
         self._setup_context_menu()
         self._create_menu()
         self.length_slider.config(to=self.password_generator.max_password_length)
-        self.schedule_backup()
-        self._refresh_password_list()
         self.master.deiconify()
+        self.master.after_idle(self._refresh_password_list)
+        self.master.after(2000, self.schedule_backup)
 
     def _edit_configuration(self):
         config_path = os.path.join(PASSWORDS_DIR, "config.json")
@@ -7021,6 +7050,42 @@ class PasswordGeneratorApp:
     def schedule_backup(self):
         self.password_manager.backup_passwords()
         self.master.after(3600000, self.schedule_backup)
+
+    def _on_tree_drag_start(self, event):
+        row_id = self.password_tree.identify_row(event.y)
+        self._dragging_iid = row_id if row_id else None
+
+    def _on_tree_drag_motion(self, event):
+        if not getattr(self, "_dragging_iid", None):
+            return
+        y = event.y
+        height = self.password_tree.winfo_height()
+        if y < 20:
+            self.password_tree.yview_scroll(-1, "units")
+        elif y > height - 20:
+            self.password_tree.yview_scroll(1, "units")
+        over_iid = self.password_tree.identify_row(y)
+        if over_iid:
+            self.password_tree.selection_set(over_iid)
+
+    def _on_tree_drag_release(self, event):
+        try:
+            if not getattr(self, "_dragging_iid", None):
+                return
+            from_idx = int(self._dragging_iid)
+
+            over_iid = self.password_tree.identify_row(event.y)
+            if over_iid:
+                to_idx = int(over_iid)
+            else:
+                to_idx = len(self.password_manager.passwords) - 1
+
+            if self.password_manager.move_password(from_idx, to_idx):
+                self._refresh_password_list()
+                self.password_tree.selection_set(str(to_idx))
+                self.password_tree.see(str(to_idx))
+        finally:
+            self._dragging_iid = None
 
     def _initialize_password_manager(self):
         attempts = 3
@@ -7273,6 +7338,9 @@ class PasswordGeneratorApp:
         vscroll.pack(side=tk.RIGHT, fill=tk.Y)
         hscroll.pack(side=tk.BOTTOM, fill=tk.X)
         self.password_tree.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+        self.password_tree.bind("<ButtonPress-1>", self._on_tree_drag_start)
+        self.password_tree.bind("<B1-Motion>", self._on_tree_drag_motion)
+        self.password_tree.bind("<ButtonRelease-1>", self._on_tree_drag_release)
         action_frame = ttk.Frame(self.manager_tab, padding=10)
         action_frame.pack(fill=tk.X)
         ttk.Button(
@@ -7581,67 +7649,72 @@ class PasswordGeneratorApp:
 
     def _refresh_password_list(self):
         self.password_tree.delete(*self.password_tree.get_children())
-        passwords = self.password_manager.get_all_passwords()
-        for idx, pwd in enumerate(passwords):
-            pwd_copy = pwd.copy()
-            if self.hide_passwords_var.get():
-                pwd_copy["password"] = "••••••••"
+        show_plain = not self.hide_passwords_var.get()
+        if show_plain:
+            self._cached_list = [
+                {**p, "index": i}
+                for i, p in enumerate(self.password_manager.get_all_passwords())
+            ]
+            self._cached_has_plain = True
+        else:
+            self._cached_list = self.password_manager.get_all_metadata()
+            self._cached_has_plain = False
+        for item in self._cached_list:
+            display_password = item.get("password", "") if show_plain else "•" * 36
             self.password_tree.insert(
-                "",
-                tk.END,
-                iid=str(idx),
+                "", tk.END, iid=str(item["index"]),
                 values=(
-                    pwd_copy["description"],
-                    pwd_copy["password"],
-                    ", ".join(pwd.get("tags", [])),
-                    pwd.get("updated_at", "—"),
+                    item["description"],
+                    display_password,
+                    ", ".join(item.get("tags", [])),
+                    item.get("updated_at", "—"),
                 ),
             )
-
-        self._update_tag_filter_options()
+        self._update_tag_filter_options(self._cached_list)
         self._filter_passwords()
 
-    def _update_tag_filter_options(self):
+    def _update_tag_filter_options(self, items=None):
+        items = items or self._cached_list
         tags = set()
-        for pwd in self.password_manager.get_all_passwords():
-            tags.update(pwd.get("tags", []))
+        for it in items:
+            tags.update(it.get("tags", []))
         all_tags = ["Все"] + sorted(tags)
         self.tag_filter["values"] = all_tags
         self.tag_filter.config(
-            width=max(
-                10, max(len(str(tag)) for tag in all_tags) + 2 if all_tags else 10
-            )
+            width=max(10, max(len(str(tag)) for tag in all_tags) + 2 if all_tags else 10)
         )
 
     def _filter_passwords(self):
         search_term = self.search_var.get().lower()
         selected_tag = self.tag_filter_var.get()
+        search_in_passwords = (not self.hide_passwords_var.get()) and bool(search_term)
+        if search_in_passwords and not self._cached_has_plain:
+            self._cached_list = [
+                {**p, "index": i}
+                for i, p in enumerate(self.password_manager.get_all_passwords())
+            ]
+            self._cached_has_plain = True
+
         self.password_tree.delete(*self.password_tree.get_children())
-        passwords = self.password_manager.get_all_passwords()
-        for idx, pwd in enumerate(passwords):
-            tags = [t.lower() for t in pwd.get("tags", [])]
+
+        for it in self._cached_list:
+            tags = [t.lower() for t in it.get("tags", [])]
             match_search = (
                 not search_term
-                or search_term in pwd["description"].lower()
-                or search_term in pwd["password"].lower()
-                or any(search_term in tag for tag in tags)
+                or search_term in it["description"].lower()
+                or (search_in_passwords and search_term in it.get("password", "").lower())
+                or any(search_term in t for t in tags)
             )
             match_tag = selected_tag == "Все" or selected_tag.lower() in tags
             if match_search and match_tag:
-                display_password = (
-                    "••••••••••••••••••••••••••••••••••••••••••••••••••••••••"
-                    if self.hide_passwords_var.get()
-                    else pwd["password"]
-                )
+                display_password = ("•" * 64) if self.hide_passwords_var.get() else it.get("password", "")
                 self.password_tree.insert(
-                    "",
-                    tk.END,
-                    iid=str(idx),
+                    "", tk.END, iid=str(it["index"]),
                     values=(
-                        pwd["description"],
+                        it["description"],
                         display_password,
-                        ", ".join(pwd.get("tags", [])),
-                        pwd.get("updated_at", "—"),
+                        ", ".join(it.get("tags", [])),
+                        it.get("updated_at", "—"),
                     ),
                 )
 
@@ -7861,4 +7934,4 @@ if __name__ == "__main__":
     window = LauncherWindow()
     window.show()
     sys.exit(app.exec())
-    # UPD 26.08.2025|11:09
+    # UPD 26.08.2025|14:58
