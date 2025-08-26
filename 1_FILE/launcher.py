@@ -1053,6 +1053,7 @@ class NotesApp(QMainWindow):
 
     def __init__(self):
         super().__init__()
+        self.setWindowFlags(self.windowFlags() | Qt.WindowStaysOnTopHint)
         self._live_toasts: list[QLabel] = []
         self.exiting = False
         self.notes = []
@@ -3752,10 +3753,20 @@ class NotesApp(QMainWindow):
             self.audio_thread = None
             self.audio_button.setText("🎤")
         else:
-            filename = str(uuid.uuid4()) + ".wav"
-            folder_path = os.path.join(NOTES_DIR, "Audio")
-            os.makedirs(folder_path, exist_ok=True)
-            full_path = os.path.join(folder_path, filename)
+            if not self.current_note:
+                QMessageBox.warning(self, "Нет заметки", "Пожалуйста, выбери или создай заметку.")
+                return
+            note_dir = os.path.join(
+                NOTES_DIR,
+                NotesApp.safe_folder_name(
+                    self.current_note.title,
+                    self.current_note.uuid,
+                    self.current_note.timestamp,
+                ),
+            )
+            os.makedirs(note_dir, exist_ok=True)
+            filename = f"audio_{QDateTime.currentDateTime().toString('yyyyMMdd_HHmmss')}.wav"
+            full_path = os.path.join(note_dir, filename)
 
             self.audio_thread = AudioRecorderThread(full_path)
             self.audio_thread.recording_finished.connect(self.insert_audio_link)
@@ -5714,6 +5725,7 @@ class NotesApp(QMainWindow):
 
         dialog = QDialog(self)
         dialog.setWindowTitle("Управление плагинами")
+        dialog.setWindowFlag(Qt.WindowStaysOnTopHint, True)
         layout = QVBoxLayout(dialog)
         checkboxes = {}
         for plugin in sorted(plugins):
@@ -6945,6 +6957,8 @@ class PasswordGeneratorApp:
         master.title("Генератор паролей")
         master.geometry("800x600")
         master.minsize(800, 600)
+        master.attributes("-topmost", True)
+        master.lift()
         self.idle_timer = None
         self.idle_timeout = 120000
         self.setup_activity_tracking()
@@ -7752,6 +7766,9 @@ def heading_to_path(head):
 
 def run_password_manager():
     root = tk.Tk()
+    root.attributes("-topmost", True)
+    root.lift()
+    root.after(100, root.focus_force)
     app = PasswordGeneratorApp(root)
     root.mainloop()
 
@@ -7766,6 +7783,7 @@ def run_notes_app():
 class LauncherWindow(QMainWindow):
     def __init__(self):
         super().__init__()
+        self.setWindowFlag(Qt.WindowStaysOnTopHint, True)
         self.notes_window = None
         self.setWindowIcon(QIcon(ICON_PATH))
         central_widget = QWidget(self)
@@ -7843,4 +7861,4 @@ if __name__ == "__main__":
     window = LauncherWindow()
     window.show()
     sys.exit(app.exec())
-    # UPD 25.08.2025|22:06
+    # UPD 26.08.2025|11:09
