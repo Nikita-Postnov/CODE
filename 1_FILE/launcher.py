@@ -11,11 +11,36 @@ import wave
 import traceback
 import base64
 import html as html_lib
+import importlib
 
+def _load_enchant():
+    try:
+        return importlib.import_module("enchant")
+    except Exception:
+        return None
+ENCHANT = _load_enchant()
 try:
     import pyperclip
 except ImportError:
     pyperclip = None
+try:
+    import regex as re_u 
+    WORD_RE = re_u.compile(
+        r"(?V1)\p{L}[\p{L}\p{M}]*(?:[--'’]\p{L}[\p{L}\p{M}]*)*",
+        re_u.UNICODE
+    )
+    def normalize_punct(s: str) -> str:
+        return s
+except Exception:
+    import re as re_u
+    _TRANS = {
+        0x2010: ord('-'), 0x2011: ord('-'), 0x2012: ord('-'),
+        0x2013: ord('-'), 0x2014: ord('-'), 0x2212: ord('-'),
+        0x2019: ord("'"),
+    }
+    def normalize_punct(s: str) -> str:
+        return s.translate(_TRANS)
+    WORD_RE = re_u.compile(r"[A-Za-zА-Яа-яЁё]+(?:[-'][A-Za-zА-Яа-яЁё]+)*")
 from cryptography.fernet import Fernet, InvalidToken
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
@@ -31,6 +56,7 @@ from urllib.parse import quote, unquote
 from typing import Callable
 from PySide6.QtCore import (
     Qt,
+    QObject,
     QMimeData,
     QTimer,
     QUrl,
@@ -123,9 +149,81 @@ from PySide6.QtWidgets import (
     QFrame,
 )
 
+ATTACH_IGNORED_FILES = {"note.json", ".ds_store", "thumbs.db"}
+ATTACH_IGNORED_PREFIXES = ("~$", ".~")
+ATTACH_IGNORED_SUFFIXES = ("~", ".tmp", ".temp", ".bak")
+
+def _attach_hidden(name: str) -> bool:
+    n = name.lower()
+    return (
+        n in ATTACH_IGNORED_FILES
+        or n.startswith(ATTACH_IGNORED_PREFIXES)
+        or n.endswith(ATTACH_IGNORED_SUFFIXES)
+    )
+
+def log_error(msg: str, exc: Exception | None = None) -> None:
+    try:
+        ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        os.makedirs(DATA_DIR, exist_ok=True)
+        with open(CRASH_LOG_PATH, "a", encoding="utf-8") as f:
+            f.write(f"[{ts}] {msg}\n")
+            if exc is not None:
+                f.write("".join(traceback.format_exception(type(exc), exc, exc.__traceback__)))
+                f.write("\n---\n")
+    except Exception:
+        pass
+
+def write_json_atomic(path: str, data: dict) -> None:
+    dir_ = os.path.dirname(path)
+    os.makedirs(dir_, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix=".tmp-", dir=dir_)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=4)
+            f.flush()
+            os.fsync(f.fileno())
+        if os.path.exists(path):
+            try:
+                shutil.copy2(path, path + ".bak")
+            except Exception as e:
+                log_error(f"Не удалось создать .bak для {path}", e)
+        os.replace(tmp, path)
+    except Exception as e:
+        log_error(f"Сбой атомарной записи {path}", e)
+        raise
+    finally:
+        try:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+        except Exception:
+            pass
+
+def read_json_safe(path: str) -> dict | None:
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as e1:
+        bak = path + ".bak"
+        try:
+            with open(bak, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            try:
+                write_json_atomic(path, data)
+            except Exception as e2:
+                log_error(f"Не удалось восстановить {path} из .bak", e2)
+            return data
+        except Exception as e3:
+            try:
+                bad = path + ".bad"
+                if os.path.exists(path):
+                    os.replace(path, bad)
+            except Exception as e4:
+                log_error(f"Не удалось переименовать битый файл {path}", e4)
+            log_error(f"Повреждённый JSON: {path}", e1)
+            return None
+
 
 class MessageBox:
-    """Qt-based messagebox wrapper to replace tkinter.messagebox."""
 
     @staticmethod
     def showerror(title, message):
@@ -170,6 +268,7 @@ os.makedirs(PASSWORDS_DIR, exist_ok=True)
 if not os.path.exists(USER_DICT_PATH):
     with open(USER_DICT_PATH, "a", encoding="utf-8"):
         pass
+CRASH_LOG_PATH = os.path.join(DATA_DIR, "crash.log")
 MAX_HISTORY = 250
 IMAGE_EXTENSIONS = [".png", ".jpg", ".jpeg", ".bmp", ".gif"]
 AUDIO_EXTENSIONS = [".wav", ".mp3", ".ogg"]
@@ -182,7 +281,6 @@ ATTACH_FILE_FILTER = (
 
 def create_list(*items):
     return list(items)
-
 
 EXAMPLE_NUMBERS = create_list(1, 2, 3, 4)
 EXAMPLE_WORDS = create_list("alpha", "beta", "gamma")
@@ -211,6 +309,16 @@ class SpellCheckHighlighter(QSyntaxHighlighter):
             self._dict_watcher.fileChanged.connect(self._reload_user_dictionary)
         except Exception:
             self._dict_watcher = None
+            self._load_user_dictionary()
+            if isinstance(self.spell_checker, MultiSpellChecker):
+                try:
+                    self.spell_checker.user_words = set(getattr(self, "user_words", set()))
+                except Exception:
+                    pass
+        try:
+            self.spell_checker = MultiSpellChecker()
+        except Exception:
+            self.spell_checker = None
 
     def _load_user_dictionary(self) -> None:
         prev_local = getattr(self, "local_ignored", set())
@@ -256,21 +364,145 @@ class SpellCheckHighlighter(QSyntaxHighlighter):
     def highlightBlock(self, text: str) -> None:
         if not self.spell_checker:
             return
-        matches = list(re.finditer(r"[A-Za-zА-Яа-яЁё']+", text))
+        norm = normalize_punct(text)
+        matches = list(WORD_RE.finditer(norm))
         if not matches:
             return
-        words = [m.group().lower() for m in matches]
-        misspelled = self.spell_checker.unknown(words)
+        def _skip(raw: str) -> bool:
+            if len(raw) <= 1:
+                return True
+            if any(ch.isdigit() for ch in raw):
+                return True
+            if raw.isupper() and len(raw) >= 2:
+                return True
+            return False
+        tokens = []
+        for m in matches:
+            w = text[m.start():m.end()]
+            if _skip(w):
+                continue
+            tokens.append(w.lower())
+        if not tokens:
+            return
+        if not hasattr(self, "_ok_cache"):
+            self._ok_cache, self._bad_cache = set(), set()
+        check_set = [w for w in set(tokens)
+                    if w not in self._ok_cache
+                    and w not in self._bad_cache
+                    and w not in getattr(self, "user_words", set())
+                    and w not in getattr(self, "local_ignored", set())]
+        misspelled = set()
+        if check_set:
+            try:
+                bad = set(self.spell_checker.unknown(check_set))
+            except Exception:
+                bad = set()
+            for w in check_set:
+                (self._bad_cache if w in bad else self._ok_cache).add(w)
+            misspelled |= bad
         misspelled -= getattr(self, "user_words", set())
         misspelled -= getattr(self, "local_ignored", set())
-        for match in matches:
-            word = match.group().lower()
-            if word in misspelled:
-                self.setFormat(match.start(), match.end() - match.start(), self.err_fmt)
+        for m in matches:
+            w = text[m.start():m.end()].lower()
+            if w in misspelled or w in self._bad_cache:
+                self.setFormat(m.start(), m.end() - m.start(), self.err_fmt)
 
+class _WordFrequencyStub:
+    def load_words(self, words):
+        pass
+
+class MultiSpellChecker:
+    def __init__(self):
+        self.user_words = set()
+        self.word_frequency = type("WF", (), {"load_words": lambda *_: None})()
+        self.backends = []
+        self.ru = self.en = None
+
+        if ENCHANT is not None:
+            try:
+                self.ru = ENCHANT.Dict("ru_RU")
+            except Exception:
+                self.ru = None
+            try:
+                self.en = ENCHANT.Dict("en_US")
+            except Exception:
+                self.en = None
+            if self.ru: self.backends.append(("ru", self.ru))
+            if self.en: self.backends.append(("en", self.en))
+        try:
+            from spellchecker import SpellChecker as _SC
+            self.sc_ru = _SC(language="ru")
+            self.sc_en = _SC(language="en")
+        except Exception:
+            self.sc_ru = self.sc_en = None
+        try:
+            import importlib
+            _pymorphy = None
+            try:
+                _pymorphy = importlib.import_module("pymorphy3")
+            except Exception:
+                _pymorphy = importlib.import_module("pymorphy2")
+            self.morph = _pymorphy.MorphAnalyzer()
+        except Exception:
+            self.morph = None
+
+    def _is_cyr(self, w: str) -> bool:
+        return any('А' <= ch <= 'я' or ch in 'Ёё' for ch in w)
+
+    def _is_known(self, w: str) -> bool:
+        if self.morph:
+            try:
+                prs = self.morph.parse(w)
+                if prs and prs[0].score >= 0.5:
+                    return True
+            except Exception:
+                pass
+        if self._check_enchant(w):
+            return True
+        sc = self.sc_ru if self._is_cyr(w) else self.sc_en
+        if sc:
+            return w not in sc.unknown([w])
+        return False
+
+    def _check_enchant(self, w: str) -> bool:
+        if ENCHANT is None:
+            return False
+        if self._is_cyr(w) and self.ru:
+            try:
+                return self.ru.check(w)
+            except Exception:
+                return False
+        if not self._is_cyr(w) and self.en:
+            try:
+                return self.en.check(w)
+            except Exception:
+                return False
+        return False
+
+    def unknown(self, words):
+        return {w for w in words if not self._is_known(w) and w not in self.user_words}
+
+    def candidates(self, w: str):
+        out = set()
+        if ENCHANT is not None:
+            d = self.ru if self._is_cyr(w) else self.en
+            if d:
+                try:
+                    out.update(d.suggest(w))
+                except Exception:
+                    pass
+        sc = self.sc_ru if self._is_cyr(w) else self.sc_en
+        if sc:
+            try:
+                corr = sc.correction(w)
+                if corr: out.add(corr)
+                if hasattr(sc, "candidates"):
+                    out.update(sc.candidates(w))
+            except Exception:
+                pass
+        return list(out)[:10]
 
 def create_dropdown_combo(*items, parent=None):
-
     combo = QComboBox(parent)
     combo.setEditable(True)
     flat_items = []
@@ -280,7 +512,6 @@ def create_dropdown_combo(*items, parent=None):
         else:
             flat_items.append(item)
     combo.addItems([str(i) for i in flat_items])
-
     def _commit_new_item() -> None:
         text = combo.currentText().strip()
         if text and combo.findText(text) == -1:
@@ -293,7 +524,6 @@ def create_dropdown_combo(*items, parent=None):
 
 def handle_exception(exc_type, exc_value, exc_traceback):
     traceback.print_exception(exc_type, exc_value, exc_traceback)
-
 
 sys.excepthook = lambda t, v, tb: print("Uncaught exception:", t, v)
 
@@ -313,9 +543,7 @@ def copy_default_icons():
             os.makedirs(os.path.dirname(dst), exist_ok=True)
             shutil.copy(src, dst)
 
-
 copy_default_icons()
-
 
 def paste_from_clipboard(widget):
     if pyperclip is None:
@@ -499,7 +727,7 @@ class CustomTextEdit(QTextEdit):
         else:
             super().insertFromMimeData(source)
 
-    def ignore_in_this_note(self, word: str) -> None:  # NEW
+    def ignore_in_this_note(self, word: str) -> None:
         mw = self.window()
         if hasattr(mw, "add_word_to_note_ignore"):
             mw.add_word_to_note_ignore(word)
@@ -1047,13 +1275,20 @@ class Note:
         return note
 
 
+class AlwaysOnTopFilter(QObject):
+    def eventFilter(self, obj, ev):
+        if isinstance(obj, QWidget) and obj.isWindow():
+            if ev.type() in (QEvent.Show, QEvent.WindowStateChange):
+                obj.setWindowFlag(Qt.WindowStaysOnTopHint, True)
+                QTimer.singleShot(0, lambda o=obj: (o.raise_(), o.activateWindow()))
+        return super().eventFilter(obj, ev)
+
 class NotesApp(QMainWindow):
     TRASH_DIR = os.path.join(NOTES_DIR, "Trash")
     window_hidden = Signal()
 
     def __init__(self):
         super().__init__()
-        self.setWindowFlags(self.windowFlags() | Qt.WindowStaysOnTopHint)
         self._live_toasts: list[QLabel] = []
         self.exiting = False
         self.notes = []
@@ -1073,6 +1308,10 @@ class NotesApp(QMainWindow):
         self.load_plugins()
         self.init_theme()
         self.load_settings()
+        first_key = "ui/notes_first_open_done"
+        if not self.settings.value(first_key, False, type=bool):
+            QTimer.singleShot(0, lambda: self.bring_widget_to_front(self))
+            self.settings.setValue(first_key, True)
         self.tray_icon = QSystemTrayIcon(QIcon(TRAY_ICON_PATH), self)
         self.tray_icon.activated.connect(self.on_tray_icon_activated)
         self.tray_icon.setToolTip("Мои Заметки")
@@ -1325,7 +1564,6 @@ class NotesApp(QMainWindow):
         self.action_toggle_rdp.setCheckable(True)
         self.action_toggle_rdp.toggled.connect(self.on_toggle_rdp_visible)
         self.visibility_toolbar.addAction(self.action_toggle_pm)
-        self.visibility_toolbar.addAction(self.action_toggle_rdp)
         self.all_tags = set()
         self.new_note_button.clicked.connect(self.new_note)
         self.save_note_button.clicked.connect(self.save_note)
@@ -1360,7 +1598,7 @@ class NotesApp(QMainWindow):
             anchor_widget=self.rdp_1c8_copy_btn,
         )
 
-    def add_word_to_note_ignore(self, word: str) -> None:  # NEW
+    def add_word_to_note_ignore(self, word: str) -> None:
         if not getattr(self, "current_note", None):
             return
         w = (word or "").strip().lower()
@@ -1648,6 +1886,9 @@ class NotesApp(QMainWindow):
             self.update_history_list_selection()
 
     def move_note_to_trash(self, note: Note) -> None:
+        self._stop_watching_attachments()
+        if self.current_note and self.current_note.uuid == note.uuid:
+            self._stop_watching_attachments()
         self.save_note_to_specific_folder(note, self.TRASH_DIR)
         note_folder_name = NotesApp.safe_folder_name(
             note.title, note.uuid, note.timestamp
@@ -1776,22 +2017,28 @@ class NotesApp(QMainWindow):
         loaded_notes = []
         for folder in os.listdir(NOTES_DIR):
             folder_path = os.path.join(NOTES_DIR, folder)
-            if os.path.isdir(folder_path):
-                file_path = os.path.join(folder_path, "note.json")
-                if os.path.exists(file_path):
-                    with open(file_path, "r", encoding="utf-8") as f:
-                        data = json.load(f)
-                    note = Note.from_dict(data)
-                    if "content_txt" in data:
-                        note.content_txt = data["content_txt"]
-                    else:
-                        doc = QTextDocument()
-                        doc.setHtml(note.content)
-                        note.content_txt = doc.toPlainText()
-                    loaded_notes.append(note)
-        unique = {}
-        for note in loaded_notes:
-            unique[note.uuid] = note
+            if not os.path.isdir(folder_path):
+                continue
+            file_path = os.path.join(folder_path, "note.json")
+            if not os.path.exists(file_path):
+                continue
+            try:
+                data = read_json_safe(file_path)
+                if not data:
+                    continue
+                note = Note.from_dict(data)
+                if "content_txt" in data:
+                    note.content_txt = data["content_txt"]
+                else:
+                    doc = QTextDocument()
+                    doc.setHtml(note.content)
+                    note.content_txt = doc.toPlainText()
+                loaded_notes.append(note)
+            except Exception as e:
+                log_error(f"Ошибка чтения {file_path}", e)
+                continue
+
+        unique = {n.uuid: n for n in loaded_notes}
         self.notes = list(unique.values())
         self.deduplicate_notes()
 
@@ -1806,18 +2053,14 @@ class NotesApp(QMainWindow):
         note_dict = note.to_dict()
         if not note.reminder:
             note_dict.pop("reminder", None)
-        with open(file_path, "w", encoding="utf-8") as f:
-            if self.current_note and note.uuid == self.current_note.uuid:
-                doc = QTextDocument()
-                doc.setHtml(self.text_edit.toHtml())
-                plain_text = doc.toPlainText()
-                note_dict["content_txt"] = plain_text
-            else:
-                doc = QTextDocument()
-                doc.setHtml(note.content)
-                plain_text = doc.toPlainText()
-                note_dict["content_txt"] = plain_text
-            json.dump(note_dict, f, ensure_ascii=False, indent=4)
+        note_dict = note.to_dict()
+        if not note.reminder:
+            note_dict.pop("reminder", None)
+        doc = QTextDocument()
+        doc.setHtml(self.text_edit.toHtml() if (self.current_note and note.uuid == self.current_note.uuid) else note.content)
+        note_dict["content_txt"] = doc.toPlainText()
+        write_json_atomic(file_path, note_dict)
+
 
     def save_all_notes_to_disk(self) -> None:
         self.ensure_notes_directory()
@@ -1886,6 +2129,7 @@ class NotesApp(QMainWindow):
                 NotesApp.safe_folder_name(note.title, note.uuid, note.timestamp),
             )
             if os.path.exists(old_dir):
+                self._stop_watching_attachments()
                 os.rename(old_dir, new_dir)
             self.save_note_to_file(note)
             self.refresh_notes_list()
@@ -2088,7 +2332,7 @@ class NotesApp(QMainWindow):
             self.text_edit.setReadOnly(False)
             note.password_manager_visible = False
             note.rdp_1c8_visible = False
-            note.rdp_1c8_removed = False
+            note.rdp_1c8_removed = True
             self.password_manager_field.clear()
             self.rdp_1c8_field.clear()
             self.password_manager_row.setVisible(False)
@@ -2514,6 +2758,7 @@ class NotesApp(QMainWindow):
         dlg.exec()
 
     def show_trash(self) -> None:
+        self._stop_watching_attachments()
         self.notes_list.clear()
         if not os.path.exists(self.TRASH_DIR):
             return
@@ -2552,6 +2797,8 @@ class NotesApp(QMainWindow):
             NOTES_DIR, NotesApp.safe_folder_name(note.title, note.uuid, note.timestamp)
         )
         if os.path.exists(trash_note_dir):
+            self._stop_watching_attachments()
+            shutil.move(trash_note_dir, note_dir)
             shutil.move(trash_note_dir, note_dir)
         self.load_notes_from_disk()
         self.refresh_notes_list()
@@ -2571,12 +2818,12 @@ class NotesApp(QMainWindow):
         if not selected_items:
             return
         reply = QMessageBox.question(
-            self,
-            "Удалить навсегда",
-            "Удалить выбранную заметку безвозвратно?",
+            self, "Удалить навсегда", "Удалить выбранную заметку безвозвратно?",
             QMessageBox.Yes | QMessageBox.No,
         )
         if reply == QMessageBox.Yes:
+            self._stop_watching_attachments()
+
             item = selected_items[0]
             note = item.data(Qt.UserRole)
             trash_note_dir = os.path.join(
@@ -2588,6 +2835,17 @@ class NotesApp(QMainWindow):
             self.refresh_notes_list()
             QMessageBox.information(self, "Удалено", "Заметка удалена навсегда.")
 
+    def _stop_watching_attachments(self) -> None:
+        try:
+            files = self.attachments_watcher.files()
+            if files:
+                self.attachments_watcher.removePaths(files)
+            dirs = self.attachments_watcher.directories()
+            if dirs:
+                self.attachments_watcher.removePaths(dirs)
+        except Exception:
+            pass
+
     def empty_trash(self) -> None:
         if os.path.exists(self.TRASH_DIR):
             reply = QMessageBox.question(
@@ -2597,6 +2855,7 @@ class NotesApp(QMainWindow):
                 QMessageBox.Yes | QMessageBox.No,
             )
             if reply == QMessageBox.Yes:
+                self._stop_watching_attachments()
                 for folder in os.listdir(self.TRASH_DIR):
                     folder_path = os.path.join(self.TRASH_DIR, folder)
                     shutil.rmtree(folder_path)
@@ -2617,7 +2876,7 @@ class NotesApp(QMainWindow):
             self.tags_label.setText("Теги: нет")
             self.current_note = None
             if hasattr(self, "spell_highlighter"):
-                self.spell_highlighter.set_local_ignored(note.ignored_words)
+                self.spell_highlighter.set_local_ignored([])
             self.clear_custom_fields()
             self.add_field_btn.setEnabled(False)
             if hasattr(self, "history_list"):
@@ -2687,7 +2946,6 @@ class NotesApp(QMainWindow):
         self.password_manager_field.setText(note.password_manager)
         self.rdp_1c8_field.setText(note.rdp_1c8)
 
-        # Выделяем элемент в списке заметок
         for i in range(self.notes_list.count()):
             item = self.notes_list.item(i)
             n = item.data(Qt.UserRole)
@@ -2717,11 +2975,9 @@ class NotesApp(QMainWindow):
 
     def _ensure_dd_map(self) -> None:
         if not hasattr(self, "_dropdown_tokens"):
-            # id -> {"value": str, "values": list[str]}
             self._dropdown_tokens = {}
 
     def _get_dropdown_token_info(self, dd_id: str) -> dict | None:
-        """Retrieve dropdown token info, populating cache from the document if needed."""
         self._ensure_dd_map()
         if dd_id in self._dropdown_tokens:
             return self._dropdown_tokens[dd_id]
@@ -2736,7 +2992,6 @@ class NotesApp(QMainWindow):
         inner = m.group(1)
 
         vals = None
-        # 1) Пытаемся прочитать значения из href (?v=...)
         href_m = re.search(r'href="([^"]+)"', full_tag)
         if href_m:
             href_val = href_m.group(1)
@@ -2747,7 +3002,6 @@ class NotesApp(QMainWindow):
                 except Exception:
                     vals = None
 
-        # 2) Legacy: пробуем title="..."
         if vals is None:
             title_m = re.search(r'title=(["\'])(.*?)\1', full_tag)
             if title_m:
@@ -2943,14 +3197,18 @@ class NotesApp(QMainWindow):
             )
             attachments_found = False
             if os.path.isdir(note_dir):
-                ignored_files = {"note.json", ".DS_Store", "Thumbs.db"}
+                ignored_files = {"note.json", ".ds_store", "thumbs.db"}
                 ignored_prefixes = ("~$", ".~")
-                ignored_suffixes = ("~", ".tmp", ".temp")
+                ignored_suffixes = ("~", ".tmp", ".temp", ".bak")
+
                 for filename in os.listdir(note_dir):
+                    if _attach_hidden(filename):
+                        continue
+                    name_lower = filename.lower()
                     if (
-                        filename in ignored_files
-                        or filename.startswith(ignored_prefixes)
-                        or filename.endswith(ignored_suffixes)
+                        name_lower in ignored_files
+                        or name_lower.startswith(ignored_prefixes)
+                        or name_lower.endswith(ignored_suffixes)
                     ):
                         continue
                     attachments_found = True
@@ -3102,7 +3360,8 @@ class NotesApp(QMainWindow):
         self.tags_label.setVisible(has)
         if not has:
             self.tags_label.setText("Теги: нет")
-        self.add_field_btn.setEnabled(has)
+        self.add_field_btn.setVisible(has)
+        self.custom_fields_container.setVisible(has)
         self.attachments_scroll.setVisible(
             False if not has else self.attachments_scroll.isVisible()
         )
@@ -3113,6 +3372,7 @@ class NotesApp(QMainWindow):
                 self.action_toggle_pm.setEnabled(False)
             if hasattr(self, "action_toggle_rdp"):
                 self.action_toggle_rdp.setEnabled(False)
+                self.action_toggle_rdp.setVisible(False)
             for w in self.custom_fields_widgets:
                 w["row"].setVisible(False)
                 w["action"].setEnabled(False)
@@ -3125,14 +3385,12 @@ class NotesApp(QMainWindow):
             )
             self.action_toggle_pm.blockSignals(False)
         if hasattr(self, "action_toggle_rdp"):
-            self.action_toggle_rdp.setEnabled(True)
-            self.action_toggle_rdp.blockSignals(True)
-            self.action_toggle_rdp.setChecked(bool(self.current_note.rdp_1c8_visible))
-            self.action_toggle_rdp.blockSignals(False)
+            self.action_toggle_rdp.setVisible(False)
+            self.action_toggle_rdp.setEnabled(False)
         if hasattr(self, "action_toggle_rdp"):
             rdp_removed = bool(getattr(self.current_note, "rdp_1c8_removed", False))
-            self.action_toggle_rdp.setVisible(not rdp_removed)  # <— НОВОЕ
-            self.action_toggle_rdp.setEnabled(not rdp_removed)  # <— НОВОЕ
+            self.action_toggle_rdp.setVisible(not rdp_removed)
+            self.action_toggle_rdp.setEnabled(not rdp_removed)
             self.action_toggle_rdp.blockSignals(True)
             self.action_toggle_rdp.setChecked(
                 False if rdp_removed else bool(self.current_note.rdp_1c8_visible)
@@ -3820,7 +4078,14 @@ class NotesApp(QMainWindow):
 
     def refresh_notes_list(self) -> None:
         self.notes_list.clear()
-        filtered_notes = self.filter_notes()
+        try:
+            filtered_notes = self.filter_notes()
+        except Exception as e:
+            log_error("filter_notes() failed", e)
+            filtered_notes = self.notes
+
+        if filtered_notes is None:
+            filtered_notes = self.notes
         pinned_notes = [note for note in filtered_notes if note.pinned]
         unpinned_notes = [note for note in filtered_notes if not note.pinned]
         fav_color = self.get_contrast_favorite_color()
@@ -4050,6 +4315,8 @@ class NotesApp(QMainWindow):
             ignored_prefixes = ("~$", ".~")
             ignored_suffixes = ("~", ".tmp", ".temp")
             for filename in os.listdir(note_dir):
+                if _attach_hidden(filename):
+                        continue
                 if (
                     filename in ignored_files
                     or filename.startswith(ignored_prefixes)
@@ -5077,7 +5344,10 @@ class NotesApp(QMainWindow):
 
     def import_note(self):
         file_path, _ = QFileDialog.getOpenFileName(
-            self, "Импорт заметки", "", "JSON Files (*.json)"
+            self,
+            "Импорт заметки",
+            "",
+            "JSON/BAK Files (*.json *.bak *.json.bak);;Все файлы (*.*)"
         )
         if file_path:
             try:
@@ -5104,6 +5374,9 @@ class NotesApp(QMainWindow):
             QMessageBox.Yes | QMessageBox.No,
         )
         if reply == QMessageBox.Yes:
+            self._stop_watching_attachments()
+            QApplication.processEvents()
+            QThread.msleep(50)
             note_dir = os.path.join(
                 NOTES_DIR, NotesApp.safe_folder_name(note.title, note.uuid)
             )
@@ -7839,7 +8112,23 @@ def heading_to_path(head):
 
 def run_password_manager():
     root = tk.Tk()
-    root.attributes("-topmost", True)
+    try:
+        settings = QSettings(SETTINGS_PATH, QSettings.IniFormat)
+        key = "ui/pm_first_open_done"
+        if not settings.value(key, False, type=bool):
+            root.attributes("-topmost", True)
+            root.after(700, lambda: root.attributes("-topmost", False))
+            settings.setValue(key, True)
+        else:
+            root.attributes("-topmost", False)
+    except Exception:
+        root.attributes("-topmost", True)
+        root.after(700, lambda: root.attributes("-topmost", False))
+
+    root.lift()
+    root.after(100, root.focus_force)
+    app = PasswordGeneratorApp(root)
+    root.mainloop()    
     root.lift()
     root.after(100, root.focus_force)
     app = PasswordGeneratorApp(root)
@@ -7848,15 +8137,20 @@ def run_password_manager():
 
 def run_notes_app():
     app = QApplication(sys.argv)
+    aot = AlwaysOnTopFilter()
+    app.installEventFilter(aot)
+
     window = NotesApp()
+    window.setWindowFlag(Qt.WindowStaysOnTopHint, True)
     window.show()
     app.exec()
+
 
 
 class LauncherWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowFlag(Qt.WindowStaysOnTopHint, True)
+        self.settings = QSettings(SETTINGS_PATH, QSettings.IniFormat)
         self.notes_window = None
         self.setWindowIcon(QIcon(ICON_PATH))
         central_widget = QWidget(self)
@@ -7929,9 +8223,12 @@ class LauncherWindow(QMainWindow):
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
+    aot = AlwaysOnTopFilter()
+    app.installEventFilter(aot)
     app.setWindowIcon(QIcon(ICON_PATH))
     app.setQuitOnLastWindowClosed(False)
     window = LauncherWindow()
+    window.setWindowFlag(Qt.WindowStaysOnTopHint, True)
     window.show()
     sys.exit(app.exec())
-    # UPD 26.08.2025|14:58
+    # UPD 27.08.2025|15:53
