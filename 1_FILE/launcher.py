@@ -3916,14 +3916,14 @@ class NotesApp(QMainWindow):
 
     def open_drawing_dialog(self) -> None:
         if not self.current_note:
-            QMessageBox.warning(
-                self, "Нет заметки", "Пожалуйста, выбери или создай заметку."
-            )
+            QMessageBox.warning(self, "Нет заметки", "Пожалуйста, выбери или создай заметку.")
             return
 
         dlg = DrawingDialog(self)
         if dlg.exec() == QDialog.DialogCode.Accepted:
             img = dlg.get_image()
+
+            # Папка текущей заметки (с учётом timestamp, чтобы не плодить дубликаты)
             note_dir = os.path.join(
                 NOTES_DIR,
                 NotesApp.safe_folder_name(
@@ -3933,19 +3933,49 @@ class NotesApp(QMainWindow):
                 ),
             )
             os.makedirs(note_dir, exist_ok=True)
-            filename = (
-                f"drawing_{QDateTime.currentDateTime().toString('yyyyMMdd_HHmmss')}.png"
+
+            # Предложим имя файла
+            default_base = f"рисунок_{QDateTime.currentDateTime().toString('yyyyMMdd_HHmmss')}"
+            name, ok = QInputDialog.getText(
+                self,
+                "Имя рисунка",
+                "Имя файла (без расширения):",
+                QLineEdit.EchoMode.Normal,
+                default_base,
             )
+            if not ok:
+                return
+
+            base = (name or "").strip()
+            if not base:
+                base = default_base
+
+            # Санитация имени
+            base = re.sub(r"[^a-zA-Zа-яА-Я0-9 _\-\.\(\)]", "_", base).strip(" ._")
+            if not base:
+                base = default_base
+
+            filename = base if base.lower().endswith(".png") else base + ".png"
             filepath = os.path.join(note_dir, filename)
+
+            # Разрулим конфликт имён
+            if os.path.exists(filepath):
+                stem, ext = os.path.splitext(filename)
+                i = 1
+                while os.path.exists(os.path.join(note_dir, f"{stem}_{i}{ext}")):
+                    i += 1
+                filepath = os.path.join(note_dir, f"{stem}_{i}{ext}")
+
+            # Сохраняем и вставляем в заметку
             try:
                 img.save(filepath, "PNG")
             except Exception as e:
-                QMessageBox.critical(
-                    self, "Ошибка", f"Не удалось сохранить рисунок: {e}"
-                )
+                QMessageBox.critical(self, "Ошибка", f"Не удалось сохранить рисунок:\n{e}")
                 return
+
             self._insert_image_at_cursor(filepath, width=400)
             self.save_note()
+            self._rebuild_attachments_panel(self.current_note)
 
     def insert_image_from_clipboard(self, image: QImage) -> None:
         if not self.current_note:
@@ -5094,7 +5124,7 @@ class NotesApp(QMainWindow):
             action.setText(dock.windowTitle())
             self.view_menu.addAction(action)
         self.view_menu.addSeparator()
-        self.action_always_on_top = QAction("Всегда поверх всех окон", self)
+        self.action_always_on_top = QAction("Поверх всех окон", self)
         self.action_always_on_top.setCheckable(True)
         self.action_always_on_top.setChecked(
             self.settings.value("ui/always_on_top", True, type=bool)
@@ -8254,10 +8284,10 @@ class LauncherWindow(QMainWindow):
 if __name__ == "__main__":
     app = QApplication(sys.argv)
     app.setWindowIcon(QIcon(ICON_PATH))
-    app.setQuitOnLastWindowClosed(False)
+    app.setQuitOnLastWindowClosed(True)
     window = LauncherWindow()
     window.show()
     sys.exit(app.exec())
 
-    
-    # UPD 29.08.2025|14:35
+
+    # UPD 29.08.2025|14:43
