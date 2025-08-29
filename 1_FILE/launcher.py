@@ -1,116 +1,126 @@
-import base64
-import difflib
-import html as html_lib
-import json
 import os
-import random
+import sys
+import json
 import re
 import string
-import sys
+import random
+import difflib
 import tkinter as tk
-import traceback
-import wave
 from tkinter import ttk
+import wave
+import traceback
+import base64
+import html as html_lib
 
 try:
     import pyperclip
 except ImportError:
     pyperclip = None
-import datetime
-import importlib.util
-import shutil
-import tempfile
-import uuid
-from collections.abc import Callable
-from urllib.parse import quote, unquote
-
 from cryptography.fernet import Fernet, InvalidToken
-from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+from cryptography.hazmat.backends import default_backend
+import time
+import math
+import tempfile
+import uuid
+import shutil
+import datetime
+import importlib.util
+from urllib.parse import quote, unquote
+from typing import Callable
 from PySide6.QtCore import (
-    QBuffer,
-    QDateTime,
-    QEvent,
-    QFileSystemWatcher,
-    QIODevice,
-    QMimeData,
-    QPoint,
-    QRect,
-    QSettings,
     Qt,
-    QThread,
+    QMimeData,
     QTimer,
     QUrl,
+    QSettings,
+    QSize,
+    QEvent,
+    QDateTime,
+    QPoint,
+    QRect,
+    QThread,
     Signal,
+    QBuffer,
+    QPointF,
+    QIODevice,
+    QFileSystemWatcher,
 )
 from PySide6.QtGui import (
-    QAction,
-    QCloseEvent,
-    QColor,
-    QContextMenuEvent,
-    QCursor,
-    QDesktopServices,
-    QDrag,
+    QIcon,
     QDragEnterEvent,
     QDropEvent,
-    QFont,
-    QIcon,
-    QImage,
-    QKeySequence,
     QMouseEvent,
-    QPainter,
-    QPainterPath,
-    QPalette,
-    QPen,
-    QPixmap,
+    QContextMenuEvent,
+    QCursor,
     QShortcut,
-    QSyntaxHighlighter,
-    QTextBlockFormat,
+    QPainterPath,
+    QImageReader,
+    QFont,
+    QImage,
+    QPixmap,
+    QKeySequence,
+    QCloseEvent,
+    QDrag,
+    QAction,
+    QPen,
+    QColor,
     QTextCharFormat,
+    QDesktopServices,
     QTextCursor,
-    QTextDocument,
+    QPolygonF,
+    QTransform,
     QTextListFormat,
+    QTextBlockFormat,
+    QPainter,
+    QPalette,
+    QTextDocument,
+    QSyntaxHighlighter,
 )
 from PySide6.QtWidgets import (
-    QAbstractItemView,
     QApplication,
-    QCheckBox,
-    QColorDialog,
-    QComboBox,
-    QDateTimeEdit,
-    QDialog,
-    QDialogButtonBox,
-    QDockWidget,
-    QFileDialog,
-    QFontComboBox,
-    QFormLayout,
-    QFrame,
-    QHBoxLayout,
-    QInputDialog,
-    QLabel,
-    QLayout,
     QLayoutItem,
-    QLineEdit,
+    QStyle,
+    QGraphicsView,
+    QGraphicsScene,
+    QGraphicsPixmapItem,
+    QMainWindow,
+    QTextEdit,
+    QVBoxLayout,
+    QHBoxLayout,
+    QFormLayout,
+    QTextBrowser,
+    QFileDialog,
+    QPushButton,
     QListWidget,
     QListWidgetItem,
-    QMainWindow,
-    QMenu,
-    QMessageBox,
-    QPushButton,
-    QScrollArea,
-    QSizePolicy,
-    QSpinBox,
-    QSplitter,
-    QStyle,
-    QStyleFactory,
-    QSystemTrayIcon,
-    QTextBrowser,
-    QTextEdit,
-    QToolBar,
-    QToolTip,
-    QVBoxLayout,
     QWidget,
+    QLabel,
+    QSizePolicy,
+    QLineEdit,
+    QMessageBox,
+    QInputDialog,
+    QColorDialog,
+    QSpinBox,
+    QScrollArea,
+    QLayout,
+    QStyleFactory,
+    QToolTip,
+    QFontComboBox,
+    QDialog,
+    QDialogButtonBox,
+    QComboBox,
+    QCheckBox,
+    QSystemTrayIcon,
+    QAbstractItemView,
+    QMenu,
+    QDateTimeEdit,
+    QSplitter,
+    QToolBar,
+    QDockWidget,
+    QToolButton,
+    QFrame,
 )
 
 
@@ -128,7 +138,9 @@ class MessageBox:
     @staticmethod
     def askyesno(title, message):
         return (
-            QMessageBox.question(None, title, message, QMessageBox.Yes | QMessageBox.No)
+            QMessageBox.question(
+                None, title, message, QMessageBox.Yes | QMessageBox.No
+            )
             == QMessageBox.Yes
         )
 
@@ -172,13 +184,13 @@ def create_list(*items):
     return list(items)
 
 
-ATTACHMENTS_MIN_HEIGHT = 82
 EXAMPLE_NUMBERS = create_list(1, 2, 3, 4)
 EXAMPLE_WORDS = create_list("alpha", "beta", "gamma")
 EXAMPLE_MIXED = create_list("hello", 42, 3.14)
 
 
 class SpellCheckHighlighter(QSyntaxHighlighter):
+
     def __init__(self, parent):
         super().__init__(parent)
         self.err_fmt = QTextCharFormat()
@@ -205,7 +217,7 @@ class SpellCheckHighlighter(QSyntaxHighlighter):
         self.user_words = set()
         self.local_ignored = set()
         try:
-            with open(USER_DICT_PATH, encoding="utf-8") as f:
+            with open(USER_DICT_PATH, "r", encoding="utf-8") as f:
                 words = [line.strip().lower() for line in f if line.strip()]
             self.user_words.update(words)
             if self.spell_checker and words:
@@ -294,7 +306,7 @@ def copy_default_icons():
     src_root = os.path.join(app_root, "Data")
     icon_names = ["icon.ico", "tray_icon.ico", "file.ico"]
     destination_paths = [ICON_PATH, TRAY_ICON_PATH, FILE_ICON_PATH]
-    for name, dst in zip(icon_names, destination_paths, strict=False):
+    for name, dst in zip(icon_names, destination_paths):
         src = os.path.join(src_root, name)
         if os.path.isfile(src) and not os.path.isfile(dst):
             os.makedirs(os.path.dirname(dst), exist_ok=True)
@@ -486,7 +498,7 @@ class CustomTextEdit(QTextEdit):
         else:
             super().insertFromMimeData(source)
 
-    def ignore_in_this_note(self, word: str) -> None:
+    def ignore_in_this_note(self, word: str) -> None:  # NEW
         mw = self.window()
         if hasattr(mw, "add_word_to_note_ignore"):
             mw.add_word_to_note_ignore(word)
@@ -855,7 +867,6 @@ class CustomTextEdit(QTextEdit):
                 if len(out) >= 7:
                     break
             return out
-
         user_candidates = _clean(user_candidates)
         spell_candidates = _clean(spell_candidates)
         doc_candidates = _clean(doc_candidates)
@@ -929,7 +940,6 @@ class CustomTextEdit(QTextEdit):
             plain = self.toPlainText()
 
         from PySide6.QtCore import QMimeData
-
         md = QMimeData()
         md.setText(self._sanitize_plain_for_copy(plain))
         return md
@@ -1124,7 +1134,6 @@ class NotesApp(QMainWindow):
         button_layout.addWidget(self.topmost_checkbox)
         button_layout.addStretch()
         button_widget = QWidget()
-        button_layout = QVBoxLayout(button_widget)
         button_widget.setLayout(button_layout)
         self.notes_list = QListWidget()
         self.notes_list.setSelectionMode(QAbstractItemView.ExtendedSelection)
@@ -1180,8 +1189,6 @@ class NotesApp(QMainWindow):
         self.attachments_scroll.setWidgetResizable(True)
         self.attachments_scroll.setWidget(self.attachments_panel)
         self.attachments_scroll.setVisible(False)
-        self.attachments_scroll.setMinimumHeight(ATTACHMENTS_MIN_HEIGHT)
-        self.attachments_scroll.setMaximumHeight(ATTACHMENTS_MIN_HEIGHT)
         self.attachments_layout.setContentsMargins(0, 0, 0, 0)
         self.attachments_scroll.setSizePolicy(
             QSizePolicy.Expanding, QSizePolicy.Minimum
@@ -1191,6 +1198,8 @@ class NotesApp(QMainWindow):
         editor_layout_combined.addWidget(self.tags_label)
         editor_layout_combined.addWidget(self.text_edit)
         editor_layout_combined.addWidget(self.attachments_scroll)
+        editor_layout_combined.setStretch(1, 1)
+        editor_layout_combined.setStretch(2, 0)
         self.central_widget = QWidget()
         self.setCentralWidget(self.central_widget)
         self.init_toolbar()
@@ -1288,12 +1297,6 @@ class NotesApp(QMainWindow):
         editor_layout_combined.insertWidget(0, self.password_manager_row)
         editor_layout_combined.insertWidget(1, self.rdp_1c8_row)
         editor_layout_combined.insertWidget(2, self.custom_fields_container)
-        i_text = editor_layout_combined.indexOf(self.text_edit)
-        i_att = editor_layout_combined.indexOf(self.attachments_scroll)
-        if i_text != -1:
-            editor_layout_combined.setStretch(i_text, 4)
-        if i_att != -1:
-            editor_layout_combined.setStretch(i_att, 3)
         self.dock_toolbar = QDockWidget("Панель инструментов", self)
         self.dock_toolbar.setObjectName("dock_toolbar")
         self.dock_toolbar.setWidget(self.toolbar_scroll)
@@ -1360,7 +1363,7 @@ class NotesApp(QMainWindow):
             anchor_widget=self.rdp_1c8_copy_btn,
         )
 
-    def add_word_to_note_ignore(self, word: str) -> None:
+    def add_word_to_note_ignore(self, word: str) -> None:  # NEW
         if not getattr(self, "current_note", None):
             return
         w = (word or "").strip().lower()
@@ -1686,6 +1689,19 @@ class NotesApp(QMainWindow):
         if self.current_note and note.uuid == self.current_note.uuid:
             note.content = self.text_edit.toHtml()
         note_dict = note.to_dict()
+        try:
+            if os.path.exists(file_path):
+                with open(file_path, "r", encoding="utf-8") as bf:
+                    prev_json = bf.read()
+                safe_title = re.sub(r'[^a-zA-Zа-яА-Я0-9 _\-\.\(\)]', '', note.title).strip().replace(' ', '_') or "note"
+                safe_title = safe_title[:100]
+                backup_path = os.path.join(note_dir, f"backup({safe_title}).json")
+                with open(backup_path, "w", encoding="utf-8") as out:
+                    out.write(prev_json)
+                    out.flush()
+                    os.fsync(out.fileno())
+        except Exception as e:
+            print("Backup error:", e)
         if not note.reminder:
             note_dict.pop("reminder", None)
         with open(file_path, "w", encoding="utf-8") as f:
@@ -1745,7 +1761,7 @@ class NotesApp(QMainWindow):
             return
         self.history_list.clear()
         for i, content in enumerate(self.current_note.history):
-            item = QListWidgetItem(f"Версия {i + 1}")
+            item = QListWidgetItem(f"Версия {i+1}")
             item.setData(Qt.UserRole, content)
             self.history_list.addItem(item)
         self.history_list.scrollToBottom()
@@ -1794,7 +1810,7 @@ class NotesApp(QMainWindow):
             if os.path.isdir(folder_path):
                 file_path = os.path.join(folder_path, "note.json")
                 if os.path.exists(file_path):
-                    with open(file_path, encoding="utf-8") as f:
+                    with open(file_path, "r", encoding="utf-8") as f:
                         data = json.load(f)
                     note = Note.from_dict(data)
                     if "content_txt" in data:
@@ -1816,6 +1832,19 @@ class NotesApp(QMainWindow):
         )
         os.makedirs(note_dir, exist_ok=True)
         file_path = os.path.join(note_dir, "note.json")
+        try:
+            if os.path.exists(file_path):
+                with open(file_path, "r", encoding="utf-8") as bf:
+                    prev_json = bf.read()
+                safe_title = re.sub(r'[^a-zA-Zа-яА-Я0-9 _\-\.\(\)]', '', note.title).strip().replace(' ', '_') or "note"
+                safe_title = safe_title[:100]
+                backup_path = os.path.join(note_dir, f"backup({safe_title}).json")
+                with open(backup_path, "w", encoding="utf-8") as out:
+                    out.write(prev_json)
+                    out.flush()
+                    os.fsync(out.fileno())
+        except Exception as e:
+            print("Backup error:", e)
         if self.current_note and note.uuid == self.current_note.uuid:
             note.content = self.text_edit.toHtml()
         note_dict = note.to_dict()
@@ -2241,7 +2270,7 @@ class NotesApp(QMainWindow):
             with open(templates_path, "w", encoding="utf-8") as f:
                 json.dump(base_templates, f, ensure_ascii=False, indent=4)
         try:
-            with open(templates_path, encoding="utf-8") as f:
+            with open(templates_path, "r", encoding="utf-8") as f:
                 templates = json.load(f)
         except Exception:
             templates = base_templates
@@ -2360,7 +2389,7 @@ class NotesApp(QMainWindow):
             filtered_templates.clear()
             filtered_templates.extend(filtered)
             combo.addItems(
-                [f"{tpl['name']} ({tpl.get('description', '')})" for tpl in filtered]
+                [f"{tpl['name']} ({tpl.get('description','')})" for tpl in filtered]
             )
 
         category_combo.currentIndexChanged.connect(filter_templates)
@@ -2440,9 +2469,7 @@ class NotesApp(QMainWindow):
         def refresh():
             lst.clear()
             for t in templates:
-                lst.addItem(
-                    f"{t.get('name', '')} — {t.get('category', 'Без категории')}"
-                )
+                lst.addItem(f"{t.get('name','')} — {t.get('category','Без категории')}")
 
         refresh()
         v.addWidget(lst)
@@ -2544,7 +2571,7 @@ class NotesApp(QMainWindow):
             if os.path.isdir(folder_path):
                 file_path = os.path.join(folder_path, "note.json")
                 if os.path.exists(file_path):
-                    with open(file_path, encoding="utf-8") as f:
+                    with open(file_path, "r", encoding="utf-8") as f:
                         data = json.load(f)
                         note = Note.from_dict(data)
                         doc = QTextDocument()
@@ -2711,6 +2738,7 @@ class NotesApp(QMainWindow):
         self.password_manager_field.setText(note.password_manager)
         self.rdp_1c8_field.setText(note.rdp_1c8)
 
+        # Выделяем элемент в списке заметок
         for i in range(self.notes_list.count()):
             item = self.notes_list.item(i)
             n = item.data(Qt.UserRole)
@@ -2740,6 +2768,7 @@ class NotesApp(QMainWindow):
 
     def _ensure_dd_map(self) -> None:
         if not hasattr(self, "_dropdown_tokens"):
+            # id -> {"value": str, "values": list[str]}
             self._dropdown_tokens = {}
 
     def _get_dropdown_token_info(self, dd_id: str) -> dict | None:
@@ -2750,9 +2779,7 @@ class NotesApp(QMainWindow):
 
         html = self.text_edit.toHtml()
         href_prefix = f"dropdown://{re.escape(dd_id)}"
-        m = re.search(
-            rf'<a[^>]*href="{href_prefix}[^"]*"[^>]*>(.*?)</a>', html, flags=re.S
-        )
+        m = re.search(rf'<a[^>]*href="{href_prefix}[^"]*"[^>]*>(.*?)</a>', html, flags=re.S)
         if not m:
             return None
 
@@ -2760,6 +2787,7 @@ class NotesApp(QMainWindow):
         inner = m.group(1)
 
         vals = None
+        # 1) Пытаемся прочитать значения из href (?v=...)
         href_m = re.search(r'href="([^"]+)"', full_tag)
         if href_m:
             href_val = href_m.group(1)
@@ -2770,6 +2798,7 @@ class NotesApp(QMainWindow):
                 except Exception:
                     vals = None
 
+        # 2) Legacy: пробуем title="..."
         if vals is None:
             title_m = re.search(r'title=(["\'])(.*?)\1', full_tag)
             if title_m:
@@ -2829,7 +2858,10 @@ class NotesApp(QMainWindow):
             f'background:{bg}; color:{fg};">{self._html_escape(new_value)} &#9662;</span>'
         )
         encoded = quote(json.dumps(values, ensure_ascii=False))
-        new_anchor = f'<a href="dropdown://{dd_id}?v={encoded}" style="text-decoration:none;">{inner}</a>'
+        new_anchor = (
+            f'<a href="dropdown://{dd_id}?v={encoded}" '
+            f'style="text-decoration:none;">{inner}</a>'
+        )
         html = self.text_edit.toHtml()
         href_prefix = f"dropdown://{re.escape(dd_id)}"
         pattern = re.compile(rf'<a[^>]*href="{href_prefix}[^"]*"[^>]*>.*?</a>', re.S)
@@ -2845,7 +2877,8 @@ class NotesApp(QMainWindow):
 
     def _persist_dropdown_values_in_html(self, html: str) -> str:
         pattern = re.compile(
-            r'<a[^>]*href="dropdown://([0-9a-fA-F]{8})[^"]*"[^>]*>(.*?)</a>', re.S
+            r'<a[^>]*href="dropdown://([0-9a-fA-F]{8})[^"]*"[^>]*>(.*?)</a>',
+            re.S
         )
 
         def repl(m):
@@ -2969,6 +3002,7 @@ class NotesApp(QMainWindow):
                         filename in ignored_files
                         or filename.startswith(ignored_prefixes)
                         or filename.endswith(ignored_suffixes)
+                        or (filename.startswith("backup(") and filename.endswith(".json"))
                     ):
                         continue
                     attachments_found = True
@@ -3141,16 +3175,16 @@ class NotesApp(QMainWindow):
         rdp_vis = bool(getattr(note, "rdp_1c8_visible", False))
         rdp_removed = bool(getattr(note, "rdp_1c8_removed", False))
 
+        # — фактическая видимость строк
         self.password_manager_row.setVisible(pm_vis)
         self.rdp_1c8_row.setVisible(False if rdp_removed else rdp_vis)
 
+        # — синхронизация «глазиков»
         if hasattr(self, "action_toggle_pm"):
             self.action_toggle_pm.setEnabled(True)
             self.action_toggle_pm.blockSignals(True)
             self.action_toggle_pm.setChecked(pm_vis)
-            self._update_eye_action(
-                self.action_toggle_pm, pm_vis, self.password_manager_label.text()
-            )
+            self._update_eye_action(self.action_toggle_pm, pm_vis, self.password_manager_label.text())
             self.action_toggle_pm.blockSignals(False)
 
         if hasattr(self, "action_toggle_rdp"):
@@ -3158,13 +3192,10 @@ class NotesApp(QMainWindow):
             self.action_toggle_rdp.setEnabled(not rdp_removed)
             self.action_toggle_rdp.blockSignals(True)
             self.action_toggle_rdp.setChecked(False if rdp_removed else rdp_vis)
-            self._update_eye_action(
-                self.action_toggle_rdp,
-                (False if rdp_removed else rdp_vis),
-                self.rdp_1c8_label.text(),
-            )
+            self._update_eye_action(self.action_toggle_rdp, (False if rdp_removed else rdp_vis), self.rdp_1c8_label.text())
             self.action_toggle_rdp.blockSignals(False)
 
+        # — кастом-поля
         for w in self.custom_fields_widgets:
             w["action"].setEnabled(True)
             vis = bool(w["action"].isChecked())
@@ -3508,7 +3539,7 @@ class NotesApp(QMainWindow):
         dlg = QDialog(self)
         dlg.setWindowTitle("README.md")
         dlg.resize(900, 700)
-        from PySide6.QtWidgets import QDialogButtonBox, QTextBrowser, QVBoxLayout
+        from PySide6.QtWidgets import QVBoxLayout, QTextBrowser, QDialogButtonBox
 
         v = QVBoxLayout(dlg)
         view = QTextBrowser(dlg)
@@ -3519,7 +3550,7 @@ class NotesApp(QMainWindow):
         btns = QDialogButtonBox(QDialogButtonBox.Close)
         btns.addButton("Открыть в редакторе", QDialogButtonBox.ActionRole)
         v.addWidget(btns)
-        with open(path, encoding="utf-8") as f:
+        with open(path, "r", encoding="utf-8") as f:
             md = f.read()
         try:
             view.setMarkdown(md)
@@ -3773,9 +3804,7 @@ class NotesApp(QMainWindow):
             self.audio_button.setText("🎤")
         else:
             if not self.current_note:
-                QMessageBox.warning(
-                    self, "Нет заметки", "Пожалуйста, выбери или создай заметку."
-                )
+                QMessageBox.warning(self, "Нет заметки", "Пожалуйста, выбери или создай заметку.")
                 return
             note_dir = os.path.join(
                 NOTES_DIR,
@@ -3786,9 +3815,7 @@ class NotesApp(QMainWindow):
                 ),
             )
             os.makedirs(note_dir, exist_ok=True)
-            filename = (
-                f"audio_{QDateTime.currentDateTime().toString('yyyyMMdd_HHmmss')}.wav"
-            )
+            filename = f"audio_{QDateTime.currentDateTime().toString('yyyyMMdd_HHmmss')}.wav"
             full_path = os.path.join(note_dir, filename)
 
             self.audio_thread = AudioRecorderThread(full_path)
@@ -4077,6 +4104,7 @@ class NotesApp(QMainWindow):
                     filename in ignored_files
                     or filename.startswith(ignored_prefixes)
                     or filename.endswith(ignored_suffixes)
+                    or (filename.startswith("backup(") and filename.endswith(".json"))
                 ):
                     continue
                 attachments_found = True
@@ -4913,6 +4941,14 @@ class NotesApp(QMainWindow):
     def _toggle_always_on_top(self, checked: bool) -> None:
         self.setWindowFlag(Qt.WindowStaysOnTopHint, checked)
         self.settings.setValue("ui/always_on_top", checked)
+        if hasattr(self, "topmost_checkbox") and self.topmost_checkbox.isChecked() != checked:
+            self.topmost_checkbox.blockSignals(True)
+            self.topmost_checkbox.setChecked(checked)
+            self.topmost_checkbox.blockSignals(False)
+        if hasattr(self, "action_always_on_top") and self.action_always_on_top.isChecked() != checked:
+            self.action_always_on_top.blockSignals(True)
+            self.action_always_on_top.setChecked(checked)
+            self.action_always_on_top.blockSignals(False)
         self.show()
 
     def show_settings_window(self):
@@ -4957,6 +4993,7 @@ class NotesApp(QMainWindow):
             self.init_theme()
 
     def show_help_window(self):
+
         dialog = QDialog(self)
         dialog.setWindowFlag(Qt.WindowStaysOnTopHint, True)
         dialog.setWindowTitle("Справка — Мои Заметки")
@@ -5116,7 +5153,7 @@ class NotesApp(QMainWindow):
         )
         if file_path:
             try:
-                with open(file_path, encoding="utf-8") as f:
+                with open(file_path, "r", encoding="utf-8") as f:
                     note_data = json.load(f)
                 note_data["uuid"] = str(uuid.uuid4())
                 note_data["title"] += " (импорт)"
@@ -5133,8 +5170,7 @@ class NotesApp(QMainWindow):
 
     def delete_note_completely(self, note: Note) -> None:
         reply = QMessageBox.question(
-            self,
-            "Удалить навсегда",
+            self, "Удалить навсегда",
             f"Безвозвратно удалить заметку '{note.title}'? Данные будут удалены полностью.",
             QMessageBox.Yes | QMessageBox.No,
         )
@@ -5142,9 +5178,7 @@ class NotesApp(QMainWindow):
             return
         candidates = []
         try:
-            name_with_ts = NotesApp.safe_folder_name(
-                note.title, note.uuid, note.timestamp
-            )
+            name_with_ts = NotesApp.safe_folder_name(note.title, note.uuid, note.timestamp)
         except Exception:
             name_with_ts = NotesApp.safe_folder_name(note.title, note.uuid)
         name_no_ts = NotesApp.safe_folder_name(note.title, note.uuid)
@@ -5176,9 +5210,7 @@ class NotesApp(QMainWindow):
 
         self.refresh_notes_list()
         self.save_all_notes_to_disk()
-        QMessageBox.information(
-            self, "Удалено", f"Заметка '{note.title}' удалена безвозвратно."
-        )
+        QMessageBox.information(self, "Удалено", f"Заметка '{note.title}' удалена безвозвратно.")
 
     def trigger_search(self):
         self.handle_combined_search()
@@ -5740,7 +5772,7 @@ class NotesApp(QMainWindow):
     def closeEvent(self, event: QCloseEvent):
         self.save_settings()
         try:
-            self.save_note_quiet(force=True)
+            self.save_note_quiet(force=True) 
             if getattr(self, "current_note", None):
                 self.save_note_quiet(force=True)
             self.save_all_notes_to_disk()
@@ -5777,7 +5809,7 @@ class NotesApp(QMainWindow):
                 if fname.endswith(".py"):
                     plugins.append(fname[:-3])
         if os.path.exists(plugins_state_path):
-            with open(plugins_state_path, encoding="utf-8") as f:
+            with open(plugins_state_path, "r", encoding="utf-8") as f:
                 plugins_state = json.load(f)
         else:
             plugins_state = {}
@@ -5924,7 +5956,7 @@ class NotesApp(QMainWindow):
         plugins_folder = os.path.join(APPDIR, "Plugins")
         plugins_state_path = os.path.join(DATA_DIR, "plugins_state.json")
         if os.path.exists(plugins_state_path):
-            with open(plugins_state_path, encoding="utf-8") as f:
+            with open(plugins_state_path, "r", encoding="utf-8") as f:
                 plugins_state = json.load(f)
         else:
             plugins_state = {}
@@ -5963,7 +5995,7 @@ class NotesApp(QMainWindow):
     def load_plugins_state(self):
         plugins_path = os.path.join(DATA_DIR, "plugins_state.json")
         if os.path.exists(plugins_path):
-            with open(plugins_path, encoding="utf-8") as f:
+            with open(plugins_path, "r", encoding="utf-8") as f:
                 self.plugins_state = json.load(f)
         else:
             self.plugins_state = {}
@@ -6062,7 +6094,7 @@ class PasswordGenerator:
         config_path = os.path.join(PASSWORDS_DIR, "config.json")
         if os.path.exists(config_path):
             try:
-                with open(config_path, encoding="utf-8") as f:
+                with open(config_path, "r", encoding="utf-8") as f:
                     config = json.load(f)
                     if "max_password_length" in config:
                         self.max_password_length = config["max_password_length"]
@@ -6234,13 +6266,13 @@ class PasswordManager:
         config_path = os.path.join(PASSWORDS_DIR, "config.json")
         if os.path.exists(config_path):
             try:
-                with open(config_path, encoding="utf-8") as f:
+                with open(config_path, "r", encoding="utf-8") as f:
                     config = json.load(f)
                     filename = config.get("passwords_file", "passwords.json")
                     if not os.path.isabs(filename):
                         filename = os.path.join(PASSWORDS_DIR, filename)
                     self.filename = filename
-            except Exception:
+            except Exception as e:
                 self.filename = os.path.join(PASSWORDS_DIR, "passwords.json")
         else:
             self.filename = os.path.join(PASSWORDS_DIR, "passwords.json")
@@ -6314,7 +6346,7 @@ class PasswordManager:
 
     def import_from_txt(self, filename):
         try:
-            with open(filename, encoding="utf-8") as f:
+            with open(filename, "r", encoding="utf-8") as f:
                 content = f.read().strip()
             password_blocks = []
             current_block = []
@@ -6416,7 +6448,7 @@ class PasswordManager:
             }
             for p in self.passwords
         ]
-
+    
     def get_all_metadata(self):
         for p in self.passwords:
             if not p.get("updated_at"):
@@ -6435,7 +6467,7 @@ class PasswordManager:
     def load_passwords(self):
         if os.path.exists(self.filename):
             try:
-                with open(self.filename, encoding="utf-8") as f:
+                with open(self.filename, "r", encoding="utf-8") as f:
                     self.passwords = json.load(f)
                 if self.passwords:
                     test_item = self.passwords[0]
@@ -6609,7 +6641,7 @@ class AuthenticationDialog(tk.Toplevel):
         try:
             passwords_file = os.path.join(PASSWORDS_DIR, "passwords.json")
             if os.path.exists(passwords_file):
-                with open(passwords_file, encoding="utf-8") as f:
+                with open(passwords_file, "r", encoding="utf-8") as f:
                     data = json.load(f)
                     if data:
                         test_item = data[0]
@@ -6656,7 +6688,7 @@ class AuthenticationDialog(tk.Toplevel):
                     if self.parent.winfo_exists():
                         self.parent.destroy()
                     self.destroy()
-        except Exception:
+        except Exception as e:
             if self.parent.winfo_exists():
                 self.parent.destroy()
             self.destroy()
@@ -7068,7 +7100,7 @@ class PasswordGeneratorApp:
     def _edit_configuration(self):
         config_path = os.path.join(PASSWORDS_DIR, "config.json")
         try:
-            with open(config_path, encoding="utf-8") as f:
+            with open(config_path, "r", encoding="utf-8") as f:
                 config_data = json.load(f)
         except Exception as e:
             messagebox.showerror(
@@ -7557,7 +7589,7 @@ class PasswordGeneratorApp:
             messagebox.showerror("Ошибка", f"Файл не найден:\n{backup_file}")
             return
         try:
-            with open(backup_file, encoding="utf-8") as f:
+            with open(backup_file, "r", encoding="utf-8") as f:
                 encrypted_data = f.read()
             backup_passwords = json.loads(encrypted_data)
             decrypted_passwords = []
@@ -7624,7 +7656,7 @@ class PasswordGeneratorApp:
         if not file_path:
             return
         try:
-            with open(file_path, encoding="utf-8") as f:
+            with open(file_path, "r", encoding="utf-8") as f:
                 preview = f.read(1000)
             if not messagebox.askyesno(
                 "Подтверждение",
@@ -7721,9 +7753,7 @@ class PasswordGeneratorApp:
         for item in self._cached_list:
             display_password = item.get("password", "") if show_plain else "•" * 36
             self.password_tree.insert(
-                "",
-                tk.END,
-                iid=str(item["index"]),
+                "", tk.END, iid=str(item["index"]),
                 values=(
                     item["description"],
                     display_password,
@@ -7742,9 +7772,7 @@ class PasswordGeneratorApp:
         all_tags = ["Все"] + sorted(tags)
         self.tag_filter["values"] = all_tags
         self.tag_filter.config(
-            width=max(
-                10, max(len(str(tag)) for tag in all_tags) + 2 if all_tags else 10
-            )
+            width=max(10, max(len(str(tag)) for tag in all_tags) + 2 if all_tags else 10)
         )
 
     def _filter_passwords(self):
@@ -7765,23 +7793,14 @@ class PasswordGeneratorApp:
             match_search = (
                 not search_term
                 or search_term in it["description"].lower()
-                or (
-                    search_in_passwords
-                    and search_term in it.get("password", "").lower()
-                )
+                or (search_in_passwords and search_term in it.get("password", "").lower())
                 or any(search_term in t for t in tags)
             )
             match_tag = selected_tag == "Все" or selected_tag.lower() in tags
             if match_search and match_tag:
-                display_password = (
-                    ("•" * 64)
-                    if self.hide_passwords_var.get()
-                    else it.get("password", "")
-                )
+                display_password = ("•" * 64) if self.hide_passwords_var.get() else it.get("password", "")
                 self.password_tree.insert(
-                    "",
-                    tk.END,
-                    iid=str(it["index"]),
+                    "", tk.END, iid=str(it["index"]),
                     values=(
                         it["description"],
                         display_password,
@@ -8009,4 +8028,4 @@ if __name__ == "__main__":
     window = LauncherWindow()
     window.show()
     sys.exit(app.exec())
-    # UPD 28.08.2025|22:51
+    # UPD 29.08.2025|12:30
