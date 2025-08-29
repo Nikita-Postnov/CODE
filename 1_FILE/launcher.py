@@ -29,6 +29,7 @@ import datetime
 import importlib.util
 from urllib.parse import quote, unquote
 from typing import Callable
+from functools import partial
 from PySide6.QtCore import (
     Qt,
     QMimeData,
@@ -49,6 +50,8 @@ from PySide6.QtCore import (
 )
 from PySide6.QtGui import (
     QIcon,
+    QBrush,
+    QFontMetrics,
     QDragEnterEvent,
     QDropEvent,
     QMouseEvent,
@@ -87,6 +90,7 @@ from PySide6.QtWidgets import (
     QGraphicsPixmapItem,
     QMainWindow,
     QTextEdit,
+    QProgressBar,
     QVBoxLayout,
     QHBoxLayout,
     QFormLayout,
@@ -125,8 +129,6 @@ from PySide6.QtWidgets import (
 
 
 class MessageBox:
-    """Qt-based messagebox wrapper to replace tkinter.messagebox."""
-
     @staticmethod
     def showerror(title, message):
         QMessageBox.critical(None, title, message)
@@ -362,124 +364,432 @@ QMenu::separator {
 
 
 class DrawingCanvas(QWidget):
-    def __init__(self, w=900, h=600, parent=None):
+    def __init__(self, parent=None):
         super().__init__(parent)
         self.setAttribute(Qt.WidgetAttribute.WA_StaticContents)
-        self.image = QImage(w, h, QImage.Format.Format_RGB32)
-        self.image.fill(Qt.GlobalColor.white)
-        self.pen = QPen(
-            QColor("#000000"),
-            4,
-            Qt.PenStyle.SolidLine,
-            Qt.PenCapStyle.RoundCap,
-            Qt.PenJoinStyle.RoundJoin,
-        )
-        self.eraser = False
-        self.last_pos = None
-        self.setMinimumSize(w, h)
+        self.image = QImage(1200, 800, QImage.Format.Format_ARGB32)
+        self.image.fill(Qt.white)
+        self.objects = []
+        self.selected_index = None
+        self.drag_start = QPoint()
+        self.drag_last = QPoint()
+        self.hit_tolerance = 8
+        self.pen_color = QColor("black")
+        self.pen_width = 3
+
+        self.tool = "pen"
+        self.is_drawing = False
+        self.last_pos = QPoint()
+        self.start_pos = QPoint()
+        self.preview_pos = QPoint()
+
+        self.fill_enabled = False
+        self.fill_color = QColor(0, 0, 0, 60)
+        self.text_font = QFont("Segoe UI", 18)
+
+        self.move_active = False
+        self.move_start = QPoint()
+        self.move_delta = QPoint()
+        self.image_before_move = None
 
     def set_color(self, color: QColor):
-        self.pen.setColor(color)
-
-    def set_width(self, w: int):
-        self.pen.setWidth(w)
-
-    def clear(self):
-        self.image.fill(Qt.GlobalColor.white)
+        self.pen_color = QColor(color)
         self.update()
 
-    def get_image(self) -> QImage:
-        return self.image
+    def set_width(self, w: int):
+        self.pen_width = max(1, int(w))
+        self.update()
 
-    def paintEvent(self, _):
-        p = QPainter(self)
-        p.fillRect(self.rect(), Qt.GlobalColor.white)  # фон превью — белый
-        p.drawImage(0, 0, self.image)
+    def set_tool(self, tool: str):
+        self.tool = tool
+        self.is_drawing = False
+        self.move_active = False
+        self.move_delta = QPoint()
+        self.image_before_move = None
+        self.selected_index = None
+        self.update()
 
-    def _pt(self, e):
-        # совместимость с разными версиями Qt
-        return e.position().toPoint() if hasattr(e, "position") else e.pos()
+    def _draw_object(self, painter: QPainter, obj: dict) -> None:
+        t = obj.get("type")
+        pen: QPen = obj.get("pen", QPen(Qt.black, 3))
+        painter.setPen(pen)
+        painter.setBrush(obj.get("brush", Qt.NoBrush))
+        if t == "rect":
+            painter.drawRect(obj["rect"])
+        elif t == "ellipse":
+            painter.drawEllipse(obj["rect"])
+        elif t == "line":
+            painter.drawLine(obj["p1"], obj["p2"])
+        elif t == "arrow":
+            p1, p2 = QPointF(obj["p1"]), QPointF(obj["p2"])
+            painter.drawLine(p1, p2)
+            head = self._arrow_head(p1, p2, max(10, pen.width() * 3))
+            painter.setBrush(QBrush(pen.color()))
+            painter.drawPolygon(head)
+        elif t == "text":
+            painter.setFont(obj["font"])
+            painter.drawText(obj["pos"], obj["text"])
+
+    def _draw_objects(self, painter: QPainter) -> None:
+        for obj in self.objects:
+            self._draw_object(painter, obj)
+
+    def _shape_from_current(self, end_pos: QPoint) -> dict:
+        pen = QPen(self.pen_color, self.pen_width, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
+        t = self.tool
+        if t in ("rect", "ellipse"):
+            return {
+                "type": t,
+                "rect": self._norm_rect(self.start_pos, end_pos),
+                "pen": pen,
+                "brush": QBrush(self.fill_color) if self.fill_enabled else Qt.NoBrush,
+            }
+        elif t in ("line", "arrow"):
+            return {"type": t, "p1": QPoint(self.start_pos), "p2": QPoint(end_pos), "pen": pen}
+        return {}
+
+    def _translate_object(self, obj: dict, delta: QPoint) -> None:
+        if "rect" in obj:
+            obj["rect"].translate(delta)
+        if "p1" in obj:
+            obj["p1"] += delta
+        if "p2" in obj:
+            obj["p2"] += delta
+        if "pos" in obj:
+            obj["pos"] += delta
+
+    def _distance_to_segment(self, p: QPoint, a: QPoint, b: QPoint) -> float:
+        ax, ay = a.x(), a.y()
+        bx, by = b.x(), b.y()
+        px, py = p.x(), p.y()
+        vx, vy = bx - ax, by - ay
+        wx, wy = px - ax, py - ay
+        vv = vx*vx + vy*vy or 1.0
+        t = max(0.0, min(1.0, (wx*vx + wy*vy) / vv))
+        cx, cy = ax + t*vx, ay + t*vy
+        dx, dy = px - cx, py - cy
+        return (dx*dx + dy*dy) ** 0.5
+
+    def _object_at(self, pos: QPoint) -> int | None:
+        for i in range(len(self.objects) - 1, -1, -1):
+            obj = self.objects[i]
+            t = obj.get("type")
+            if t in ("rect", "ellipse"):
+                if obj["rect"].adjusted(-self.hit_tolerance, -self.hit_tolerance, self.hit_tolerance, self.hit_tolerance).contains(pos):
+                    return i
+            elif t in ("line", "arrow"):
+                if self._distance_to_segment(pos, obj["p1"], obj["p2"]) <= self.hit_tolerance:
+                    return i
+            elif t == "text":
+                fm = QFontMetrics(obj["font"])
+                br = QRect(obj["pos"], QSize(fm.horizontalAdvance(obj["text"]), fm.height()))
+                if br.adjusted(-self.hit_tolerance, -self.hit_tolerance, self.hit_tolerance, self.hit_tolerance).contains(pos):
+                    return i
+        return None
+
+    def set_fill_enabled(self, enabled: bool):
+        self.fill_enabled = bool(enabled)
+        self.update()
+
+    def set_fill_color(self, color: QColor):
+        self.fill_color = QColor(color)
+        self.update()
+
+    def set_text_size(self, px: int):
+        self.text_font.setPointSize(int(px))
+        self.update()
+
+    def clear(self):
+        self.image.fill(Qt.white)
+        self.update()
+
+    @staticmethod
+    def _norm_rect(a: QPoint, b: QPoint) -> QRect:
+        return QRect(min(a.x(), b.x()), min(a.y(), b.y()),
+                     abs(a.x() - b.x()), abs(a.y() - b.y()))
+
+    @staticmethod
+    def _arrow_head(p1: QPointF, p2: QPointF, size: float) -> QPolygonF:
+        vec = QPointF(p2.x() - p1.x(), p2.y() - p1.y())
+        length = (vec.x() ** 2 + vec.y() ** 2) ** 0.5 or 1.0
+        ux, uy = vec.x() / length, vec.y() / length
+        nx, ny = -uy, ux
+        back = QPointF(p2.x() - ux * size, p2.y() - uy * size)
+        left = QPointF(back.x() + nx * size * 0.5, back.y() + ny * size * 0.5)
+        right = QPointF(back.x() - nx * size * 0.5, back.y() - ny * size * 0.5)
+        return QPolygonF([p2, left, right])
 
     def mousePressEvent(self, e):
-        if e.button() == Qt.MouseButton.LeftButton:
-            self.last_pos = self._pt(e)
+        if e.button() != Qt.LeftButton:
+            return
+
+        if self.tool == "text":
+            text, ok = QInputDialog.getText(self, "Текст", "Введите текст:")
+            if ok and text:
+                obj = {
+                    "type": "text",
+                    "text": text,
+                    "pos": e.position().toPoint(),
+                    "font": QFont(self.text_font),
+                    "pen": QPen(self.pen_color, self.pen_width, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin),
+                }
+                self.objects.append(obj)
+                self.update()
+            return
+
+        if self.tool == "select":
+            self.is_drawing = True
+            self.last_pos = e.position().toPoint()
+            self.selected_index = self._object_at(self.last_pos)
+            self.drag_start = self.last_pos
+            self.drag_last = self.last_pos
+            return
+
+        if self.tool == "move":
+            self.move_active = True
+            self.is_drawing = True
+            self.move_start = e.position().toPoint()
+            self.image_before_move = self.image.copy()
+            self.move_delta = QPoint()
+            return
+        self.is_drawing = True
+        self.last_pos = e.position().toPoint()
+        self.start_pos = self.last_pos
+        self.preview_pos = self.last_pos
+
+        if self.tool in ("pen", "eraser"):
+            painter = QPainter(self.image)
+            pen = QPen(Qt.white if self.tool == "eraser" else self.pen_color,
+                    self.pen_width, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
+            painter.setPen(pen)
+            painter.drawPoint(self.last_pos)
+            painter.end()
+            self.update()
 
     def mouseMoveEvent(self, e):
-        if (e.buttons() & Qt.MouseButton.LeftButton) and self.last_pos is not None:
-            curr = self._pt(e)
+        if not self.is_drawing:
+            return
+        if self.tool == "move" and self.move_active:
+            pos = e.position().toPoint()
+            self.move_delta = pos - self.move_start
+            self.update()
+            return
+        if self.tool == "select" and self.selected_index is not None:
+            pos = e.position().toPoint()
+            delta = pos - self.drag_last
+            if not delta.isNull():
+                self._translate_object(self.objects[self.selected_index], delta)
+                self.drag_last = pos
+                self.update()
+            return
+        pos = e.position().toPoint()
+        if self.tool in ("pen", "eraser"):
             painter = QPainter(self.image)
-            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-            if self.eraser:
-                pen = QPen(
-                    Qt.GlobalColor.white,
-                    self.pen.width(),
-                    Qt.PenStyle.SolidLine,
-                    Qt.PenCapStyle.RoundCap,
-                    Qt.PenJoinStyle.RoundJoin,
-                )
+            if self.tool == "eraser":
+                pen = QPen(Qt.white, self.pen_width, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
             else:
-                pen = self.pen
+                pen = QPen(self.pen_color, self.pen_width, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
             painter.setPen(pen)
-            painter.drawLine(self.last_pos, curr)
+            painter.drawLine(self.last_pos, pos)
             painter.end()
-            self.last_pos = curr
+            self.last_pos = pos
+            self.update()
+        else:
+            self.preview_pos = pos
             self.update()
 
     def mouseReleaseEvent(self, e):
-        if e.button() == Qt.MouseButton.LeftButton:
-            self.last_pos = None
+        if e.button() != Qt.MouseButton.LeftButton or not self.is_drawing:
+            return
+        self.is_drawing = False
+        end_pos = e.position().toPoint()
+        if self.tool == "move" and self.move_active:
+            self.move_active = False
+            dx, dy = self.move_delta.x(), self.move_delta.y()
+            if dx or dy:
+                newimg = QImage(self.image.size(), self.image.format())
+                newimg.fill(Qt.white)
+                p = QPainter(newimg)
+                p.setRenderHint(QPainter.Antialiasing, True)
+                p.drawImage(dx, dy, self.image_before_move)
+                p.end()
+                self.image = newimg
+            self.image_before_move = None
+            self.move_delta = QPoint()
+            self.update()
+            return
+        if self.tool == "select":
+            if self.selected_index is not None:
+                self.objects.append(self.objects.pop(self.selected_index))
+            self.selected_index = None
+            self.update()
+            return
+        if self.tool in ("rect", "ellipse", "line", "arrow"):
+            painter = QPainter(self.image)
+            pen = QPen(self.pen_color, self.pen_width, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
+            painter.setPen(pen)
+            brush = Qt.BrushStyle.NoBrush
+            if self.tool in ("rect", "ellipse") and self.fill_enabled:
+                brush = QBrush(self.fill_color)
+            painter.setBrush(brush)
+            if self.tool == "rect":
+                painter.drawRect(self._norm_rect(self.start_pos, end_pos))
+            elif self.tool == "ellipse":
+                painter.drawEllipse(self._norm_rect(self.start_pos, end_pos))
+            elif self.tool == "line":
+                painter.drawLine(self.start_pos, end_pos)
+            elif self.tool == "arrow":
+                p1, p2 = QPointF(self.start_pos), QPointF(end_pos)
+                painter.drawLine(p1, p2)
+                head = self._arrow_head(p1, p2, max(10, self.pen_width * 3))
+                painter.setBrush(QBrush(self.pen_color))
+                painter.drawPolygon(head)
 
+            painter.end()
+            self.update()
+
+    def paintEvent(self, e):
+        painter = QPainter(self)
+        if self.tool == "move" and self.move_active and self.image_before_move is not None:
+            painter.fillRect(self.rect(), Qt.white)
+            painter.drawImage(self.move_delta, self.image_before_move)
+        else:
+            painter.drawImage(0, 0, self.image)
+
+        self._draw_objects(painter)
+
+        if self.is_drawing and self.tool in ("rect", "ellipse", "line", "arrow"):
+            pen = QPen(self.pen_color, self.pen_width, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
+            painter.setPen(pen)
+            if self.tool in ("rect", "ellipse") and self.fill_enabled:
+                painter.setBrush(QBrush(self.fill_color))
+            else:
+                painter.setBrush(Qt.NoBrush)
+
+            if self.tool == "rect":
+                painter.drawRect(self._norm_rect(self.start_pos, self.preview_pos))
+            elif self.tool == "ellipse":
+                painter.drawEllipse(self._norm_rect(self.start_pos, self.preview_pos))
+            elif self.tool == "line":
+                painter.drawLine(self.start_pos, self.preview_pos)
+            elif self.tool == "arrow":
+                p1, p2 = QPointF(self.start_pos), QPointF(self.preview_pos)
+                painter.drawLine(p1, p2)
+                head = self._arrow_head(p1, p2, max(10, self.pen_width * 3))
+                painter.setBrush(QBrush(self.pen_color))
+                painter.drawPolygon(head)
+
+        painter.end()
+
+
+    def sizeHint(self):
+        return QSize(self.image.width(), self.image.height())
+
+    def get_image(self) -> QImage:
+        if not self.objects:
+            return self.image
+        out = QImage(self.image.size(), self.image.format())
+        out.fill(Qt.white)
+        p = QPainter(out)
+        p.drawImage(0, 0, self.image)
+        self._draw_objects(p)
+        p.end()
+        return out
 
 class DrawingDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Рисование")
-        self.canvas = DrawingCanvas(parent=self)
+        self.setModal(True)
+        self.setWindowFlag(Qt.WindowStaysOnTopHint, True)
 
-        size = QSpinBox()
-        size.setRange(1, 80)
-        size.setValue(4)
+        self.canvas = DrawingCanvas(self)
+        self.canvas.setMinimumSize(800, 500)
 
-        btn_color = QPushButton("Цвет")
-        btn_eraser = QPushButton("Ластик")
-        btn_eraser.setCheckable(True)
-        btn_clear = QPushButton("Очистить")
+        tools_layout = QHBoxLayout()
 
-        buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
-        )
+        def tool_btn(text: str, tool: str) -> QPushButton:
+            b = QPushButton(text)
+            b.setCheckable(True)
+            b.clicked.connect(partial(self._select_tool, b, tool))
+            tools_layout.addWidget(b)
+            return b
 
-        btn_color.clicked.connect(self._pick_color)
-        size.valueChanged.connect(self.canvas.set_width)
-        btn_eraser.toggled.connect(self._toggle_eraser)
-        btn_clear.clicked.connect(self.canvas.clear)
+        self.btn_select  = tool_btn("⛶ Выбор", "select")
+        self.btn_pen     = tool_btn("✏ Карандаш", "pen")
+        self.btn_move    = tool_btn("✋ Перемещение", "move")
+        self.btn_rect    = tool_btn("▭ Прямоугольник", "rect")
+        self.btn_ellipse = tool_btn("◯ Эллипс", "ellipse")
+        self.btn_line    = tool_btn("— Линия", "line")
+        self.btn_arrow   = tool_btn("➤ Стрелка", "arrow")
+        self.btn_text    = tool_btn("T Текст", "text")
+        self.btn_eraser  = tool_btn("⌫ Ластик", "eraser")
+        self.btn_pen.setChecked(True)
+        form = QFormLayout()
+        self.spin_width = QSpinBox(self)
+        self.spin_width.setRange(1, 64)
+        self.spin_width.setValue(3)
+        self.spin_width.valueChanged.connect(self.canvas.set_width)
+        self.btn_color = QPushButton("Цвет линии…", self)
+        self.btn_color.clicked.connect(self._choose_pen_color)
+        self.cb_fill = QCheckBox("Заливка", self)
+        self.btn_fill = QPushButton("Цвет заливки…", self)
+        self.btn_fill.setEnabled(False)
+        self.cb_fill.toggled.connect(self.on_fill_toggled)
+        self.btn_fill.clicked.connect(self._choose_fill_color)
+        self.spin_text = QSpinBox(self)
+        self.spin_text.setRange(6, 96)
+        self.spin_text.setValue(18)
+        self.spin_text.valueChanged.connect(self.canvas.set_text_size)
+        form.addRow("Толщина:", self.spin_width)
+        form.addRow("", self.btn_color)
+        form.addRow(self.cb_fill, self.btn_fill)
+        form.addRow("Размер текста:", self.spin_text)
+        self.cb_fill.setChecked(getattr(self.canvas, "fill_enabled", False))
+        self.on_fill_toggled(self.cb_fill.isChecked())
+        bottom = QHBoxLayout()
+        self.btn_clear = QPushButton("Очистить")
+        self.btn_clear.clicked.connect(self.canvas.clear)
+        bottom.addWidget(self.btn_clear)
+        bottom.addStretch(1)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
+        bottom.addWidget(buttons)
+        layout = QVBoxLayout(self)
+        layout.addWidget(self.canvas, 1)
+        layout.addLayout(tools_layout)
+        layout.addLayout(form)
+        layout.addLayout(bottom)
+        self._select_tool(self.btn_pen, "pen")
 
-        top = QHBoxLayout()
-        top.addWidget(QLabel("Толщина:"))
-        top.addWidget(size)
-        top.addWidget(btn_color)
-        top.addWidget(btn_eraser)
-        top.addStretch()
-        top.addWidget(btn_clear)
+    def _select_tool(self, btn: QPushButton, tool: str):
+        for b in (self.btn_pen, self.btn_rect, self.btn_ellipse, self.btn_line,
+                self.btn_arrow, self.btn_text, self.btn_eraser, self.btn_move,
+                self.btn_select): 
+            b.setChecked(b is btn)
+        self.canvas.set_tool(tool)
 
-        lay = QVBoxLayout(self)
-        lay.addLayout(top)
-        lay.addWidget(self.canvas)
-        lay.addWidget(buttons)
+    def _choose_pen_color(self):
+        col = QColorDialog.getColor(self.canvas.pen_color, self, "Цвет линии")
+        if col.isValid():
+            self.canvas.set_color(col)
 
-        self._btn_eraser = btn_eraser
+    def on_fill_toggled(self, on: bool) -> None:
+        self.btn_fill.setEnabled(on)
+        if hasattr(self.canvas, "set_fill_enabled"):
+            self.canvas.set_fill_enabled(on)
 
-    def _pick_color(self):
-        color = QColorDialog.getColor(self.canvas.pen.color(), self, "Выбор цвета")
-        if color.isValid():
-            self.canvas.set_color(color)
-            if self._btn_eraser.isChecked():
-                self._btn_eraser.setChecked(False)
+    def _choose_fill_color(self) -> None:
+        col = QColorDialog.getColor(getattr(self.canvas, "fill_color", QColor("black")), self, "Цвет заливки")
+        if col.isValid() and hasattr(self.canvas, "set_fill_color"):
+            self.canvas.set_fill_color(col)
 
-    def _toggle_eraser(self, on: bool):
-        self.canvas.eraser = on
+
+    def _choose_fill_color(self):
+        col = QColorDialog.getColor(self.canvas.fill_color, self, "Цвет заливки")
+        if col.isValid():
+            self.canvas.set_fill_color(col)
 
     def get_image(self) -> QImage:
         return self.canvas.get_image()
@@ -620,7 +930,7 @@ class CustomTextEdit(QTextEdit):
         else:
             super().insertFromMimeData(source)
 
-    def ignore_in_this_note(self, word: str) -> None:  # NEW
+    def ignore_in_this_note(self, word: str) -> None:
         mw = self.window()
         if hasattr(mw, "add_word_to_note_ignore"):
             mw.add_word_to_note_ignore(word)
@@ -1487,7 +1797,7 @@ class NotesApp(QMainWindow):
             anchor_widget=self.rdp_1c8_copy_btn,
         )
 
-    def add_word_to_note_ignore(self, word: str) -> None:  # NEW
+    def add_word_to_note_ignore(self, word: str) -> None:
         if not getattr(self, "current_note", None):
             return
         w = (word or "").strip().lower()
@@ -2872,7 +3182,6 @@ class NotesApp(QMainWindow):
         self.password_manager_field.setText(note.password_manager)
         self.rdp_1c8_field.setText(note.rdp_1c8)
 
-        # Выделяем элемент в списке заметок
         for i in range(self.notes_list.count()):
             item = self.notes_list.item(i)
             n = item.data(Qt.UserRole)
@@ -2902,11 +3211,9 @@ class NotesApp(QMainWindow):
 
     def _ensure_dd_map(self) -> None:
         if not hasattr(self, "_dropdown_tokens"):
-            # id -> {"value": str, "values": list[str]}
             self._dropdown_tokens = {}
 
     def _get_dropdown_token_info(self, dd_id: str) -> dict | None:
-        """Retrieve dropdown token info, populating cache from the document if needed."""
         self._ensure_dd_map()
         if dd_id in self._dropdown_tokens:
             return self._dropdown_tokens[dd_id]
@@ -2923,7 +3230,6 @@ class NotesApp(QMainWindow):
         inner = m.group(1)
 
         vals = None
-        # 1) Пытаемся прочитать значения из href (?v=...)
         href_m = re.search(r'href="([^"]+)"', full_tag)
         if href_m:
             href_val = href_m.group(1)
@@ -2934,7 +3240,6 @@ class NotesApp(QMainWindow):
                 except Exception:
                     vals = None
 
-        # 2) Legacy: пробуем title="..."
         if vals is None:
             title_m = re.search(r'title=(["\'])(.*?)\1', full_tag)
             if title_m:
@@ -3313,11 +3618,9 @@ class NotesApp(QMainWindow):
         rdp_vis = bool(getattr(note, "rdp_1c8_visible", False))
         rdp_removed = bool(getattr(note, "rdp_1c8_removed", False))
 
-        # — фактическая видимость строк
         self.password_manager_row.setVisible(pm_vis)
         self.rdp_1c8_row.setVisible(False if rdp_removed else rdp_vis)
 
-        # — синхронизация «глазиков»
         if hasattr(self, "action_toggle_pm"):
             self.action_toggle_pm.setEnabled(True)
             self.action_toggle_pm.blockSignals(True)
@@ -3339,7 +3642,6 @@ class NotesApp(QMainWindow):
             )
             self.action_toggle_rdp.blockSignals(False)
 
-        # — кастом-поля
         for w in self.custom_fields_widgets:
             w["action"].setEnabled(True)
             vis = bool(w["action"].isChecked())
@@ -3923,7 +4225,6 @@ class NotesApp(QMainWindow):
         if dlg.exec() == QDialog.DialogCode.Accepted:
             img = dlg.get_image()
 
-            # Папка текущей заметки (с учётом timestamp, чтобы не плодить дубликаты)
             note_dir = os.path.join(
                 NOTES_DIR,
                 NotesApp.safe_folder_name(
@@ -3934,7 +4235,6 @@ class NotesApp(QMainWindow):
             )
             os.makedirs(note_dir, exist_ok=True)
 
-            # Предложим имя файла
             default_base = f"рисунок_{QDateTime.currentDateTime().toString('yyyyMMdd_HHmmss')}"
             name, ok = QInputDialog.getText(
                 self,
@@ -3950,7 +4250,6 @@ class NotesApp(QMainWindow):
             if not base:
                 base = default_base
 
-            # Санитация имени
             base = re.sub(r"[^a-zA-Zа-яА-Я0-9 _\-\.\(\)]", "_", base).strip(" ._")
             if not base:
                 base = default_base
@@ -3958,7 +4257,6 @@ class NotesApp(QMainWindow):
             filename = base if base.lower().endswith(".png") else base + ".png"
             filepath = os.path.join(note_dir, filename)
 
-            # Разрулим конфликт имён
             if os.path.exists(filepath):
                 stem, ext = os.path.splitext(filename)
                 i = 1
@@ -3966,7 +4264,6 @@ class NotesApp(QMainWindow):
                     i += 1
                 filepath = os.path.join(note_dir, f"{stem}_{i}{ext}")
 
-            # Сохраняем и вставляем в заметку
             try:
                 img.save(filepath, "PNG")
             except Exception as e:
@@ -4155,6 +4452,54 @@ class NotesApp(QMainWindow):
             return QColor(220, 25, 25)
         else:
             return QColor(255, 60, 60)
+        
+    def _show_refresh_busy(self, busy: bool) -> None:
+        if busy:
+            if not hasattr(self, "_busy_progress") or self._busy_progress is None:
+                self._busy_progress = QProgressBar(self)
+                self._busy_progress.setRange(0, 0)
+                self._busy_progress.setFixedHeight(8)
+                self.statusBar().addPermanentWidget(self._busy_progress, 1)
+            self.statusBar().showMessage("Обновляю…")
+            QApplication.setOverrideCursor(Qt.BusyCursor)
+            if getattr(self, "refresh_button", None):
+                self.refresh_button.setEnabled(False)
+        else:
+            self.statusBar().clearMessage()
+            if getattr(self, "_busy_progress", None):
+                try:
+                    self.statusBar().removeWidget(self._busy_progress)
+                    self._busy_progress.deleteLater()
+                except Exception:
+                    pass
+                self._busy_progress = None
+            QApplication.restoreOverrideCursor()
+            if getattr(self, "refresh_button", None):
+                self.refresh_button.setEnabled(True)
+
+    def on_refresh_clicked(self) -> None:
+        self._show_refresh_busy(True)
+        try:
+            self.show_toast("Обновляю…", timeout_ms=800, anchor_widget=getattr(self, "refresh_button", None))
+        except Exception:
+            pass
+        QApplication.processEvents()
+
+        try:
+            if hasattr(self, "refresh_all"):
+                self.refresh_all()
+            else:
+                self.refresh_notes_list()
+                if getattr(self, "current_note", None):
+                    self.show_note_with_attachments(self.current_note)
+        except Exception as e:
+            QMessageBox.warning(self, "Обновление", f"Не удалось обновить: {e}")
+        finally:
+            self._show_refresh_busy(False)
+            try:
+                self.show_toast("Готово", timeout_ms=900, anchor_widget=getattr(self, "refresh_button", None))
+            except Exception:
+                pass
 
     def sort_notes_by_title(self) -> None:
         self.notes.sort(key=lambda note: note.title.lower())
@@ -4667,6 +5012,7 @@ class NotesApp(QMainWindow):
             button.clicked.connect(callback)
             button.setFixedSize(32, 32)
             flow_layout.addWidget(button)
+            return button
 
         def flow_break():
             br = QWidget()
@@ -4681,7 +5027,7 @@ class NotesApp(QMainWindow):
         flow_layout.addWidget(toggle_fav_button)
         add_tool_button("", "🗑 - Корзина", self.show_trash)
         add_tool_button("", "📒 - Заметки", self.show_all_notes)
-        add_tool_button("", "🔄 - Обновить", self.refresh_notes_list)
+        self.refresh_button = add_tool_button("", "🔄 - Обновить", self.on_refresh_clicked)
         add_tool_button("", "➕ - Новая", self.create_new_note)
         add_tool_button("", "💾 - Сохранить", self.save_note)
         add_tool_button("📎", "📎 - Приерепить файл", self.attach_file_to_note)
@@ -4817,6 +5163,49 @@ class NotesApp(QMainWindow):
         if changed:
             self.refresh_notes_list()
             dialog.accept()
+
+    def refresh_all(self) -> None:
+        try:
+            current_uuid = self.current_note.uuid if getattr(self, "current_note", None) else None
+
+            self.load_notes_from_disk()
+            self.refresh_notes_list()
+
+            if current_uuid:
+                note = next((n for n in self.notes if n.uuid == current_uuid), None)
+                if not note:
+                    self.show_note_with_attachments(None)
+                    return
+
+                note_dir = os.path.join(NOTES_DIR, NotesApp.safe_folder_name(note.title, note.uuid, note.timestamp))
+                json_path = os.path.join(note_dir, "note.json")
+                if os.path.exists(json_path):
+                    with open(json_path, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                    fresh = Note.from_dict(data)
+
+                    note.title = fresh.title
+                    note.content = fresh.content
+                    note.tags = list(getattr(fresh, "tags", []))
+                    note.password_manager = getattr(fresh, "password_manager", "")
+                    note.rdp_1c8 = getattr(fresh, "rdp_1c8", "")
+                    note.custom_fields = list(getattr(fresh, "custom_fields", []))
+                    note.favorite = getattr(fresh, "favorite", getattr(note, "favorite", False))
+
+                self.current_note = note
+                self.text_edit.blockSignals(True)
+                self.text_edit.setHtml(getattr(note, "content_html", "") or note.content)
+                self.text_edit.blockSignals(False)
+
+                self.tags_label.setText(f"Теги: {', '.join(note.tags) if note.tags else 'нет'}")
+                self.password_manager_field.setText(getattr(note, "password_manager", ""))
+                self.rdp_1c8_field.setText(getattr(note, "rdp_1c8", ""))
+
+                self._rebuild_attachments_panel(note)
+
+        except Exception as e:
+            QMessageBox.warning(self, "Обновление", f"Не удалось обновить: {e}")
+
 
     def rebuild_toolbar(self):
         dock = getattr(self, "dock_toolbar", None)
@@ -8290,4 +8679,4 @@ if __name__ == "__main__":
     sys.exit(app.exec())
 
 
-    # UPD 29.08.2025|14:43
+    # UPD 30.08.2025|01:21
