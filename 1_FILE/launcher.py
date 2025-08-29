@@ -138,9 +138,7 @@ class MessageBox:
     @staticmethod
     def askyesno(title, message):
         return (
-            QMessageBox.question(
-                None, title, message, QMessageBox.Yes | QMessageBox.No
-            )
+            QMessageBox.question(None, title, message, QMessageBox.Yes | QMessageBox.No)
             == QMessageBox.Yes
         )
 
@@ -361,6 +359,130 @@ QMenu::separator {
     margin: 8px 0;
 }
 """
+
+
+class DrawingCanvas(QWidget):
+    def __init__(self, w=900, h=600, parent=None):
+        super().__init__(parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_StaticContents)
+        self.image = QImage(w, h, QImage.Format.Format_RGB32)
+        self.image.fill(Qt.GlobalColor.white)
+        self.pen = QPen(
+            QColor("#000000"),
+            4,
+            Qt.PenStyle.SolidLine,
+            Qt.PenCapStyle.RoundCap,
+            Qt.PenJoinStyle.RoundJoin,
+        )
+        self.eraser = False
+        self.last_pos = None
+        self.setMinimumSize(w, h)
+
+    def set_color(self, color: QColor):
+        self.pen.setColor(color)
+
+    def set_width(self, w: int):
+        self.pen.setWidth(w)
+
+    def clear(self):
+        self.image.fill(Qt.GlobalColor.white)
+        self.update()
+
+    def get_image(self) -> QImage:
+        return self.image
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.fillRect(self.rect(), Qt.GlobalColor.white)  # фон превью — белый
+        p.drawImage(0, 0, self.image)
+
+    def _pt(self, e):
+        # совместимость с разными версиями Qt
+        return e.position().toPoint() if hasattr(e, "position") else e.pos()
+
+    def mousePressEvent(self, e):
+        if e.button() == Qt.MouseButton.LeftButton:
+            self.last_pos = self._pt(e)
+
+    def mouseMoveEvent(self, e):
+        if (e.buttons() & Qt.MouseButton.LeftButton) and self.last_pos is not None:
+            curr = self._pt(e)
+            painter = QPainter(self.image)
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+            if self.eraser:
+                pen = QPen(
+                    Qt.GlobalColor.white,
+                    self.pen.width(),
+                    Qt.PenStyle.SolidLine,
+                    Qt.PenCapStyle.RoundCap,
+                    Qt.PenJoinStyle.RoundJoin,
+                )
+            else:
+                pen = self.pen
+            painter.setPen(pen)
+            painter.drawLine(self.last_pos, curr)
+            painter.end()
+            self.last_pos = curr
+            self.update()
+
+    def mouseReleaseEvent(self, e):
+        if e.button() == Qt.MouseButton.LeftButton:
+            self.last_pos = None
+
+
+class DrawingDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Рисование")
+        self.canvas = DrawingCanvas(parent=self)
+
+        size = QSpinBox()
+        size.setRange(1, 80)
+        size.setValue(4)
+
+        btn_color = QPushButton("Цвет")
+        btn_eraser = QPushButton("Ластик")
+        btn_eraser.setCheckable(True)
+        btn_clear = QPushButton("Очистить")
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+
+        btn_color.clicked.connect(self._pick_color)
+        size.valueChanged.connect(self.canvas.set_width)
+        btn_eraser.toggled.connect(self._toggle_eraser)
+        btn_clear.clicked.connect(self.canvas.clear)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+
+        top = QHBoxLayout()
+        top.addWidget(QLabel("Толщина:"))
+        top.addWidget(size)
+        top.addWidget(btn_color)
+        top.addWidget(btn_eraser)
+        top.addStretch()
+        top.addWidget(btn_clear)
+
+        lay = QVBoxLayout(self)
+        lay.addLayout(top)
+        lay.addWidget(self.canvas)
+        lay.addWidget(buttons)
+
+        self._btn_eraser = btn_eraser
+
+    def _pick_color(self):
+        color = QColorDialog.getColor(self.canvas.pen.color(), self, "Выбор цвета")
+        if color.isValid():
+            self.canvas.set_color(color)
+            if self._btn_eraser.isChecked():
+                self._btn_eraser.setChecked(False)
+
+    def _toggle_eraser(self, on: bool):
+        self.canvas.eraser = on
+
+    def get_image(self) -> QImage:
+        return self.canvas.get_image()
 
 
 class AudioRecorderThread(QThread):
@@ -867,6 +989,7 @@ class CustomTextEdit(QTextEdit):
                 if len(out) >= 7:
                     break
             return out
+
         user_candidates = _clean(user_candidates)
         spell_candidates = _clean(spell_candidates)
         doc_candidates = _clean(doc_candidates)
@@ -940,6 +1063,7 @@ class CustomTextEdit(QTextEdit):
             plain = self.toPlainText()
 
         from PySide6.QtCore import QMimeData
+
         md = QMimeData()
         md.setText(self._sanitize_plain_for_copy(plain))
         return md
@@ -1693,7 +1817,12 @@ class NotesApp(QMainWindow):
             if os.path.exists(file_path):
                 with open(file_path, "r", encoding="utf-8") as bf:
                     prev_json = bf.read()
-                safe_title = re.sub(r'[^a-zA-Zа-яА-Я0-9 _\-\.\(\)]', '', note.title).strip().replace(' ', '_') or "note"
+                safe_title = (
+                    re.sub(r"[^a-zA-Zа-яА-Я0-9 _\-\.\(\)]", "", note.title)
+                    .strip()
+                    .replace(" ", "_")
+                    or "note"
+                )
                 safe_title = safe_title[:100]
                 backup_path = os.path.join(note_dir, f"backup({safe_title}).json")
                 with open(backup_path, "w", encoding="utf-8") as out:
@@ -1836,7 +1965,12 @@ class NotesApp(QMainWindow):
             if os.path.exists(file_path):
                 with open(file_path, "r", encoding="utf-8") as bf:
                     prev_json = bf.read()
-                safe_title = re.sub(r'[^a-zA-Zа-яА-Я0-9 _\-\.\(\)]', '', note.title).strip().replace(' ', '_') or "note"
+                safe_title = (
+                    re.sub(r"[^a-zA-Zа-яА-Я0-9 _\-\.\(\)]", "", note.title)
+                    .strip()
+                    .replace(" ", "_")
+                    or "note"
+                )
                 safe_title = safe_title[:100]
                 backup_path = os.path.join(note_dir, f"backup({safe_title}).json")
                 with open(backup_path, "w", encoding="utf-8") as out:
@@ -2779,7 +2913,9 @@ class NotesApp(QMainWindow):
 
         html = self.text_edit.toHtml()
         href_prefix = f"dropdown://{re.escape(dd_id)}"
-        m = re.search(rf'<a[^>]*href="{href_prefix}[^"]*"[^>]*>(.*?)</a>', html, flags=re.S)
+        m = re.search(
+            rf'<a[^>]*href="{href_prefix}[^"]*"[^>]*>(.*?)</a>', html, flags=re.S
+        )
         if not m:
             return None
 
@@ -2877,8 +3013,7 @@ class NotesApp(QMainWindow):
 
     def _persist_dropdown_values_in_html(self, html: str) -> str:
         pattern = re.compile(
-            r'<a[^>]*href="dropdown://([0-9a-fA-F]{8})[^"]*"[^>]*>(.*?)</a>',
-            re.S
+            r'<a[^>]*href="dropdown://([0-9a-fA-F]{8})[^"]*"[^>]*>(.*?)</a>', re.S
         )
 
         def repl(m):
@@ -3002,7 +3137,10 @@ class NotesApp(QMainWindow):
                         filename in ignored_files
                         or filename.startswith(ignored_prefixes)
                         or filename.endswith(ignored_suffixes)
-                        or (filename.startswith("backup(") and filename.endswith(".json"))
+                        or (
+                            filename.startswith("backup(")
+                            and filename.endswith(".json")
+                        )
                     ):
                         continue
                     attachments_found = True
@@ -3184,7 +3322,9 @@ class NotesApp(QMainWindow):
             self.action_toggle_pm.setEnabled(True)
             self.action_toggle_pm.blockSignals(True)
             self.action_toggle_pm.setChecked(pm_vis)
-            self._update_eye_action(self.action_toggle_pm, pm_vis, self.password_manager_label.text())
+            self._update_eye_action(
+                self.action_toggle_pm, pm_vis, self.password_manager_label.text()
+            )
             self.action_toggle_pm.blockSignals(False)
 
         if hasattr(self, "action_toggle_rdp"):
@@ -3192,7 +3332,11 @@ class NotesApp(QMainWindow):
             self.action_toggle_rdp.setEnabled(not rdp_removed)
             self.action_toggle_rdp.blockSignals(True)
             self.action_toggle_rdp.setChecked(False if rdp_removed else rdp_vis)
-            self._update_eye_action(self.action_toggle_rdp, (False if rdp_removed else rdp_vis), self.rdp_1c8_label.text())
+            self._update_eye_action(
+                self.action_toggle_rdp,
+                (False if rdp_removed else rdp_vis),
+                self.rdp_1c8_label.text(),
+            )
             self.action_toggle_rdp.blockSignals(False)
 
         # — кастом-поля
@@ -3753,6 +3897,56 @@ class NotesApp(QMainWindow):
             self.text_edit.insertHtml(html_img)
             self.record_state_for_undo()
 
+    def _insert_image_at_cursor(self, image_path: str, width: int = 400) -> None:
+        pixmap = QPixmap(image_path)
+        if pixmap.isNull():
+            QMessageBox.warning(self, "Ошибка", "Не удалось загрузить изображение.")
+            return
+        buffer = QBuffer()
+        buffer.open(QIODevice.OpenModeFlag.WriteOnly)
+        pixmap.save(buffer, "PNG")
+        base64_data = base64.b64encode(buffer.data()).decode("utf-8")
+        html_img = (
+            f'<img src="Data:image/png;base64,{base64_data}" width="{width}"><br>'
+        )
+        cursor = self.text_edit.textCursor()
+        self.text_edit.setTextCursor(cursor)
+        self.text_edit.insertHtml(html_img)
+        self.record_state_for_undo()
+
+    def open_drawing_dialog(self) -> None:
+        if not self.current_note:
+            QMessageBox.warning(
+                self, "Нет заметки", "Пожалуйста, выбери или создай заметку."
+            )
+            return
+
+        dlg = DrawingDialog(self)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            img = dlg.get_image()
+            note_dir = os.path.join(
+                NOTES_DIR,
+                NotesApp.safe_folder_name(
+                    self.current_note.title,
+                    self.current_note.uuid,
+                    self.current_note.timestamp,
+                ),
+            )
+            os.makedirs(note_dir, exist_ok=True)
+            filename = (
+                f"drawing_{QDateTime.currentDateTime().toString('yyyyMMdd_HHmmss')}.png"
+            )
+            filepath = os.path.join(note_dir, filename)
+            try:
+                img.save(filepath, "PNG")
+            except Exception as e:
+                QMessageBox.critical(
+                    self, "Ошибка", f"Не удалось сохранить рисунок: {e}"
+                )
+                return
+            self._insert_image_at_cursor(filepath, width=400)
+            self.save_note()
+
     def insert_image_from_clipboard(self, image: QImage) -> None:
         if not self.current_note:
             QMessageBox.warning(
@@ -3761,7 +3955,11 @@ class NotesApp(QMainWindow):
             return
         note_dir = os.path.join(
             NOTES_DIR,
-            NotesApp.safe_folder_name(self.current_note.title, self.current_note.uuid),
+            NotesApp.safe_folder_name(
+                self.current_note.title,
+                self.current_note.uuid,
+                self.current_note.timestamp,
+            ),
         )
         os.makedirs(note_dir, exist_ok=True)
         filename = f"clipboard_{uuid.uuid4().hex}.png"
@@ -3804,7 +4002,9 @@ class NotesApp(QMainWindow):
             self.audio_button.setText("🎤")
         else:
             if not self.current_note:
-                QMessageBox.warning(self, "Нет заметки", "Пожалуйста, выбери или создай заметку.")
+                QMessageBox.warning(
+                    self, "Нет заметки", "Пожалуйста, выбери или создай заметку."
+                )
                 return
             note_dir = os.path.join(
                 NOTES_DIR,
@@ -3815,7 +4015,9 @@ class NotesApp(QMainWindow):
                 ),
             )
             os.makedirs(note_dir, exist_ok=True)
-            filename = f"audio_{QDateTime.currentDateTime().toString('yyyyMMdd_HHmmss')}.wav"
+            filename = (
+                f"audio_{QDateTime.currentDateTime().toString('yyyyMMdd_HHmmss')}.wav"
+            )
             full_path = os.path.join(note_dir, filename)
 
             self.audio_thread = AudioRecorderThread(full_path)
@@ -4453,6 +4655,7 @@ class NotesApp(QMainWindow):
         add_tool_button("", "➕ - Новая", self.create_new_note)
         add_tool_button("", "💾 - Сохранить", self.save_note)
         add_tool_button("📎", "📎 - Приерепить файл", self.attach_file_to_note)
+        add_tool_button("", "🖌 - Рисовать", self.open_drawing_dialog)
         self.audio_button = QPushButton("🎤")
         self.audio_button.setToolTip("🎤 - Записать аудио")
         self.audio_button.setFixedSize(32, 32)
@@ -4941,11 +5144,17 @@ class NotesApp(QMainWindow):
     def _toggle_always_on_top(self, checked: bool) -> None:
         self.setWindowFlag(Qt.WindowStaysOnTopHint, checked)
         self.settings.setValue("ui/always_on_top", checked)
-        if hasattr(self, "topmost_checkbox") and self.topmost_checkbox.isChecked() != checked:
+        if (
+            hasattr(self, "topmost_checkbox")
+            and self.topmost_checkbox.isChecked() != checked
+        ):
             self.topmost_checkbox.blockSignals(True)
             self.topmost_checkbox.setChecked(checked)
             self.topmost_checkbox.blockSignals(False)
-        if hasattr(self, "action_always_on_top") and self.action_always_on_top.isChecked() != checked:
+        if (
+            hasattr(self, "action_always_on_top")
+            and self.action_always_on_top.isChecked() != checked
+        ):
             self.action_always_on_top.blockSignals(True)
             self.action_always_on_top.setChecked(checked)
             self.action_always_on_top.blockSignals(False)
@@ -5170,7 +5379,8 @@ class NotesApp(QMainWindow):
 
     def delete_note_completely(self, note: Note) -> None:
         reply = QMessageBox.question(
-            self, "Удалить навсегда",
+            self,
+            "Удалить навсегда",
             f"Безвозвратно удалить заметку '{note.title}'? Данные будут удалены полностью.",
             QMessageBox.Yes | QMessageBox.No,
         )
@@ -5178,7 +5388,9 @@ class NotesApp(QMainWindow):
             return
         candidates = []
         try:
-            name_with_ts = NotesApp.safe_folder_name(note.title, note.uuid, note.timestamp)
+            name_with_ts = NotesApp.safe_folder_name(
+                note.title, note.uuid, note.timestamp
+            )
         except Exception:
             name_with_ts = NotesApp.safe_folder_name(note.title, note.uuid)
         name_no_ts = NotesApp.safe_folder_name(note.title, note.uuid)
@@ -5210,7 +5422,9 @@ class NotesApp(QMainWindow):
 
         self.refresh_notes_list()
         self.save_all_notes_to_disk()
-        QMessageBox.information(self, "Удалено", f"Заметка '{note.title}' удалена безвозвратно.")
+        QMessageBox.information(
+            self, "Удалено", f"Заметка '{note.title}' удалена безвозвратно."
+        )
 
     def trigger_search(self):
         self.handle_combined_search()
@@ -5535,6 +5749,9 @@ class NotesApp(QMainWindow):
         QShortcut(QKeySequence("Ctrl+N"), self, self.create_new_note)
         QShortcut(QKeySequence("Ctrl+S"), self, self.save_note)
         QShortcut(QKeySequence("Ctrl+Space"), self.text_edit, self.clear_formatting)
+        QShortcut(
+            QKeySequence("Ctrl+Shift+D"), self, activated=self.open_drawing_dialog
+        )
         self._notes_delete_sc = QShortcut(QKeySequence.Delete, self.notes_list)
         self._notes_delete_sc.setContext(Qt.WidgetWithChildrenShortcut)
         self._notes_delete_sc.activated.connect(self.delete_note)
@@ -5772,7 +5989,7 @@ class NotesApp(QMainWindow):
     def closeEvent(self, event: QCloseEvent):
         self.save_settings()
         try:
-            self.save_note_quiet(force=True) 
+            self.save_note_quiet(force=True)
             if getattr(self, "current_note", None):
                 self.save_note_quiet(force=True)
             self.save_all_notes_to_disk()
@@ -6448,7 +6665,7 @@ class PasswordManager:
             }
             for p in self.passwords
         ]
-    
+
     def get_all_metadata(self):
         for p in self.passwords:
             if not p.get("updated_at"):
@@ -7753,7 +7970,9 @@ class PasswordGeneratorApp:
         for item in self._cached_list:
             display_password = item.get("password", "") if show_plain else "•" * 36
             self.password_tree.insert(
-                "", tk.END, iid=str(item["index"]),
+                "",
+                tk.END,
+                iid=str(item["index"]),
                 values=(
                     item["description"],
                     display_password,
@@ -7772,7 +7991,9 @@ class PasswordGeneratorApp:
         all_tags = ["Все"] + sorted(tags)
         self.tag_filter["values"] = all_tags
         self.tag_filter.config(
-            width=max(10, max(len(str(tag)) for tag in all_tags) + 2 if all_tags else 10)
+            width=max(
+                10, max(len(str(tag)) for tag in all_tags) + 2 if all_tags else 10
+            )
         )
 
     def _filter_passwords(self):
@@ -7793,14 +8014,23 @@ class PasswordGeneratorApp:
             match_search = (
                 not search_term
                 or search_term in it["description"].lower()
-                or (search_in_passwords and search_term in it.get("password", "").lower())
+                or (
+                    search_in_passwords
+                    and search_term in it.get("password", "").lower()
+                )
                 or any(search_term in t for t in tags)
             )
             match_tag = selected_tag == "Все" or selected_tag.lower() in tags
             if match_search and match_tag:
-                display_password = ("•" * 64) if self.hide_passwords_var.get() else it.get("password", "")
+                display_password = (
+                    ("•" * 64)
+                    if self.hide_passwords_var.get()
+                    else it.get("password", "")
+                )
                 self.password_tree.insert(
-                    "", tk.END, iid=str(it["index"]),
+                    "",
+                    tk.END,
+                    iid=str(it["index"]),
                     values=(
                         it["description"],
                         display_password,
@@ -8028,4 +8258,6 @@ if __name__ == "__main__":
     window = LauncherWindow()
     window.show()
     sys.exit(app.exec())
-    # UPD 29.08.2025|12:30
+
+    
+    # UPD 29.08.2025|14:35
