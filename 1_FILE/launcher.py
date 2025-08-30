@@ -83,6 +83,7 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import (
     QApplication,
+    QSlider, 
     QLayoutItem,
     QStyle,
     QGraphicsView,
@@ -376,17 +377,15 @@ class DrawingCanvas(QWidget):
         self.hit_tolerance = 8
         self.pen_color = QColor("black")
         self.pen_width = 3
-
+        self.zoom = 1.0
         self.tool = "pen"
         self.is_drawing = False
         self.last_pos = QPoint()
         self.start_pos = QPoint()
         self.preview_pos = QPoint()
-
         self.fill_enabled = False
         self.fill_color = QColor(0, 0, 0, 60)
         self.text_font = QFont("Segoe UI", 18)
-
         self.move_active = False
         self.move_start = QPoint()
         self.move_delta = QPoint()
@@ -429,6 +428,36 @@ class DrawingCanvas(QWidget):
         elif t == "text":
             painter.setFont(obj["font"])
             painter.drawText(obj["pos"], obj["text"])
+
+    zoomChanged = Signal(float)
+
+    def set_zoom(self, z: float):
+        z = max(0.25, min(4.0, float(z)))
+        if abs(z - self.zoom) > 1e-3:
+            self.zoom = z
+            self.update()
+            try:
+                self.zoomChanged.emit(self.zoom)
+            except Exception:
+                pass
+
+    def set_zoom_percent(self, p: int):
+        self.set_zoom(max(25, min(400, int(p))) / 100.0)
+
+    def _to_image_pos(self, p: QPoint) -> QPoint:
+        if self.zoom == 1.0:
+            return p
+        return QPoint(int(p.x() / self.zoom), int(p.y() / self.zoom))
+
+    def wheelEvent(self, e):
+        if e.modifiers() & Qt.ControlModifier:
+            delta = e.angleDelta().y()
+            step = 0.1 if delta > 0 else -0.1
+            self.set_zoom(self.zoom + step)
+            e.accept()
+        else:
+            super().wheelEvent(e)
+
 
     def _draw_objects(self, painter: QPainter) -> None:
         for obj in self.objects:
@@ -522,41 +551,38 @@ class DrawingCanvas(QWidget):
     def mousePressEvent(self, e):
         if e.button() != Qt.LeftButton:
             return
-
         if self.tool == "text":
             text, ok = QInputDialog.getText(self, "Текст", "Введите текст:")
             if ok and text:
+                img_pos = self._to_image_pos(e.position().toPoint())
                 obj = {
                     "type": "text",
                     "text": text,
-                    "pos": e.position().toPoint(),
+                    "pos": img_pos,
                     "font": QFont(self.text_font),
                     "pen": QPen(self.pen_color, self.pen_width, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin),
                 }
                 self.objects.append(obj)
                 self.update()
             return
-
         if self.tool == "select":
             self.is_drawing = True
-            self.last_pos = e.position().toPoint()
+            self.last_pos = self._to_image_pos(e.position().toPoint())
             self.selected_index = self._object_at(self.last_pos)
             self.drag_start = self.last_pos
             self.drag_last = self.last_pos
             return
-
         if self.tool == "move":
             self.move_active = True
             self.is_drawing = True
-            self.move_start = e.position().toPoint()
+            self.move_start = self._to_image_pos(e.position().toPoint()) 
             self.image_before_move = self.image.copy()
             self.move_delta = QPoint()
             return
         self.is_drawing = True
-        self.last_pos = e.position().toPoint()
+        self.last_pos = self._to_image_pos(e.position().toPoint())
         self.start_pos = self.last_pos
         self.preview_pos = self.last_pos
-
         if self.tool in ("pen", "eraser"):
             painter = QPainter(self.image)
             pen = QPen(Qt.white if self.tool == "eraser" else self.pen_color,
@@ -569,40 +595,41 @@ class DrawingCanvas(QWidget):
     def mouseMoveEvent(self, e):
         if not self.is_drawing:
             return
+
         if self.tool == "move" and self.move_active:
-            pos = e.position().toPoint()
-            self.move_delta = pos - self.move_start
+            pos_img = self._to_image_pos(e.position().toPoint())
+            self.move_delta = pos_img - self.move_start
             self.update()
             return
+
         if self.tool == "select" and self.selected_index is not None:
-            pos = e.position().toPoint()
-            delta = pos - self.drag_last
+            pos_img = self._to_image_pos(e.position().toPoint())
+            delta = pos_img - self.drag_last
             if not delta.isNull():
                 self._translate_object(self.objects[self.selected_index], delta)
-                self.drag_last = pos
+                self.drag_last = pos_img
                 self.update()
             return
-        pos = e.position().toPoint()
+
+        pos_img = self._to_image_pos(e.position().toPoint())
         if self.tool in ("pen", "eraser"):
             painter = QPainter(self.image)
-            if self.tool == "eraser":
-                pen = QPen(Qt.white, self.pen_width, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
-            else:
-                pen = QPen(self.pen_color, self.pen_width, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
+            pen = QPen(Qt.white if self.tool == "eraser" else self.pen_color,
+                    self.pen_width, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
             painter.setPen(pen)
-            painter.drawLine(self.last_pos, pos)
+            painter.drawLine(self.last_pos, pos_img) 
             painter.end()
-            self.last_pos = pos
+            self.last_pos = pos_img
             self.update()
         else:
-            self.preview_pos = pos
+            self.preview_pos = pos_img
             self.update()
 
     def mouseReleaseEvent(self, e):
         if e.button() != Qt.MouseButton.LeftButton or not self.is_drawing:
             return
         self.is_drawing = False
-        end_pos = e.position().toPoint()
+        end_img = self._to_image_pos(e.position().toPoint())
         if self.tool == "move" and self.move_active:
             self.move_active = False
             dx, dy = self.move_delta.x(), self.move_delta.y()
@@ -614,6 +641,8 @@ class DrawingCanvas(QWidget):
                 p.drawImage(dx, dy, self.image_before_move)
                 p.end()
                 self.image = newimg
+                for obj in self.objects:
+                    self._translate_object(obj, self.move_delta)
             self.image_before_move = None
             self.move_delta = QPoint()
             self.update()
@@ -633,26 +662,30 @@ class DrawingCanvas(QWidget):
                 brush = QBrush(self.fill_color)
             painter.setBrush(brush)
             if self.tool == "rect":
-                painter.drawRect(self._norm_rect(self.start_pos, end_pos))
+                painter.drawRect(self._norm_rect(self.start_pos, end_img))
             elif self.tool == "ellipse":
-                painter.drawEllipse(self._norm_rect(self.start_pos, end_pos))
+                painter.drawEllipse(self._norm_rect(self.start_pos, end_img))
             elif self.tool == "line":
-                painter.drawLine(self.start_pos, end_pos)
+                painter.drawLine(self.start_pos, end_img)
             elif self.tool == "arrow":
-                p1, p2 = QPointF(self.start_pos), QPointF(end_pos)
+                p1, p2 = QPointF(self.start_pos), QPointF(end_img)
                 painter.drawLine(p1, p2)
                 head = self._arrow_head(p1, p2, max(10, self.pen_width * 3))
                 painter.setBrush(QBrush(self.pen_color))
                 painter.drawPolygon(head)
-
             painter.end()
             self.update()
 
     def paintEvent(self, e):
         painter = QPainter(self)
+        painter.fillRect(self.rect(), Qt.white)
+        painter.scale(self.zoom, self.zoom)
         if self.tool == "move" and self.move_active and self.image_before_move is not None:
-            painter.fillRect(self.rect(), Qt.white)
             painter.drawImage(self.move_delta, self.image_before_move)
+            painter.save()
+            painter.translate(self.move_delta)
+            self._draw_objects(painter)
+            painter.restore()
         else:
             painter.drawImage(0, 0, self.image)
 
@@ -665,7 +698,6 @@ class DrawingCanvas(QWidget):
                 painter.setBrush(QBrush(self.fill_color))
             else:
                 painter.setBrush(Qt.NoBrush)
-
             if self.tool == "rect":
                 painter.drawRect(self._norm_rect(self.start_pos, self.preview_pos))
             elif self.tool == "ellipse":
@@ -678,9 +710,7 @@ class DrawingCanvas(QWidget):
                 head = self._arrow_head(p1, p2, max(10, self.pen_width * 3))
                 painter.setBrush(QBrush(self.pen_color))
                 painter.drawPolygon(head)
-
         painter.end()
-
 
     def sizeHint(self):
         return QSize(self.image.width(), self.image.height())
@@ -726,6 +756,36 @@ class DrawingDialog(QDialog):
         self.btn_eraser  = tool_btn("⌫ Ластик", "eraser")
         self.btn_pen.setChecked(True)
         form = QFormLayout()
+        zoom_widget = QWidget(self)
+        zw = QHBoxLayout(zoom_widget)
+        zw.setContentsMargins(0, 0, 0, 0)
+        self.zoom_slider = QSlider(Qt.Horizontal, self)
+        self.zoom_slider.setRange(25, 400)
+        self.zoom_slider.setPageStep(25)
+        self.zoom_slider.setValue(100)
+        btn_zoom_minus = QPushButton("–", self)
+        btn_zoom_plus  = QPushButton("+", self)
+        btn_zoom_minus.setFixedWidth(24)
+        btn_zoom_plus.setFixedWidth(24)
+        self.zoom_label = QLabel("100%", self)
+        zw.addWidget(btn_zoom_minus)
+        zw.addWidget(self.zoom_slider, 1)
+        zw.addWidget(btn_zoom_plus)
+        zw.addWidget(self.zoom_label)
+        form.addRow("Масштаб:", zoom_widget)
+        self.zoom_slider.valueChanged.connect(
+            lambda v: (self.canvas.set_zoom_percent(v), self.zoom_label.setText(f"{v}%"))
+        )
+        btn_zoom_minus.clicked.connect(lambda: self.zoom_slider.setValue(max(25,  self.zoom_slider.value() - 10)))
+        btn_zoom_plus.clicked.connect( lambda: self.zoom_slider.setValue(min(400, self.zoom_slider.value() + 10)))
+        if hasattr(self.canvas, "zoomChanged"):
+            def _sync_from_canvas(z):
+                val = int(round(z * 100))
+                self.zoom_slider.blockSignals(True)
+                self.zoom_slider.setValue(val)
+                self.zoom_label.setText(f"{val}%")
+                self.zoom_slider.blockSignals(False)
+            self.canvas.zoomChanged.connect(_sync_from_canvas)
         self.spin_width = QSpinBox(self)
         self.spin_width.setRange(1, 64)
         self.spin_width.setValue(3)
@@ -734,7 +794,6 @@ class DrawingDialog(QDialog):
         self.btn_color.clicked.connect(self._choose_pen_color)
         self.cb_fill = QCheckBox("Заливка", self)
         self.btn_fill = QPushButton("Цвет заливки…", self)
-        self.btn_fill.setEnabled(False)
         self.cb_fill.toggled.connect(self.on_fill_toggled)
         self.btn_fill.clicked.connect(self._choose_fill_color)
         self.spin_text = QSpinBox(self)
@@ -745,8 +804,6 @@ class DrawingDialog(QDialog):
         form.addRow("", self.btn_color)
         form.addRow(self.cb_fill, self.btn_fill)
         form.addRow("Размер текста:", self.spin_text)
-        self.cb_fill.setChecked(getattr(self.canvas, "fill_enabled", False))
-        self.on_fill_toggled(self.cb_fill.isChecked())
         bottom = QHBoxLayout()
         self.btn_clear = QPushButton("Очистить")
         self.btn_clear.clicked.connect(self.canvas.clear)
@@ -761,6 +818,8 @@ class DrawingDialog(QDialog):
         layout.addLayout(tools_layout)
         layout.addLayout(form)
         layout.addLayout(bottom)
+        self.cb_fill.setChecked(True)
+        self.on_fill_toggled(True)
         self._select_tool(self.btn_pen, "pen")
 
     def _select_tool(self, btn: QPushButton, tool: str):
@@ -780,14 +839,11 @@ class DrawingDialog(QDialog):
         if hasattr(self.canvas, "set_fill_enabled"):
             self.canvas.set_fill_enabled(on)
 
-    def _choose_fill_color(self) -> None:
-        col = QColorDialog.getColor(getattr(self.canvas, "fill_color", QColor("black")), self, "Цвет заливки")
-        if col.isValid() and hasattr(self.canvas, "set_fill_color"):
-            self.canvas.set_fill_color(col)
-
-
     def _choose_fill_color(self):
-        col = QColorDialog.getColor(self.canvas.fill_color, self, "Цвет заливки")
+        col = QColorDialog.getColor(
+            self.canvas.fill_color, self, "Цвет заливки",
+            QColorDialog.ColorDialogOption.ShowAlphaChannel
+        )
         if col.isValid():
             self.canvas.set_fill_color(col)
 
@@ -4457,30 +4513,73 @@ class NotesApp(QMainWindow):
         if busy:
             if not hasattr(self, "_busy_progress") or self._busy_progress is None:
                 self._busy_progress = QProgressBar(self)
-                self._busy_progress.setRange(0, 0)
+                self._busy_progress.setRange(0, 100)
+                self._busy_progress.setValue(0)
                 self._busy_progress.setFixedHeight(8)
                 self.statusBar().addPermanentWidget(self._busy_progress, 1)
+            if not hasattr(self, "_busy_timer") or self._busy_timer is None:
+                self._busy_timer = QTimer(self)
+                self._busy_timer.setInterval(60) 
+                self._busy_timer.timeout.connect(self._tick_busy_progress)
+            self._busy_target = 95 
+            self._busy_step = 2 
+            self._busy_timer.start()
+
             self.statusBar().showMessage("Обновляю…")
             QApplication.setOverrideCursor(Qt.BusyCursor)
             if getattr(self, "refresh_button", None):
                 self.refresh_button.setEnabled(False)
         else:
-            self.statusBar().clearMessage()
+            try:
+                if getattr(self, "_busy_timer", None):
+                    self._busy_timer.stop()
+            except Exception:
+                pass
             if getattr(self, "_busy_progress", None):
-                try:
-                    self.statusBar().removeWidget(self._busy_progress)
-                    self._busy_progress.deleteLater()
-                except Exception:
-                    pass
-                self._busy_progress = None
-            QApplication.restoreOverrideCursor()
-            if getattr(self, "refresh_button", None):
-                self.refresh_button.setEnabled(True)
+                def _finish():
+                    if not getattr(self, "_busy_progress", None):
+                        return
+                    cur = self._busy_progress.value()
+                    if cur < 100:
+                        self._busy_progress.setValue(min(100, cur + 4))
+                        QTimer.singleShot(30, _finish)
+                    else:
+                        QTimer.singleShot(300, self._remove_busy_progress)
+
+                _finish()
+            else:
+                self._remove_busy_progress()
+
+    def _tick_busy_progress(self):
+        if not getattr(self, "_busy_progress", None):
+            return
+        v = self._busy_progress.value()
+        if v < getattr(self, "_busy_target", 95):
+            self._busy_progress.setValue(min(self._busy_target, v + self._busy_step))
+
+    def _remove_busy_progress(self):
+        self.statusBar().clearMessage()
+        QApplication.restoreOverrideCursor()
+        if getattr(self, "refresh_button", None):
+            self.refresh_button.setEnabled(True)
+        if getattr(self, "_busy_progress", None):
+            try:
+                self.statusBar().removeWidget(self._busy_progress)
+                self._busy_progress.deleteLater()
+            except Exception:
+                pass
+            self._busy_progress = None
+        if getattr(self, "_busy_timer", None):
+            try:
+                self._busy_timer.stop()
+            except Exception:
+                pass
+            self._busy_timer = None
 
     def on_refresh_clicked(self) -> None:
         self._show_refresh_busy(True)
         try:
-            self.show_toast("Обновляю…", timeout_ms=800, anchor_widget=getattr(self, "refresh_button", None))
+            self.show_toast("Обновляю…", timeout_ms=1600, anchor_widget=getattr(self, "refresh_button", None))
         except Exception:
             pass
         QApplication.processEvents()
@@ -4497,7 +4596,7 @@ class NotesApp(QMainWindow):
         finally:
             self._show_refresh_busy(False)
             try:
-                self.show_toast("Готово", timeout_ms=900, anchor_widget=getattr(self, "refresh_button", None))
+                self.show_toast("Готово", timeout_ms=1400, anchor_widget=getattr(self, "refresh_button", None))
             except Exception:
                 pass
 
@@ -8679,4 +8778,4 @@ if __name__ == "__main__":
     sys.exit(app.exec())
 
 
-    # UPD 30.08.2025|01:21
+    # UPD 30.08.2025|12:33
