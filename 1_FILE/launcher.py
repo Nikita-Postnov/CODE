@@ -11,11 +11,6 @@ import wave
 import traceback
 import base64
 import html as html_lib
-
-try:
-    import pyperclip
-except ImportError:
-    pyperclip = None
 from cryptography.fernet import Fernet, InvalidToken
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
@@ -29,7 +24,10 @@ import datetime
 import importlib.util
 from urllib.parse import quote, unquote
 from typing import Callable
+import tkinter.messagebox as tk_messagebox
+from tkinter import filedialog as tk_filedialog
 from functools import partial
+import pyperclip
 from PySide6.QtCore import (
     Qt,
     QMimeData,
@@ -378,6 +376,8 @@ class DrawingCanvas(QWidget):
         self.drag_start = QPoint()
         self.drag_last = QPoint()
         self.hit_tolerance = 8
+        self.show_layout_frame = True
+        self.safe_margin = 16 
         self.pen_color = QColor("black")
         self.pen_width = 3
         self.zoom = 1.0
@@ -396,6 +396,14 @@ class DrawingCanvas(QWidget):
 
     def set_color(self, color: QColor):
         self.pen_color = QColor(color)
+        self.update()
+
+    def set_show_frame(self, on: bool):
+        self.show_layout_frame = bool(on)
+        self.update()
+
+    def set_safe_margin(self, px: int):
+        self.safe_margin = max(0, int(px))
         self.update()
 
     def set_width(self, w: int):
@@ -829,6 +837,18 @@ class DrawingCanvas(QWidget):
         else:
             painter.drawImage(0, 0, self.image)
             self._draw_objects(painter)
+        if self.show_layout_frame:
+            pen = QPen(QColor("#9aa0a6"))
+            pen.setStyle(Qt.DashLine)
+            pen.setCosmetic(True)
+            painter.setPen(pen)
+            painter.setBrush(Qt.NoBrush)
+            painter.drawRect(0, 0, self.image.width()-1, self.image.height()-1)
+            m = self.safe_margin
+            if m > 0 and 2*m < min(self.image.width(), self.image.height()):
+                painter.drawRect(m, m,
+                                self.image.width()-1-2*m,
+                                self.image.height()-1-2*m)
         if self.is_drawing and self.tool in ("rect", "ellipse", "line", "arrow"):
             pen = QPen(
                 self.pen_color, self.pen_width, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin
@@ -898,6 +918,15 @@ class DrawingDialog(QDialog):
         self.btn_eraser = tool_btn("⌫ Ластик", "eraser")
         self.btn_pen.setChecked(True)
         form = QFormLayout()
+        self.cb_frame = QCheckBox("Границы макета", self)
+        self.cb_frame.setChecked(True)
+        self.cb_frame.toggled.connect(self.canvas.set_show_frame)
+        form.addRow(self.cb_frame)
+        self.spin_margin = QSpinBox(self)
+        self.spin_margin.setRange(0, 200)
+        self.spin_margin.setValue(16)
+        self.spin_margin.valueChanged.connect(self.canvas.set_safe_margin)
+        form.addRow("Отступ, px:", self.spin_margin)
         zoom_widget = QWidget(self)
         zw = QHBoxLayout(zoom_widget)
         zw.setContentsMargins(0, 0, 0, 0)
@@ -7722,6 +7751,26 @@ class PasswordDialog(BasePasswordDialog):
         self.url_entry.insert(0, self.password_data.get("url", ""))
         self.login_entry.insert(0, self.password_data.get("login", ""))
 
+    def _safe_copy_to_clipboard(self, text: str, clear_after_ms: int = 60000) -> bool:
+        if not text:
+            return False
+        try:
+            self.master.clipboard_clear()
+            self.master.clipboard_append(text)
+            self.master.update_idletasks()
+            if clear_after_ms:
+                self.master.after(
+                    clear_after_ms,
+                    lambda: self.master.winfo_exists() and self.master.clipboard_clear()
+                )
+            return True
+        except Exception:
+            import pyperclip
+            pyperclip.copy(text)
+            if clear_after_ms:
+                self.master.after(clear_after_ms, lambda: pyperclip.copy(""))
+            return True
+
     def _toggle_password_visibility(self):
         show = self.show_password_var.get()
         self.password_entry.config(show="" if show else "*")
@@ -7999,6 +8048,12 @@ class PasswordGeneratorApp:
         self.master = master
         master.title("Генератор паролей")
         master.geometry("800x600")
+        self._backup_job = None
+        self._closing = False
+        self.master.protocol("WM_DELETE_WINDOW", self._on_close)
+        self._backup_job = None
+        self._closing = False
+        self.master.protocol("WM_DELETE_WINDOW", self._on_close)
         master.minsize(800, 600)
         master.attributes("-topmost", True)
         master.lift()
@@ -8021,6 +8076,23 @@ class PasswordGeneratorApp:
         self.master.deiconify()
         self.master.after_idle(self._refresh_password_list)
         self.master.after(2000, self.schedule_backup)
+
+    def _safe_copy_to_clipboard(self, text: str, clear_after_ms: int = 60000) -> bool:
+        if not text:
+            return False
+        try:
+            self.master.clipboard_clear()
+            self.master.clipboard_append(text)
+            self.master.update_idletasks()
+            if clear_after_ms:
+                self.master.after(clear_after_ms, lambda: self.master.clipboard_clear())
+            return True
+        except Exception:
+            pass
+        pyperclip.copy(text)
+        if clear_after_ms:
+            self.master.after(clear_after_ms, lambda: pyperclip.copy(""))
+        return True
 
     def _edit_configuration(self):
         config_path = os.path.join(PASSWORDS_DIR, "config.json")
@@ -8049,11 +8121,10 @@ class PasswordGeneratorApp:
                 )
 
     def _export_passwords_txt(self):
-        file_path, _ = QFileDialog.getSaveFileName(
-            None,
-            "Сохранить пароли в TXT",
-            "",
-            "Текстовые файлы (*.txt);;Все файлы (*.*)",
+        file_path = tk_filedialog.asksaveasfilename(
+            title="Сохранить как...",
+            defaultextension=".txt",
+            filetypes=[("Text files", "*.txt"), ("All files", "*.*")]
         )
         if not file_path:
             return
@@ -8063,9 +8134,27 @@ class PasswordGeneratorApp:
         else:
             messagebox.showerror("Ошибка", message)
 
+    def _on_close(self):
+        self._closing = True
+        try:
+            if getattr(self, "_backup_job", None):
+                self.master.after_cancel(self._backup_job)
+                self._backup_job = None
+        except Exception:
+            pass
+        try:
+            if getattr(self, "idle_timer", None):
+                self.master.after_cancel(self.idle_timer)
+                self.idle_timer = None
+        except Exception:
+            pass
+        self.master.destroy()
+
     def schedule_backup(self):
+        if getattr(self, "_closing", False) or not self.master.winfo_exists():
+            return
         self.password_manager.backup_passwords()
-        self.master.after(3600000, self.schedule_backup)
+        self._backup_job = self.master.after(3600000, self.schedule_backup)
 
     def _on_tree_drag_start(self, event):
         row_id = self.password_tree.identify_row(event.y)
@@ -8572,11 +8661,9 @@ class PasswordGeneratorApp:
         messagebox.showinfo("О программе", "Менеджер паролей с шифрованием\n\n")
 
     def _import_passwords_txt(self):
-        file_path, _ = QFileDialog.getOpenFileName(
-            None,
-            "Выберите файл для импорта",
-            "",
-            "Text files (*.txt);;All files (*.*)",
+        file_path = tk_filedialog.askopenfilename(
+            title="Выберите файл для импорта",
+            filetypes=[("Text files", "*.txt"), ("All files", "*.*")]
         )
         if not file_path:
             return
@@ -8622,11 +8709,6 @@ class PasswordGeneratorApp:
 
     def _copy_password(self):
         password = self.password_var.get()
-        if password:
-            pyperclip.copy(password)
-            messagebox.showinfo("Успешно", "Пароль скопирован в буфер обмена!")
-        else:
-            messagebox.showerror("Ошибка", "Нет пароля для копирования.")
 
     def _save_password_dialog(self):
         password = self.password_var.get()
@@ -8757,9 +8839,13 @@ class PasswordGeneratorApp:
             messagebox.showerror("Ошибка", "Выберите пароль для копирования.")
             return
         pwd = self.password_manager.get_password(index)
-        if pwd:
-            pyperclip.copy(pwd["password"])
+        if not pwd:
+            messagebox.showerror("Ошибка", "Пароль не найден.")
+            return
+        if self._safe_copy_to_clipboard(pwd["password"], clear_after_ms=60000):
             messagebox.showinfo("Успешно", "Пароль скопирован в буфер обмена!")
+        else:
+            messagebox.showerror("Ошибка", "Не удалось скопировать пароль.")
 
     def _view_selected_password(self):
         index = self._get_selected_password_index()
@@ -8867,13 +8953,18 @@ def heading_to_path(head):
 
 
 def run_password_manager():
-    root = tk.Tk()
-    root.attributes("-topmost", True)
-    root.lift()
-    root.after(100, root.focus_force)
-    app = PasswordGeneratorApp(root)
-    root.mainloop()
-
+    global messagebox
+    _old_messagebox = messagebox
+    messagebox = tk_messagebox
+    try:
+        root = tk.Tk()
+        root.attributes("-topmost", True)
+        root.lift()
+        root.after(100, root.focus_force)
+        app = PasswordGeneratorApp(root)
+        root.mainloop()
+    finally:
+        messagebox = _old_messagebox
 
 def run_notes_app():
     app = QApplication(sys.argv)
@@ -8967,4 +9058,4 @@ if __name__ == "__main__":
     window.show()
     sys.exit(app.exec())
 
-    # UPD 30.08.2025|14:07
+    # UPD 02.09.2025|12:25
