@@ -112,6 +112,7 @@ from PySide6.QtWidgets import (
     QToolTip,
     QFontComboBox,
     QDialog,
+    QButtonGroup,
     QDialogButtonBox,
     QComboBox,
     QCheckBox,
@@ -365,6 +366,15 @@ QMenu::separator {
 class DrawingCanvas(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.viewport_pad = 16
+        self._undo_stack: list[tuple[QImage, list[dict]]] = []
+        self._redo_stack: list[tuple[QImage, list[dict]]] = []
+        self._drag_changed = False
+        self.canvas_bg = QColor("#f3f4f6")
+        self.canvas_border_dark = QColor("#2f3338")
+        self.canvas_border_light = QColor("#ffffff")
+        self.viewport_pad = 16
+        self._move_bbox = None
         self.setAttribute(Qt.WidgetAttribute.WA_StaticContents)
         self.image = QImage(1200, 800, QImage.Format.Format_ARGB32)
         self.image.fill(Qt.white)
@@ -377,7 +387,7 @@ class DrawingCanvas(QWidget):
         self.drag_last = QPoint()
         self.hit_tolerance = 8
         self.show_layout_frame = True
-        self.safe_margin = 16 
+        self.safe_margin = 16
         self.pen_color = QColor("black")
         self.pen_width = 3
         self.zoom = 1.0
@@ -409,6 +419,105 @@ class DrawingCanvas(QWidget):
     def set_width(self, w: int):
         self.pen_width = max(1, int(w))
         self.update()
+
+    def _bbox_union(self, a: QRect | None, b: QRect | None) -> QRect | None:
+        if a is None or a.isNull():
+            return b
+        if b is None or b.isNull():
+            return a
+        return a.united(b)
+    
+    def _clone_objects(self) -> list[dict]:
+        out = []
+        for o in self.objects:
+            c = {"type": o.get("type")}
+            if "rect" in o: c["rect"] = QRect(o["rect"])
+            if "p1" in o:   c["p1"]   = QPoint(o["p1"])
+            if "p2" in o:   c["p2"]   = QPoint(o["p2"])
+            if "pos" in o:  c["pos"]  = QPoint(o["pos"])
+            if "text" in o: c["text"] = str(o["text"])
+            if "font" in o: c["font"] = QFont(o["font"])
+            if "pen"  in o: c["pen"]  = QPen(o["pen"])
+            if "brush" in o:c["brush"]= QBrush(o["brush"])
+            out.append(c)
+        return out
+
+    def _push_undo_snapshot(self) -> None:
+        self._undo_stack.append((self.image.copy(), self._clone_objects()))
+        if len(self._undo_stack) > 50:
+            self._undo_stack.pop(0)
+        self._redo_stack.clear()
+
+    def undo(self) -> None:
+        if not self._undo_stack:
+            return
+        self._redo_stack.append((self.image.copy(), self._clone_objects()))
+        img, objs = self._undo_stack.pop()
+        self.image = img
+        self.objects = objs
+        self.update()
+
+    def redo(self) -> None:
+        if not self._redo_stack:
+            return
+        self._undo_stack.append((self.image.copy(), self._clone_objects()))
+        img, objs = self._redo_stack.pop()
+        self.image = img
+        self.objects = objs
+        self.update()
+
+    def _object_bbox(self, obj: dict) -> QRect:
+        t = obj.get("type")
+        if t in ("rect", "ellipse"):
+            return QRect(obj["rect"])
+        elif t in ("line", "arrow"):
+            x1, y1 = obj["p1"].x(), obj["p1"].y()
+            x2, y2 = obj["p2"].x(), obj["p2"].y()
+            r = QRect(min(x1, x2), min(y1, y2), abs(x1 - x2), abs(y1 - y2))
+            w = max(1, obj.get("pen", QPen()).width())
+            return r.adjusted(-w, -w, w, w)
+        elif t == "text":
+            fm = QFontMetrics(obj.get("font", self.text_font))
+            pos = obj.get("pos", QPoint())
+            return QRect(pos, QSize(fm.horizontalAdvance(obj.get("text","")), fm.height()))
+        return QRect()
+
+    def _objects_bbox(self) -> QRect | None:
+        box = None
+        for o in self.objects:
+            box = self._bbox_union(box, self._object_bbox(o))
+        return box
+
+    def _raster_bbox(self, img: QImage) -> QRect | None:
+        w, h = img.width(), img.height()
+        left, right, top, bottom = w, -1, h, -1
+        white = QColor(Qt.white).rgba()
+        for y in range(h):
+            for x in range(w):
+                if img.pixel(x, y) != white:
+                    if x < left: left = x
+                    if x > right: right = x
+                    if y < top: top = y
+                    if y > bottom: bottom = y
+        if right < left or bottom < top:
+            return None
+        return QRect(left, top, right - left + 1, bottom - top + 1)
+
+    def _content_bbox(self) -> QRect | None:
+        box = self._raster_bbox(self.image)
+        box = self._bbox_union(box, self._objects_bbox())
+        return box
+
+    def _clamp_delta_to_box(self, dx: int, dy: int, box: QRect | None) -> QPoint:
+        if box is None or box.isNull():
+            return QPoint(0, 0)
+        min_dx = -box.left()
+        max_dx = (self.image.width() - 1) - box.right()
+        min_dy = -box.top()
+        max_dy = (self.image.height() - 1) - box.bottom()
+        dx = max(min_dx, min(max_dx, dx))
+        dy = max(min_dy, min(max_dy, dy))
+        return QPoint(dx, dy)
 
     def set_tool(self, tool: str):
         self.tool = tool
@@ -460,7 +569,8 @@ class DrawingCanvas(QWidget):
 
     def _to_image_pos(self, p: QPoint, zoom: float | None = None) -> QPoint:
         z = float(self.zoom if zoom is None else zoom)
-        return QPoint(int(p.x() / z), int(p.y() / z))
+        pad = getattr(self, "viewport_pad", 0)
+        return QPoint(int((p.x() - pad) / z), int((p.y() - pad) / z))
 
     def wheelEvent(self, e):
         if e.modifiers() & Qt.ControlModifier:
@@ -628,8 +738,6 @@ class DrawingCanvas(QWidget):
                 or not w.isVisible()
             ):
                 return
-            from PySide6.QtWidgets import QInputDialog
-
             self._text_input_active = True
             try:
                 dlg = QInputDialog(w)
@@ -661,6 +769,7 @@ class DrawingCanvas(QWidget):
                                     Qt.RoundJoin,
                                 ),
                             }
+                            self._push_undo_snapshot()
                             self.objects.append(obj)
                             self.update()
             finally:
@@ -682,6 +791,7 @@ class DrawingCanvas(QWidget):
                 e.position().toPoint(), zoom=self._event_zoom
             )
             self.image_before_move = self.image.copy()
+            self._move_bbox = self._content_bbox()
             self.move_delta = QPoint()
             return
         self.is_drawing = True
@@ -691,6 +801,7 @@ class DrawingCanvas(QWidget):
         self.start_pos = self.last_pos
         self.preview_pos = self.last_pos
         if self.tool in ("pen", "eraser"):
+            self._push_undo_snapshot()
             painter = QPainter(self.image)
             pen = QPen(
                 Qt.white if self.tool == "eraser" else self.pen_color,
@@ -709,15 +820,21 @@ class DrawingCanvas(QWidget):
             return
         if self.tool == "move" and self.move_active:
             pos_img = self._to_image_pos(e.position().toPoint(), zoom=self._event_zoom)
-            self.move_delta = pos_img - self.move_start
+            raw = pos_img - self.move_start
+            self.move_delta = self._clamp_delta_to_box(raw.x(), raw.y(), self._move_bbox)
             self.update()
             return
         if self.tool == "select" and self.selected_index is not None:
             pos_img = self._to_image_pos(e.position().toPoint(), zoom=self._event_zoom)
-            delta = pos_img - self.drag_last
-            if not delta.isNull():
-                self._translate_object(self.objects[self.selected_index], delta)
-                self.drag_last = pos_img
+            raw = pos_img - self.drag_last
+            if not raw.isNull():
+                obj = self.objects[self.selected_index]
+                box = self._object_bbox(obj)
+                allowed = self._clamp_delta_to_box(raw.x(), raw.y(), box)
+                if not self._drag_changed:
+                    self._push_undo_snapshot()
+                    self._drag_changed = True
+                self._translate_object(obj, allowed)
                 self.update()
             return
         pos_img = self._to_image_pos(e.position().toPoint(), zoom=self._event_zoom)
@@ -752,25 +869,20 @@ class DrawingCanvas(QWidget):
             self.move_active = False
             dx, dy = self.move_delta.x(), self.move_delta.y()
             if dx or dy:
-                left_pad = max(0, -dx)
-                top_pad = max(0, -dy)
-                right_pad = max(0, dx)
-                bottom_pad = max(0, dy)
-                new_w = self.image.width() + left_pad + right_pad
-                new_h = self.image.height() + top_pad + bottom_pad
-                newimg = QImage(new_w, new_h, self.image.format())
+                self._push_undo_snapshot()
+                newimg = QImage(self.image.size(), self.image.format())
                 newimg.fill(Qt.white)
                 p = QPainter(newimg)
                 p.setRenderHint(QPainter.Antialiasing, True)
-                p.drawImage(left_pad + dx, top_pad + dy, self.image_before_move)
+                p.drawImage(dx, dy, self.image_before_move)
                 p.end()
                 self.image = newimg
-                total_shift = QPoint(left_pad + dx, top_pad + dy)
+                shift = QPoint(dx, dy)
                 for obj in self.objects:
-                    self._translate_object(obj, total_shift)
-                self.updateGeometry()
+                    self._translate_object(obj, shift)
             self.image_before_move = None
             self.move_delta = QPoint()
+            self._move_bbox = None
             self.update()
             if self._pending_zoom is not None:
                 z = self._pending_zoom
@@ -778,8 +890,7 @@ class DrawingCanvas(QWidget):
                 self.set_zoom(z)
             return
         if self.tool == "select":
-            if self.selected_index is not None:
-                self.objects.append(self.objects.pop(self.selected_index))
+            self._drag_changed = False
             self.selected_index = None
             self.update()
             if self._pending_zoom is not None:
@@ -788,6 +899,7 @@ class DrawingCanvas(QWidget):
                 self.set_zoom(z)
             return
         if self.tool in ("rect", "ellipse", "line", "arrow"):
+            self._push_undo_snapshot()
             painter = QPainter(self.image)
             pen = QPen(
                 self.pen_color,
@@ -823,6 +935,14 @@ class DrawingCanvas(QWidget):
     def paintEvent(self, e):
         painter = QPainter(self)
         painter.fillRect(self.rect(), Qt.white)
+        pad = getattr(self, "viewport_pad", 0)
+        canvas_w = int(self.image.width() * self.zoom)
+        canvas_h = int(self.image.height() * self.zoom)
+        painter.fillRect(
+            QRect(pad, pad, canvas_w, canvas_h),
+            getattr(self, "canvas_bg", QColor("#f3f4f6")),
+        )
+        painter.translate(pad / self.zoom, pad / self.zoom)
         painter.scale(self.zoom, self.zoom)
         if (
             self.tool == "move"
@@ -837,18 +957,6 @@ class DrawingCanvas(QWidget):
         else:
             painter.drawImage(0, 0, self.image)
             self._draw_objects(painter)
-        if self.show_layout_frame:
-            pen = QPen(QColor("#9aa0a6"))
-            pen.setStyle(Qt.DashLine)
-            pen.setCosmetic(True)
-            painter.setPen(pen)
-            painter.setBrush(Qt.NoBrush)
-            painter.drawRect(0, 0, self.image.width()-1, self.image.height()-1)
-            m = self.safe_margin
-            if m > 0 and 2*m < min(self.image.width(), self.image.height()):
-                painter.drawRect(m, m,
-                                self.image.width()-1-2*m,
-                                self.image.height()-1-2*m)
         if self.is_drawing and self.tool in ("rect", "ellipse", "line", "arrow"):
             pen = QPen(
                 self.pen_color, self.pen_width, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin
@@ -871,6 +979,30 @@ class DrawingCanvas(QWidget):
                 head = self._arrow_head(p1, p2, max(10, self.pen_width * 3))
                 painter.setBrush(QBrush(self.pen_color))
                 painter.drawPolygon(head)
+        painter.resetTransform()
+        outer = QRect(pad - 1, pad - 1, canvas_w + 2, canvas_h + 2)
+        inner = QRect(pad, pad, canvas_w, canvas_h)
+        if self.show_layout_frame:
+            dash = QPen(QColor("#9aa0a6"))
+            dash.setStyle(Qt.DashLine)
+            dash.setCosmetic(True)
+            painter.setPen(dash)
+            painter.setBrush(Qt.NoBrush)
+            painter.drawRect(QRect(pad, pad, canvas_w, canvas_h))
+            m = int(round(self.safe_margin * self.zoom))
+            if m > 0 and 2 * m < min(canvas_w, canvas_h):
+                painter.drawRect(
+                    QRect(pad + m, pad + m, canvas_w - 2 * m, canvas_h - 2 * m)
+                )
+        pen = QPen(getattr(self, "canvas_border_dark", QColor("#2f3338")), 1)
+        pen.setCosmetic(True)
+        painter.setPen(pen)
+        painter.setBrush(Qt.NoBrush)
+        painter.drawRect(outer)
+        pen2 = QPen(getattr(self, "canvas_border_light", QColor("#ffffff")), 1)
+        pen2.setCosmetic(True)
+        painter.setPen(pen2)
+        painter.drawRect(inner)
         painter.end()
 
     def sizeHint(self):
@@ -894,113 +1026,132 @@ class DrawingDialog(QDialog):
         self.setWindowTitle("Рисование")
         self.setModal(True)
         self.setWindowFlag(Qt.WindowStaysOnTopHint, True)
-
+        self.resize(1100, 700)
         self.canvas = DrawingCanvas(self)
         self.canvas.setMinimumSize(800, 500)
-
+        sc_undo = QShortcut(QKeySequence.Undo, self)
+        sc_undo.setContext(Qt.WidgetWithChildrenShortcut)
+        sc_undo.activated.connect(self.canvas.undo)
+        sc_redo = QShortcut(QKeySequence.Redo, self)
+        sc_redo.setContext(Qt.WidgetWithChildrenShortcut)
+        sc_redo.activated.connect(self.canvas.redo)
         tools_layout = QHBoxLayout()
+        tools_layout.setContentsMargins(6, 6, 6, 6)
+        tools_layout.setSpacing(8)
 
-        def tool_btn(text: str, tool: str) -> QPushButton:
-            b = QPushButton(text)
-            b.setCheckable(True)
-            b.clicked.connect(partial(self._select_tool, b, tool))
+        def _mk_tool(text: str, tool_name: str):
+            btn = QToolButton(self)
+            btn.setText(text)
+            btn.setCheckable(True)
+            btn.clicked.connect(lambda: self.canvas.set_tool(tool_name))
+            return btn
+        
+        self.btn_select = _mk_tool("☰ Выбор", "select")
+        self.btn_pencil = _mk_tool("✎ Карандаш", "pen")
+        self.btn_move   = _mk_tool("🖐 Перемещение", "move")
+        self.btn_rect   = _mk_tool("▭ Прямоугольник", "rect")
+        self.btn_ellipse= _mk_tool("◯ Эллипс", "ellipse")
+        self.btn_line   = _mk_tool("— Линия", "line")
+        self.btn_arrow  = _mk_tool("➤ Стрелка", "arrow")
+        self.btn_text   = _mk_tool("Т Текст", "text")
+        self.btn_eraser = _mk_tool("⌫ Ластик", "eraser")
+        grp = QButtonGroup(self)
+        grp.setExclusive(True)
+        for b in (self.btn_select, self.btn_pencil, self.btn_move, self.btn_rect, self.btn_ellipse,
+                self.btn_line, self.btn_arrow, self.btn_text, self.btn_eraser):
+            grp.addButton(b)
             tools_layout.addWidget(b)
-            return b
-
-        self.btn_select = tool_btn("⛶ Выбор", "select")
-        self.btn_pen = tool_btn("✏ Карандаш", "pen")
-        self.btn_move = tool_btn("✋ Перемещение", "move")
-        self.btn_rect = tool_btn("▭ Прямоугольник", "rect")
-        self.btn_ellipse = tool_btn("◯ Эллипс", "ellipse")
-        self.btn_line = tool_btn("— Линия", "line")
-        self.btn_arrow = tool_btn("➤ Стрелка", "arrow")
-        self.btn_text = tool_btn("T Текст", "text")
-        self.btn_eraser = tool_btn("⌫ Ластик", "eraser")
-        self.btn_pen.setChecked(True)
-        form = QFormLayout()
+        self.btn_select.setChecked(True)
+        self.canvas.set_tool("select")
+        tools_layout.addStretch(1)
+        opts = QFormLayout()
+        opts.setContentsMargins(6, 0, 6, 6)
+        opts.setSpacing(8)
         self.cb_frame = QCheckBox("Границы макета", self)
         self.cb_frame.setChecked(True)
         self.cb_frame.toggled.connect(self.canvas.set_show_frame)
-        form.addRow(self.cb_frame)
+        opts.addRow(self.cb_frame)
         self.spin_margin = QSpinBox(self)
-        self.spin_margin.setRange(0, 200)
-        self.spin_margin.setValue(16)
+        self.spin_margin.setRange(0, 400)
+        self.spin_margin.setValue(getattr(self.canvas, "safe_margin", 16))
         self.spin_margin.valueChanged.connect(self.canvas.set_safe_margin)
-        form.addRow("Отступ, px:", self.spin_margin)
-        zoom_widget = QWidget(self)
-        zw = QHBoxLayout(zoom_widget)
-        zw.setContentsMargins(0, 0, 0, 0)
-        self.zoom_slider = QSlider(Qt.Horizontal, self)
-        self.zoom_slider.setRange(25, 400)
-        self.zoom_slider.setPageStep(25)
-        self.zoom_slider.setValue(100)
-        btn_zoom_minus = QPushButton("–", self)
-        btn_zoom_plus = QPushButton("+", self)
-        btn_zoom_minus.setFixedWidth(24)
-        btn_zoom_plus.setFixedWidth(24)
-        self.zoom_label = QLabel("100%", self)
-        zw.addWidget(btn_zoom_minus)
-        zw.addWidget(self.zoom_slider, 1)
-        zw.addWidget(btn_zoom_plus)
-        zw.addWidget(self.zoom_label)
-        form.addRow("Масштаб:", zoom_widget)
-        self.zoom_slider.valueChanged.connect(
-            lambda v: (
-                self.canvas.set_zoom_percent(v),
-                self.zoom_label.setText(f"{v}%"),
-            )
-        )
-        btn_zoom_minus.clicked.connect(
-            lambda: self.zoom_slider.setValue(max(25, self.zoom_slider.value() - 10))
-        )
-        btn_zoom_plus.clicked.connect(
-            lambda: self.zoom_slider.setValue(min(400, self.zoom_slider.value() + 10))
-        )
-        if hasattr(self.canvas, "zoomChanged"):
+        opts.addRow("Отступ, px:", self.spin_margin)
+        zoom_row = QHBoxLayout()
+        self.btn_zoom_minus = QToolButton(self); self.btn_zoom_minus.setText("−")
+        self.btn_zoom_plus  = QToolButton(self); self.btn_zoom_plus.setText("+")
+        self.lbl_zoom = QLabel(self)
+        self.lbl_zoom.setMinimumWidth(48)
+        self.lbl_zoom.setAlignment(Qt.AlignCenter)
 
-            def _sync_from_canvas(z):
-                val = int(round(z * 100))
-                self.zoom_slider.blockSignals(True)
-                self.zoom_slider.setValue(val)
-                self.zoom_label.setText(f"{val}%")
-                self.zoom_slider.blockSignals(False)
+        def _update_zoom_label():
+            self.lbl_zoom.setText(f"{int(round(self.canvas.zoom * 100))}%")
 
-            self.canvas.zoomChanged.connect(_sync_from_canvas)
+        def _step_zoom(sign: int):
+            z = self.canvas.zoom
+            new_z = max(0.1, min(5.0, round((z + sign * 0.05), 2)))
+            self.canvas.set_zoom(new_z)
+            _update_zoom_label()
+
+        self.btn_zoom_minus.clicked.connect(lambda: _step_zoom(-1))
+        self.btn_zoom_plus.clicked.connect(lambda: _step_zoom(+1))
+        _update_zoom_label()
+        zoom_row.addWidget(self.btn_zoom_minus)
+        zoom_row.addWidget(self.lbl_zoom)
+        zoom_row.addWidget(self.btn_zoom_plus)
+        opts.addRow("Масштаб:", zoom_row)
         self.spin_width = QSpinBox(self)
-        self.spin_width.setRange(1, 64)
-        self.spin_width.setValue(3)
+        self.spin_width.setRange(1, 40)
+        self.spin_width.setValue(getattr(self.canvas, "pen_width", 3))
         self.spin_width.valueChanged.connect(self.canvas.set_width)
-        self.btn_color = QPushButton("Цвет линии…", self)
-        self.btn_color.clicked.connect(self._choose_pen_color)
+        opts.addRow("Толщина:", self.spin_width)
+
+        def _btn_color(title: str, getter, setter):
+            btn = QPushButton(title, self)
+            def pick():
+                c = QColorDialog.getColor(getter(), self, title)
+                if c.isValid():
+                    setter(c)
+                    btn.setStyleSheet(f"background: {c.name()};")
+            btn.clicked.connect(pick)
+            try:
+                btn.setStyleSheet(f"background: {getter().name()};")
+            except Exception:
+                pass
+            return btn
+
+        line_color_btn = _btn_color("Цвет линии…",
+                            lambda: getattr(self.canvas, "pen_color"),
+                            self.canvas.set_color)
+        fill_color_btn = _btn_color("Цвет заливки…",
+                                    lambda: getattr(self.canvas, "fill_color"),
+                                    self.canvas.set_fill_color)
+
         self.cb_fill = QCheckBox("Заливка", self)
-        self.btn_fill = QPushButton("Цвет заливки…", self)
-        self.cb_fill.toggled.connect(self.on_fill_toggled)
-        self.btn_fill.clicked.connect(self._choose_fill_color)
+        self.cb_fill.setChecked(getattr(self.canvas, "fill_enabled", False))
+        self.cb_fill.toggled.connect(self.canvas.set_fill_enabled)
+        opts.addRow(line_color_btn)
+        opts.addRow(fill_color_btn)
+        opts.addRow(self.cb_fill)
         self.spin_text = QSpinBox(self)
         self.spin_text.setRange(6, 96)
-        self.spin_text.setValue(18)
+        self.spin_text.setValue(getattr(self.canvas, "text_size", 18))
         self.spin_text.valueChanged.connect(self.canvas.set_text_size)
-        form.addRow("Толщина:", self.spin_width)
-        form.addRow("", self.btn_color)
-        form.addRow(self.cb_fill, self.btn_fill)
-        form.addRow("Размер текста:", self.spin_text)
-        bottom = QHBoxLayout()
-        self.btn_clear = QPushButton("Очистить")
+        opts.addRow("Размер текста:", self.spin_text)
+        self.btn_clear = QPushButton("Очистить", self)
         self.btn_clear.clicked.connect(self.canvas.clear)
-        bottom.addWidget(self.btn_clear)
-        bottom.addStretch(1)
-        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        opts.addRow(self.btn_clear)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel, self)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
-        bottom.addWidget(buttons)
-        layout = QVBoxLayout(self)
-        layout.addWidget(self.canvas, 1)
-        layout.addLayout(tools_layout)
-        layout.addLayout(form)
-        layout.addLayout(bottom)
-        self.cb_fill.setChecked(True)
-        self.on_fill_toggled(True)
-        self._select_tool(self.btn_pen, "pen")
+        root = QVBoxLayout(self)
+        tools_wrap = QWidget(self); tools_wrap.setLayout(tools_layout)
+        tools_wrap.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        root.addWidget(tools_wrap)
+        root.addWidget(self.canvas, 1)
+        opts_wrap = QWidget(self); opts_wrap.setLayout(opts)
+        root.addWidget(opts_wrap)
+        root.addWidget(buttons)
+        _update_zoom_label()
 
     def _select_tool(self, btn: QPushButton, tool: str):
         for b in (
@@ -1802,19 +1953,19 @@ class NotesApp(QMainWindow):
         self.search_field = QLineEdit()
         self.search_field.setPlaceholderText("Поиск по заметкам...")
         self.search_field.textChanged.connect(self.refresh_notes_list)
-        button_layout = QVBoxLayout()
-        button_layout.addWidget(self.new_note_button)
-        button_layout.addWidget(self.save_note_button)
-        button_layout.addWidget(self.delete_note_button)
-        button_layout.addWidget(self.undo_button)
-        button_layout.addWidget(self.redo_button)
         self.topmost_checkbox = QCheckBox("Поверх всех окон")
         self.topmost_checkbox.setChecked(always_on_top)
         self.topmost_checkbox.toggled.connect(self._toggle_always_on_top)
-        button_layout.addWidget(self.topmost_checkbox)
-        button_layout.addStretch()
-        button_widget = QWidget()
-        button_widget.setLayout(button_layout)
+        btns = QVBoxLayout()
+        btns.addWidget(self.new_note_button)
+        btns.addWidget(self.save_note_button)
+        btns.addWidget(self.delete_note_button)
+        btns.addWidget(self.undo_button)
+        btns.addWidget(self.redo_button)
+        btns.addWidget(self.topmost_checkbox)
+        btns.addStretch()
+        buttons_widget = QWidget()
+        buttons_widget.setLayout(btns)
         self.notes_list = QListWidget()
         self.notes_list.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.notes_list.setDragEnabled(True)
@@ -1831,16 +1982,15 @@ class NotesApp(QMainWindow):
         self.history_list.itemClicked.connect(self.restore_version_from_history)
         self.delete_history_button = QPushButton("Удалить выбранные версии")
         self.delete_history_button.clicked.connect(self.delete_selected_history_entries)
-        self.history_list.setFocusPolicy(Qt.StrongFocus)
         self._hist_delete_sc = QShortcut(QKeySequence.Delete, self.history_list)
         self._hist_delete_sc.setContext(Qt.WidgetWithChildrenShortcut)
         self._hist_delete_sc.activated.connect(self.delete_selected_history_entries)
-        history_layout = QVBoxLayout()
-        history_layout.addWidget(self.history_label)
-        history_layout.addWidget(self.history_list)
-        history_layout.addWidget(self.delete_history_button)
+        hist_layout = QVBoxLayout()
+        hist_layout.addWidget(self.history_label)
+        hist_layout.addWidget(self.history_list)
+        hist_layout.addWidget(self.delete_history_button)
         self.history_widget = QWidget()
-        self.history_widget.setLayout(history_layout)
+        self.history_widget.setLayout(hist_layout)
         self.history_widget.setFixedWidth(200)
         self.text_edit = CustomTextEdit(
             parent=self, paste_image_callback=self.insert_image_from_clipboard
@@ -1865,11 +2015,11 @@ class NotesApp(QMainWindow):
         self.attachments_panel = QWidget()
         self.attachments_layout = QHBoxLayout(self.attachments_panel)
         self.attachments_layout.setAlignment(Qt.AlignLeft)
+        self.attachments_layout.setContentsMargins(0, 0, 0, 0)
         self.attachments_scroll = QScrollArea()
         self.attachments_scroll.setWidgetResizable(True)
         self.attachments_scroll.setWidget(self.attachments_panel)
         self.attachments_scroll.setVisible(False)
-        self.attachments_layout.setContentsMargins(0, 0, 0, 0)
         self.attachments_scroll.setSizePolicy(
             QSizePolicy.Expanding, QSizePolicy.Minimum
         )
@@ -1899,7 +2049,7 @@ class NotesApp(QMainWindow):
         self.addDockWidget(Qt.LeftDockWidgetArea, self.dock_history)
         self.dock_buttons = QDockWidget("Управление", self)
         self.dock_buttons.setObjectName("dock_buttons")
-        self.dock_buttons.setWidget(button_widget)
+        self.dock_buttons.setWidget(buttons_widget)
         self.dock_buttons.setAllowedAreas(
             Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea
         )
@@ -1931,14 +2081,28 @@ class NotesApp(QMainWindow):
         _pm_row_layout.addWidget(self.password_manager_field, 1)
         self.password_manager_copy_btn = QPushButton("Копировать")
         self.password_manager_copy_btn.setFixedHeight(24)
+        self.password_manager_copy_btn.setEnabled(False)
         self.password_manager_copy_btn.clicked.connect(
             self.copy_password_manager_to_clipboard
         )
-        self.password_manager_copy_btn.setEnabled(False)
         self.password_manager_field.textChanged.connect(
             lambda t: self.password_manager_copy_btn.setEnabled(bool(t))
         )
         _pm_row_layout.addWidget(self.password_manager_copy_btn)
+        pm_up = QToolButton()
+        pm_up.setText("▲")
+        pm_up.setFixedSize(24, 24)
+        pm_dn = QToolButton()
+        pm_dn.setText("▼")
+        pm_dn.setFixedSize(24, 24)
+        pm_up.clicked.connect(
+            lambda _, w=self.password_manager_row: self._move_pinned(w, -1)
+        )
+        pm_dn.clicked.connect(
+            lambda _, w=self.password_manager_row: self._move_pinned(w, +1)
+        )
+        _pm_row_layout.addWidget(pm_up)
+        _pm_row_layout.addWidget(pm_dn)
         self.rdp_1c8_row = QWidget()
         _rdp_row_layout = QHBoxLayout(self.rdp_1c8_row)
         _rdp_row_layout.setContentsMargins(0, 0, 0, 0)
@@ -1955,8 +2119,8 @@ class NotesApp(QMainWindow):
         _rdp_row_layout.addWidget(self.rdp_1c8_field, 1)
         self.rdp_1c8_copy_btn = QPushButton("Копировать")
         self.rdp_1c8_copy_btn.setFixedHeight(24)
-        self.rdp_1c8_copy_btn.clicked.connect(self.copy_rdp_1c8_to_clipboard)
         self.rdp_1c8_copy_btn.setEnabled(False)
+        self.rdp_1c8_copy_btn.clicked.connect(self.copy_rdp_1c8_to_clipboard)
         self.rdp_1c8_field.textChanged.connect(
             lambda t: self.rdp_1c8_copy_btn.setEnabled(bool(t))
         )
@@ -1965,18 +2129,35 @@ class NotesApp(QMainWindow):
         self.rdp_1c8_delete_btn.clicked.connect(self.delete_rdp_1c8_field)
         _rdp_row_layout.addWidget(self.rdp_1c8_copy_btn)
         _rdp_row_layout.addWidget(self.rdp_1c8_delete_btn)
-        self.custom_fields_container = QWidget()
-        self.custom_fields_layout = QVBoxLayout(self.custom_fields_container)
-        self.custom_fields_layout.setContentsMargins(0, 0, 0, 0)
-        self.custom_fields_widgets: list[dict] = []
+        rdp_up = QToolButton()
+        rdp_up.setText("▲")
+        rdp_up.setFixedSize(24, 24)
+        rdp_dn = QToolButton()
+        rdp_dn.setText("▼")
+        rdp_dn.setFixedSize(24, 24)
+        rdp_up.clicked.connect(lambda _, w=self.rdp_1c8_row: self._move_pinned(w, -1))
+        rdp_dn.clicked.connect(lambda _, w=self.rdp_1c8_row: self._move_pinned(w, +1))
+        _rdp_row_layout.addWidget(rdp_up)
+        _rdp_row_layout.addWidget(rdp_dn)
+        self.pinned_container = QWidget()
+        self.pinned_layout = QVBoxLayout(self.pinned_container)
+        self.pinned_layout.setContentsMargins(0, 0, 0, 0)
+        self.pinned_layout.setSpacing(6)
+        self.pinned_layout.addWidget(self.password_manager_row)
+        self._add_field_panel = QWidget()
+        _add_l = QHBoxLayout(self._add_field_panel)
+        _add_l.setContentsMargins(0, 0, 0, 0)
         self.add_field_btn = QPushButton("Добавить поле")
         self.add_field_btn.setFixedHeight(24)
         self.add_field_btn.setEnabled(False)
         self.add_field_btn.clicked.connect(self.add_custom_field)
-        self.custom_fields_layout.addWidget(self.add_field_btn)
-        editor_layout_combined.insertWidget(0, self.password_manager_row)
-        editor_layout_combined.insertWidget(1, self.rdp_1c8_row)
-        editor_layout_combined.insertWidget(2, self.custom_fields_container)
+        _add_l.addStretch(1)
+        _add_l.addWidget(self.add_field_btn)
+        self.pinned_layout.addWidget(self._add_field_panel)
+        self.custom_fields_container = self.pinned_container
+        self.custom_fields_layout = self.pinned_layout
+        self.custom_fields_widgets: list[dict] = []
+        editor_layout_combined.insertWidget(0, self.pinned_container)
         self.dock_toolbar = QDockWidget("Панель инструментов", self)
         self.dock_toolbar.setObjectName("dock_toolbar")
         self.dock_toolbar.setWidget(self.toolbar_scroll)
@@ -1984,14 +2165,13 @@ class NotesApp(QMainWindow):
             Qt.TopDockWidgetArea | Qt.BottomDockWidgetArea
         )
         self.addDockWidget(Qt.TopDockWidgetArea, self.dock_toolbar)
-        docks = [
+        for dock in (
             self.dock_notes_list,
             self.dock_history,
             self.dock_buttons,
             self.dock_editor,
             self.dock_toolbar,
-        ]
-        for dock in docks:
+        ):
             dock.setContextMenuPolicy(Qt.CustomContextMenu)
             dock.customContextMenuRequested.connect(
                 lambda pos, d=dock: self.show_dock_context_menu(pos, d)
@@ -2009,13 +2189,12 @@ class NotesApp(QMainWindow):
         self.action_toggle_rdp.setCheckable(True)
         self.action_toggle_rdp.toggled.connect(self.on_toggle_rdp_visible)
         self.visibility_toolbar.addAction(self.action_toggle_pm)
-        self.all_tags = set()
+        self.visibility_toolbar.addAction(self.action_toggle_rdp)
+        self.add_menu_bar()
         self.new_note_button.clicked.connect(self.new_note)
         self.save_note_button.clicked.connect(self.save_note)
         self.delete_note_button.clicked.connect(self.delete_note)
         self.notes_list.itemClicked.connect(self.load_note)
-        self.text_edit.setReadOnly(True)
-        self.add_menu_bar()
         self.current_note = None
         self._update_editor_visibility()
 
@@ -2057,6 +2236,13 @@ class NotesApp(QMainWindow):
                 )
             self.save_note_quiet(force=True)
 
+    def _ensure_rdp_row_in_layout(self) -> None:
+        if self.pinned_layout.indexOf(self.rdp_1c8_row) == -1:
+            insert_at = self.pinned_layout.indexOf(self._add_field_panel)
+            if insert_at == -1:
+                insert_at = self.pinned_layout.count()
+            self.pinned_layout.insertWidget(insert_at, self.rdp_1c8_row)
+
     def delete_rdp_1c8_field(self) -> None:
         self.rdp_1c8_field.clear()
         if getattr(self, "current_note", None):
@@ -2066,6 +2252,8 @@ class NotesApp(QMainWindow):
             self.save_note_to_file(self.current_note)
         self.rdp_1c8_row.setVisible(False)
         if hasattr(self, "action_toggle_rdp"):
+            self.action_toggle_rdp.setEnabled(False)
+            self.action_toggle_rdp.setVisible(False)
             self.action_toggle_rdp.blockSignals(True)
             self.action_toggle_rdp.setChecked(False)
             self._update_eye_action(
@@ -2089,6 +2277,16 @@ class NotesApp(QMainWindow):
         value = data.get("value", "") if data else ""
         value_edit.setText(value)
         value_edit.setPlaceholderText(label)
+        remove_btn = QPushButton("✖")
+        up_btn = QToolButton()
+        up_btn.setText("▲")
+        up_btn.setFixedSize(24, 24)
+        up_btn.clicked.connect(lambda _, w=row: self._move_pinned(w, -1))
+        down_btn = QToolButton()
+        down_btn.setText("▼")
+        down_btn.setFixedSize(24, 24)
+        down_btn.clicked.connect(lambda _, w=row: self._move_pinned(w, +1))
+        remove_btn.setFixedSize(24, 24)
         copy_btn = QPushButton("Копировать")
         copy_btn.setFixedHeight(24)
         copy_btn.setEnabled(bool(value))
@@ -2104,15 +2302,14 @@ class NotesApp(QMainWindow):
         value_edit.textChanged.connect(
             lambda _: self.debounce_timer.start(self.debounce_ms)
         )
-        remove_btn = QPushButton("✖")
-        remove_btn.setFixedSize(24, 24)
+        layout.addWidget(up_btn)
+        layout.addWidget(down_btn)
         layout.addWidget(label_edit)
         layout.addWidget(value_edit, 1)
         layout.addWidget(copy_btn)
         layout.addWidget(remove_btn)
-        self.custom_fields_layout.insertWidget(
-            self.custom_fields_layout.count() - 1, row
-        )
+        insert_at = self.pinned_layout.indexOf(self._add_field_panel)
+        self.pinned_layout.insertWidget(insert_at, row)
         action = QAction(f"🙈 {label}", self)
         action.setCheckable(True)
         widget = {
@@ -2144,12 +2341,52 @@ class NotesApp(QMainWindow):
         self._update_eye_action(action, visible, label)
         self.update_current_note_custom_fields()
 
+    def _pinned_widgets(self) -> list[QWidget]:
+        out = []
+        if not hasattr(self, "pinned_layout"):
+            return out
+        for i in range(self.pinned_layout.count()):
+            w = self.pinned_layout.itemAt(i).widget()
+            if not w or w is self._add_field_panel:
+                continue
+            out.append(w)
+        return out
+
+    def _sync_custom_widgets_order_from_layout(self) -> None:
+        if not hasattr(self, "custom_fields_widgets"):
+            return
+        by_row = {w["row"]: w for w in self.custom_fields_widgets}
+        new_list = []
+        for w in self._pinned_widgets():
+            if w in by_row:
+                new_list.append(by_row[w])
+        self.custom_fields_widgets = new_list
+
     def remove_custom_field(self, widget: dict) -> None:
         self.visibility_toolbar.removeAction(widget["action"])
         widget["row"].setParent(None)
         widget["action"].deleteLater()
         widget["row"].deleteLater()
         self.custom_fields_widgets.remove(widget)
+        self.update_current_note_custom_fields()
+        if self.current_note:
+            self.save_note_to_file(self.current_note)
+
+    def _move_pinned(self, widget: QWidget, delta: int) -> None:
+        if not hasattr(self, "pinned_layout"):
+            return
+        cur = self.pinned_layout.indexOf(widget)
+        if cur < 0:
+            return
+        last_index = self.pinned_layout.indexOf(self._add_field_panel) - 1
+        if last_index < 0:
+            last_index = self.pinned_layout.count() - 1  # fallback
+        target = max(0, min(cur + int(delta), last_index))
+        if target == cur:
+            return
+        self.pinned_layout.removeWidget(widget)
+        self.pinned_layout.insertWidget(target, widget)
+        self._sync_custom_widgets_order_from_layout()
         self.update_current_note_custom_fields()
         if self.current_note:
             self.save_note_to_file(self.current_note)
@@ -2223,6 +2460,8 @@ class NotesApp(QMainWindow):
                 self.rdp_1c8_row.isVisible(),
                 text,
             )
+            self.action_toggle_rdp.setEnabled(False)
+            self.action_toggle_rdp.setVisible(False)
 
     def add_toolbar(self) -> None:
         self.init_toolbar()
@@ -2250,6 +2489,8 @@ class NotesApp(QMainWindow):
         self.save_note_to_file(self.current_note)
 
     def on_toggle_rdp_visible(self, checked: bool) -> None:
+        if checked:
+            self._ensure_rdp_row_in_layout()
         if not self.current_note:
             return
         if getattr(self.current_note, "rdp_1c8_removed", False):
@@ -2257,6 +2498,8 @@ class NotesApp(QMainWindow):
                 self.action_toggle_rdp.blockSignals(True)
                 self.action_toggle_rdp.setChecked(False)
                 self.action_toggle_rdp.blockSignals(False)
+                self.action_toggle_rdp.setEnabled(False)
+                self.action_toggle_rdp.setVisible(False)
             return
         self.current_note.rdp_1c8_visible = bool(checked)
         self.rdp_1c8_row.setVisible(checked)
@@ -2822,7 +3065,7 @@ class NotesApp(QMainWindow):
             self.text_edit.setReadOnly(False)
             note.password_manager_visible = False
             note.rdp_1c8_visible = False
-            note.rdp_1c8_removed = False
+            note.rdp_1c8_removed = True
             self.password_manager_field.clear()
             self.rdp_1c8_field.clear()
             self.password_manager_row.setVisible(False)
@@ -2843,6 +3086,8 @@ class NotesApp(QMainWindow):
                     self.action_toggle_rdp, False, self.rdp_1c8_label.text()
                 )
                 self.action_toggle_rdp.blockSignals(False)
+                self.action_toggle_rdp.setEnabled(False)
+                self.action_toggle_rdp.setVisible(False)
 
     def save_note(self) -> None:
         if self.current_note:
@@ -3390,6 +3635,9 @@ class NotesApp(QMainWindow):
         pm_vis = bool(getattr(note, "password_manager_visible", False))
         rdp_vis = bool(getattr(note, "rdp_1c8_visible", False))
         rdp_removed = bool(getattr(note, "rdp_1c8_removed", False))
+        if rdp_vis and not rdp_removed:
+            self._ensure_rdp_row_in_layout()
+        self.rdp_1c8_row.setVisible(False if rdp_removed else rdp_vis)
         self.password_manager_row.setVisible(pm_vis)
         self.rdp_1c8_row.setVisible(False if rdp_removed else rdp_vis)
         if hasattr(self, "action_toggle_pm"):
@@ -3404,6 +3652,8 @@ class NotesApp(QMainWindow):
             self.action_toggle_rdp.setVisible(not rdp_removed)
             self.action_toggle_rdp.setEnabled(not rdp_removed)
             self.action_toggle_rdp.setChecked(rdp_vis)
+            self.action_toggle_rdp.setEnabled(False)
+            self.action_toggle_rdp.setVisible(False)
             self._update_eye_action(
                 self.action_toggle_rdp, rdp_vis, self.rdp_1c8_label.text()
             )
@@ -3835,13 +4085,11 @@ class NotesApp(QMainWindow):
 
     def _update_editor_visibility(self):
         has = self.current_note is not None
-
         self.dock_editor.setVisible(has)
         self.dock_toolbar.setVisible(has)
         self.visibility_toolbar.setVisible(has)
         self.text_edit.setVisible(has)
         self.text_edit.setReadOnly(not has)
-
         self.tags_label.setVisible(has)
         if not has:
             self.tags_label.clear()
@@ -3858,15 +4106,14 @@ class NotesApp(QMainWindow):
                 w["row"].setVisible(False)
                 w["action"].setEnabled(False)
             return
-
         note = self.current_note
         pm_vis = bool(getattr(note, "password_manager_visible", False))
         rdp_vis = bool(getattr(note, "rdp_1c8_visible", False))
         rdp_removed = bool(getattr(note, "rdp_1c8_removed", False))
-
-        self.password_manager_row.setVisible(pm_vis)
+        if rdp_vis and not rdp_removed:
+            self._ensure_rdp_row_in_layout()
         self.rdp_1c8_row.setVisible(False if rdp_removed else rdp_vis)
-
+        self.password_manager_row.setVisible(pm_vis)
         if hasattr(self, "action_toggle_pm"):
             self.action_toggle_pm.setEnabled(True)
             self.action_toggle_pm.blockSignals(True)
@@ -3875,10 +4122,11 @@ class NotesApp(QMainWindow):
                 self.action_toggle_pm, pm_vis, self.password_manager_label.text()
             )
             self.action_toggle_pm.blockSignals(False)
-
         if hasattr(self, "action_toggle_rdp"):
             self.action_toggle_rdp.setVisible(not rdp_removed)
             self.action_toggle_rdp.setEnabled(not rdp_removed)
+            self.action_toggle_rdp.setEnabled(False)
+            self.action_toggle_rdp.setVisible(False)
             self.action_toggle_rdp.blockSignals(True)
             self.action_toggle_rdp.setChecked(False if rdp_removed else rdp_vis)
             self._update_eye_action(
@@ -3887,7 +4135,6 @@ class NotesApp(QMainWindow):
                 self.rdp_1c8_label.text(),
             )
             self.action_toggle_rdp.blockSignals(False)
-
         for w in self.custom_fields_widgets:
             w["action"].setEnabled(True)
             vis = bool(w["action"].isChecked())
@@ -4231,8 +4478,6 @@ class NotesApp(QMainWindow):
         dlg = QDialog(self)
         dlg.setWindowTitle("README.md")
         dlg.resize(900, 700)
-        from PySide6.QtWidgets import QVBoxLayout, QTextBrowser, QDialogButtonBox
-
         v = QVBoxLayout(dlg)
         view = QTextBrowser(dlg)
         view.setOpenLinks(False)
@@ -7761,11 +8006,13 @@ class PasswordDialog(BasePasswordDialog):
             if clear_after_ms:
                 self.master.after(
                     clear_after_ms,
-                    lambda: self.master.winfo_exists() and self.master.clipboard_clear()
+                    lambda: self.master.winfo_exists()
+                    and self.master.clipboard_clear(),
                 )
             return True
         except Exception:
             import pyperclip
+
             pyperclip.copy(text)
             if clear_after_ms:
                 self.master.after(clear_after_ms, lambda: pyperclip.copy(""))
@@ -8124,7 +8371,7 @@ class PasswordGeneratorApp:
         file_path = tk_filedialog.asksaveasfilename(
             title="Сохранить как...",
             defaultextension=".txt",
-            filetypes=[("Text files", "*.txt"), ("All files", "*.*")]
+            filetypes=[("Text files", "*.txt"), ("All files", "*.*")],
         )
         if not file_path:
             return
@@ -8663,7 +8910,7 @@ class PasswordGeneratorApp:
     def _import_passwords_txt(self):
         file_path = tk_filedialog.askopenfilename(
             title="Выберите файл для импорта",
-            filetypes=[("Text files", "*.txt"), ("All files", "*.*")]
+            filetypes=[("Text files", "*.txt"), ("All files", "*.*")],
         )
         if not file_path:
             return
@@ -8966,6 +9213,7 @@ def run_password_manager():
     finally:
         messagebox = _old_messagebox
 
+
 def run_notes_app():
     app = QApplication(sys.argv)
     window = NotesApp()
@@ -9058,4 +9306,4 @@ if __name__ == "__main__":
     window.show()
     sys.exit(app.exec())
 
-    # UPD 02.09.2025|12:25
+    # UPD 02.09.2025|15:25
