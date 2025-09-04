@@ -33,6 +33,7 @@ from PySide6.QtCore import (
     QMimeData,
     QTimer,
     QUrl,
+    QDate,
     QSettings,
     QSize,
     QEvent,
@@ -426,19 +427,27 @@ class DrawingCanvas(QWidget):
         if b is None or b.isNull():
             return a
         return a.united(b)
-    
+
     def _clone_objects(self) -> list[dict]:
         out = []
         for o in self.objects:
             c = {"type": o.get("type")}
-            if "rect" in o: c["rect"] = QRect(o["rect"])
-            if "p1" in o:   c["p1"]   = QPoint(o["p1"])
-            if "p2" in o:   c["p2"]   = QPoint(o["p2"])
-            if "pos" in o:  c["pos"]  = QPoint(o["pos"])
-            if "text" in o: c["text"] = str(o["text"])
-            if "font" in o: c["font"] = QFont(o["font"])
-            if "pen"  in o: c["pen"]  = QPen(o["pen"])
-            if "brush" in o:c["brush"]= QBrush(o["brush"])
+            if "rect" in o:
+                c["rect"] = QRect(o["rect"])
+            if "p1" in o:
+                c["p1"] = QPoint(o["p1"])
+            if "p2" in o:
+                c["p2"] = QPoint(o["p2"])
+            if "pos" in o:
+                c["pos"] = QPoint(o["pos"])
+            if "text" in o:
+                c["text"] = str(o["text"])
+            if "font" in o:
+                c["font"] = QFont(o["font"])
+            if "pen" in o:
+                c["pen"] = QPen(o["pen"])
+            if "brush" in o:
+                c["brush"] = QBrush(o["brush"])
             out.append(c)
         return out
 
@@ -479,7 +488,9 @@ class DrawingCanvas(QWidget):
         elif t == "text":
             fm = QFontMetrics(obj.get("font", self.text_font))
             pos = obj.get("pos", QPoint())
-            return QRect(pos, QSize(fm.horizontalAdvance(obj.get("text","")), fm.height()))
+            return QRect(
+                pos, QSize(fm.horizontalAdvance(obj.get("text", "")), fm.height())
+            )
         return QRect()
 
     def _objects_bbox(self) -> QRect | None:
@@ -495,10 +506,14 @@ class DrawingCanvas(QWidget):
         for y in range(h):
             for x in range(w):
                 if img.pixel(x, y) != white:
-                    if x < left: left = x
-                    if x > right: right = x
-                    if y < top: top = y
-                    if y > bottom: bottom = y
+                    if x < left:
+                        left = x
+                    if x > right:
+                        right = x
+                    if y < top:
+                        top = y
+                    if y > bottom:
+                        bottom = y
         if right < left or bottom < top:
             return None
         return QRect(left, top, right - left + 1, bottom - top + 1)
@@ -821,7 +836,9 @@ class DrawingCanvas(QWidget):
         if self.tool == "move" and self.move_active:
             pos_img = self._to_image_pos(e.position().toPoint(), zoom=self._event_zoom)
             raw = pos_img - self.move_start
-            self.move_delta = self._clamp_delta_to_box(raw.x(), raw.y(), self._move_bbox)
+            self.move_delta = self._clamp_delta_to_box(
+                raw.x(), raw.y(), self._move_bbox
+            )
             self.update()
             return
         if self.tool == "select" and self.selected_index is not None:
@@ -1045,20 +1062,29 @@ class DrawingDialog(QDialog):
             btn.setCheckable(True)
             btn.clicked.connect(lambda: self.canvas.set_tool(tool_name))
             return btn
-        
+
         self.btn_select = _mk_tool("☰ Выбор", "select")
         self.btn_pencil = _mk_tool("✎ Карандаш", "pen")
-        self.btn_move   = _mk_tool("🖐 Перемещение", "move")
-        self.btn_rect   = _mk_tool("▭ Прямоугольник", "rect")
-        self.btn_ellipse= _mk_tool("◯ Эллипс", "ellipse")
-        self.btn_line   = _mk_tool("— Линия", "line")
-        self.btn_arrow  = _mk_tool("➤ Стрелка", "arrow")
-        self.btn_text   = _mk_tool("Т Текст", "text")
+        self.btn_move = _mk_tool("🖐 Перемещение", "move")
+        self.btn_rect = _mk_tool("▭ Прямоугольник", "rect")
+        self.btn_ellipse = _mk_tool("◯ Эллипс", "ellipse")
+        self.btn_line = _mk_tool("— Линия", "line")
+        self.btn_arrow = _mk_tool("➤ Стрелка", "arrow")
+        self.btn_text = _mk_tool("Т Текст", "text")
         self.btn_eraser = _mk_tool("⌫ Ластик", "eraser")
         grp = QButtonGroup(self)
         grp.setExclusive(True)
-        for b in (self.btn_select, self.btn_pencil, self.btn_move, self.btn_rect, self.btn_ellipse,
-                self.btn_line, self.btn_arrow, self.btn_text, self.btn_eraser):
+        for b in (
+            self.btn_select,
+            self.btn_pencil,
+            self.btn_move,
+            self.btn_rect,
+            self.btn_ellipse,
+            self.btn_line,
+            self.btn_arrow,
+            self.btn_text,
+            self.btn_eraser,
+        ):
             grp.addButton(b)
             tools_layout.addWidget(b)
         self.btn_select.setChecked(True)
@@ -1077,8 +1103,10 @@ class DrawingDialog(QDialog):
         self.spin_margin.valueChanged.connect(self.canvas.set_safe_margin)
         opts.addRow("Отступ, px:", self.spin_margin)
         zoom_row = QHBoxLayout()
-        self.btn_zoom_minus = QToolButton(self); self.btn_zoom_minus.setText("−")
-        self.btn_zoom_plus  = QToolButton(self); self.btn_zoom_plus.setText("+")
+        self.btn_zoom_minus = QToolButton(self)
+        self.btn_zoom_minus.setText("−")
+        self.btn_zoom_plus = QToolButton(self)
+        self.btn_zoom_plus.setText("+")
         self.lbl_zoom = QLabel(self)
         self.lbl_zoom.setMinimumWidth(48)
         self.lbl_zoom.setAlignment(Qt.AlignCenter)
@@ -1107,11 +1135,13 @@ class DrawingDialog(QDialog):
 
         def _btn_color(title: str, getter, setter):
             btn = QPushButton(title, self)
+
             def pick():
                 c = QColorDialog.getColor(getter(), self, title)
                 if c.isValid():
                     setter(c)
                     btn.setStyleSheet(f"background: {c.name()};")
+
             btn.clicked.connect(pick)
             try:
                 btn.setStyleSheet(f"background: {getter().name()};")
@@ -1119,12 +1149,16 @@ class DrawingDialog(QDialog):
                 pass
             return btn
 
-        line_color_btn = _btn_color("Цвет линии…",
-                            lambda: getattr(self.canvas, "pen_color"),
-                            self.canvas.set_color)
-        fill_color_btn = _btn_color("Цвет заливки…",
-                                    lambda: getattr(self.canvas, "fill_color"),
-                                    self.canvas.set_fill_color)
+        line_color_btn = _btn_color(
+            "Цвет линии…",
+            lambda: getattr(self.canvas, "pen_color"),
+            self.canvas.set_color,
+        )
+        fill_color_btn = _btn_color(
+            "Цвет заливки…",
+            lambda: getattr(self.canvas, "fill_color"),
+            self.canvas.set_fill_color,
+        )
 
         self.cb_fill = QCheckBox("Заливка", self)
         self.cb_fill.setChecked(getattr(self.canvas, "fill_enabled", False))
@@ -1144,11 +1178,13 @@ class DrawingDialog(QDialog):
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         root = QVBoxLayout(self)
-        tools_wrap = QWidget(self); tools_wrap.setLayout(tools_layout)
+        tools_wrap = QWidget(self)
+        tools_wrap.setLayout(tools_layout)
         tools_wrap.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         root.addWidget(tools_wrap)
         root.addWidget(self.canvas, 1)
-        opts_wrap = QWidget(self); opts_wrap.setLayout(opts)
+        opts_wrap = QWidget(self)
+        opts_wrap.setLayout(opts)
         root.addWidget(opts_wrap)
         root.addWidget(buttons)
         _update_zoom_label()
@@ -1190,6 +1226,14 @@ class DrawingDialog(QDialog):
 
     def get_image(self) -> QImage:
         return self.canvas.get_image()
+
+    def showEvent(self, e):
+        super().showEvent(e)
+        p = self.parent()
+        if p and isinstance(p, QWidget):
+            fg = self.frameGeometry()
+            fg.moveCenter(p.frameGeometry().center())
+            self.move(fg.topLeft())
 
 
 class AudioRecorderThread(QThread):
@@ -2652,6 +2696,19 @@ class NotesApp(QMainWindow):
 
         QTimer.singleShot(800, _restore)
 
+    def _center_on_parent(self, dlg: QDialog) -> None:
+        try:
+            parent = dlg.parent() if isinstance(dlg.parent(), QWidget) else self
+            if not isinstance(parent, QWidget):
+                return
+            dlg.adjustSize()
+            rect = QStyle.alignedRect(
+                Qt.LeftToRight, Qt.AlignCenter, dlg.sizeHint(), parent.frameGeometry()
+            )
+            dlg.setGeometry(rect)
+        except Exception:
+            pass
+
     def record_state_for_undo(self) -> None:
         note = self.current_note
         if not note:
@@ -3199,26 +3256,51 @@ class NotesApp(QMainWindow):
                 "description": "Дневниковая запись",
                 "content_html": "<b>Дневник</b><br>Дата: <br>Сегодня:<br><br>Настроение:<br>События:<br>",
             },
+            {
+                "name": "UPD блок",
+                "category": "Работа",
+                "description": "Блок обновления с датой, базой, пользователем, результатом и деталями",
+                "content_html": "<b>UPD [{date}]</b><br><b>Base:</b> <br><b>User:</b> <br><b>Result:</b> <br><b>Details:</b> <br><br>",
+            },
         ]
-
+        correct_range5 = {
+            "name": "Интервал 5 дней",
+            "category": "Работа",
+            "description": "Таблица 1×1 с диапазоном дат (N=5 дней, редактируемая начальная дата)",
+            "content_html": (
+                '<table style="border-collapse:collapse;">'
+                '<tr><td style="border:1px solid #bdbdbd; padding:4px 8px; border-radius:4px;">'
+                '<span style="font-weight:600;">{date}-{date+4}</span>'
+                "</td></tr></table><br>"
+            ),
+        }
         if not os.path.exists(templates_path):
+            templates = base_templates + [correct_range5]
             with open(templates_path, "w", encoding="utf-8") as f:
-                json.dump(base_templates, f, ensure_ascii=False, indent=4)
+                json.dump(templates, f, ensure_ascii=False, indent=4)
+            return templates
+
         try:
             with open(templates_path, "r", encoding="utf-8") as f:
                 templates = json.load(f)
+                if not isinstance(templates, list):
+                    templates = []
         except Exception:
-            templates = base_templates
-        upd_tpl = {
-            "name": "UPD блок",
-            "category": "Работа",
-            "description": "Блок обновления с датой, базой, пользователем, результатом и деталями",
-            "content_html": "<b>UPD [{date}]</b><br><b>Base:</b> <br><b>User:</b> <br><b>Result:</b> <br><b>Details:</b> <br><br>",
-        }
-        if not any(t.get("name") == "UPD блок" for t in templates):
-            templates.append(upd_tpl)
-            with open(templates_path, "w", encoding="utf-8") as f:
-                json.dump(templates, f, ensure_ascii=False, indent=4)
+            templates = []
+        existing_by_name = {t.get("name"): t for t in templates}
+        for t in base_templates:
+            if t["name"] not in existing_by_name:
+                templates.append(t)
+
+        cur = existing_by_name.get(correct_range5["name"])
+        if cur is None:
+            templates.append(correct_range5)
+        else:
+            if cur.get("content_html") != correct_range5["content_html"]:
+                cur.update(correct_range5)
+        with open(templates_path, "w", encoding="utf-8") as f:
+            json.dump(templates, f, ensure_ascii=False, indent=4)
+
         return templates
 
     def save_templates(self, templates: list[dict]) -> None:
@@ -3292,10 +3374,20 @@ class NotesApp(QMainWindow):
 
         buttons.accepted.connect(on_accept)
         buttons.rejected.connect(dialog.reject)
-        fg = dialog.frameGeometry()
-        fg.moveCenter(self.frameGeometry().center())
-        dialog.move(fg.topLeft())
+        self._center_on_parent(dialog)
         dialog.exec()
+
+    def _render_date_placeholders(self, html: str, base_date: QDate) -> str:
+        pattern = re.compile(r"\{date(?:\s*(?P<sign>[+-])\s*(?P<days>\d+))?\}", re.I)
+
+        def repl(m: re.Match) -> str:
+            days = int(m.group("days") or 0)
+            if m.group("sign") == "-":
+                days = -days
+            d = base_date.addDays(days)
+            return d.toString("dd.MM.yyyy")
+
+        return pattern.sub(repl, html)
 
     def insert_template(self) -> None:
         if not self.current_note:
@@ -3338,10 +3430,8 @@ class NotesApp(QMainWindow):
         def update_preview(idx):
             if 0 <= idx < len(filtered_templates):
                 content = filtered_templates[idx]["content_html"]
-                if "{date}" in content:
-                    now = QDateTime.currentDateTime()
-                    date_str = now.toString("dd.MM.yyyy")
-                    content = content.replace("{date}", date_str)
+                today = QDate.currentDate()
+                content = self._render_date_placeholders(content, today)
                 preview.setHtml(content)
             else:
                 preview.setHtml("")
@@ -3366,19 +3456,36 @@ class NotesApp(QMainWindow):
                 QDialog.keyPressEvent(dialog, event)
 
         dialog.keyPressEvent = keyPressEvent
-
         buttons.accepted.connect(dialog.accept)
         buttons.rejected.connect(dialog.reject)
+        self._center_on_parent(dialog)
         if dialog.exec() == QDialog.Accepted:
             idx = combo.currentIndex()
             if 0 <= idx < len(filtered_templates):
                 tpl = filtered_templates[idx]
                 content_html = tpl["content_html"]
-                if "{date}" in content_html:
-                    now = QDateTime.currentDateTime()
-                    date_str = now.toString("dd.MM.yyyy")
-                    content_html = content_html.replace("{date}", date_str)
-
+                date_pattern = re.compile(r"\{date(?:[+-]\s*\d+)?\}", re.I)
+                base_date = QDate.currentDate()
+                if date_pattern.search(content_html):
+                    ask = QDialog(self)
+                    ask.setWindowTitle("Начальная дата")
+                    form = QFormLayout(ask)
+                    de = QDateTimeEdit(ask)
+                    de.setDisplayFormat("dd.MM.yyyy")
+                    de.setCalendarPopup(True)
+                    de.setDate(QDate.currentDate())
+                    form.addRow("Начальная дата:", de)
+                    buttons = QDialogButtonBox(
+                        QDialogButtonBox.Ok | QDialogButtonBox.Cancel, ask
+                    )
+                    form.addRow(buttons)
+                    buttons.accepted.connect(ask.accept)
+                    buttons.rejected.connect(ask.reject)
+                    self._center_on_parent(ask)
+                    if ask.exec() != QDialog.Accepted:
+                        return
+                    base_date = de.date()
+                content_html = self._render_date_placeholders(content_html, base_date)
                 cursor = self.text_edit.textCursor()
                 start = cursor.position()
                 self.text_edit.insertHtml(content_html)
@@ -3492,9 +3599,14 @@ class NotesApp(QMainWindow):
         btn_save.clicked.connect(on_save)
         btn_del.clicked.connect(on_del)
         btn_close.clicked.connect(dlg.accept)
-        fg = dlg.frameGeometry()
-        fg.moveCenter(self.frameGeometry().center())
-        dlg.move(fg.topLeft())
+        self._center_on_parent(dlg)
+
+        def _on_show(ev):
+            QDialog.showEvent(dlg, ev)
+            self._center_on_parent(dlg)
+
+        dlg.showEvent = _on_show
+        self._center_on_parent(dlg)
         dlg.exec()
 
     def show_trash(self) -> None:
@@ -4952,12 +5064,25 @@ class NotesApp(QMainWindow):
 
     def _show_refresh_busy(self, busy: bool) -> None:
         if busy:
-            if not hasattr(self, "_busy_progress") or self._busy_progress is None:
-                self._busy_progress = QProgressBar(self)
+            if not hasattr(self, "_busy_box") or self._busy_box is None:
+                self._busy_box = QWidget(self)
+                self._busy_box.setObjectName("BusyBox")
+                lay = QVBoxLayout(self._busy_box)
+                lay.setContentsMargins(0, 0, 0, 0)
+                lay.setSpacing(0)
+                self._busy_label = QLabel("0%", self._busy_box)
+                self._busy_label.setAlignment(Qt.AlignHCenter | Qt.AlignBottom)
+                self._busy_label.setStyleSheet(
+                    "font-size:10px; font-weight:600; margin-bottom:1px;"
+                )
+                self._busy_progress = QProgressBar(self._busy_box)
                 self._busy_progress.setRange(0, 100)
                 self._busy_progress.setValue(0)
                 self._busy_progress.setFixedHeight(8)
-                self.statusBar().addPermanentWidget(self._busy_progress, 1)
+                self._busy_progress.setTextVisible(False)
+                lay.addWidget(self._busy_label)
+                lay.addWidget(self._busy_progress)
+                self.statusBar().addPermanentWidget(self._busy_box, 1)
             if not hasattr(self, "_busy_timer") or self._busy_timer is None:
                 self._busy_timer = QTimer(self)
                 self._busy_timer.setInterval(60)
@@ -4965,11 +5090,11 @@ class NotesApp(QMainWindow):
             self._busy_target = 95
             self._busy_step = 2
             self._busy_timer.start()
-
             self.statusBar().showMessage("Обновляю…")
             QApplication.setOverrideCursor(Qt.BusyCursor)
             if getattr(self, "refresh_button", None):
                 self.refresh_button.setEnabled(False)
+
         else:
             try:
                 if getattr(self, "_busy_timer", None):
@@ -4983,11 +5108,15 @@ class NotesApp(QMainWindow):
                         return
                     cur = self._busy_progress.value()
                     if cur < 100:
-                        self._busy_progress.setValue(min(100, cur + 4))
+                        new_v = min(100, cur + 4)
+                        self._busy_progress.setValue(new_v)
+                        if getattr(self, "_busy_label", None):
+                            self._busy_label.setText(f"{new_v}%")
                         QTimer.singleShot(30, _finish)
                     else:
+                        if getattr(self, "_busy_label", None):
+                            self._busy_label.setText("100%")
                         QTimer.singleShot(300, self._remove_busy_progress)
-
                 _finish()
             else:
                 self._remove_busy_progress()
@@ -4997,20 +5126,35 @@ class NotesApp(QMainWindow):
             return
         v = self._busy_progress.value()
         if v < getattr(self, "_busy_target", 95):
-            self._busy_progress.setValue(min(self._busy_target, v + self._busy_step))
+            new_v = min(self._busy_target, v + self._busy_step)
+            self._busy_progress.setValue(new_v)
+            if getattr(self, "_busy_label", None):
+                self._busy_label.setText(f"{new_v}%")
 
     def _remove_busy_progress(self):
         self.statusBar().clearMessage()
         QApplication.restoreOverrideCursor()
         if getattr(self, "refresh_button", None):
             self.refresh_button.setEnabled(True)
+        if getattr(self, "_busy_box", None):
+            try:
+                self.statusBar().removeWidget(self._busy_box)
+                self._busy_box.deleteLater()
+            except Exception:
+                pass
+            self._busy_box = None
         if getattr(self, "_busy_progress", None):
             try:
-                self.statusBar().removeWidget(self._busy_progress)
                 self._busy_progress.deleteLater()
             except Exception:
                 pass
             self._busy_progress = None
+        if getattr(self, "_busy_label", None):
+            try:
+                self._busy_label.deleteLater()
+            except Exception:
+                pass
+            self._busy_label = None
         if getattr(self, "_busy_timer", None):
             try:
                 self._busy_timer.stop()
@@ -9306,4 +9450,4 @@ if __name__ == "__main__":
     window.show()
     sys.exit(app.exec())
 
-    # UPD 02.09.2025|15:25
+    # UPD 04.09.2025|16:07
