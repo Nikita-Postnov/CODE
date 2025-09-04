@@ -53,6 +53,7 @@ from PySide6.QtGui import (
     QFontMetrics,
     QDragEnterEvent,
     QDropEvent,
+    QTextTableFormat,
     QMouseEvent,
     QContextMenuEvent,
     QCursor,
@@ -2424,7 +2425,7 @@ class NotesApp(QMainWindow):
             return
         last_index = self.pinned_layout.indexOf(self._add_field_panel) - 1
         if last_index < 0:
-            last_index = self.pinned_layout.count() - 1  # fallback
+            last_index = self.pinned_layout.count() - 1
         target = max(0, min(cur + int(delta), last_index))
         if target == cur:
             return
@@ -5516,25 +5517,47 @@ class NotesApp(QMainWindow):
         fmt.setFontUnderline(False)
         cursor.mergeCharFormat(fmt)
 
-    def insert_table(self):
-        rows, ok1 = QInputDialog.getInt(
-            self, "Вставить таблицу", "Количество строк:", 2, 1, 100
+    def insert_table(self) -> None:
+        if not self.current_note:
+            QMessageBox.warning(self, "Нет заметки", "Сначала выбери или создай заметку.")
+            return
+        cursor = self.text_edit.textCursor()
+        has_sel = cursor.hasSelection()
+        default_rows = 1 if has_sel else 2
+        default_cols = 1 if has_sel else 2
+        rows, ok1 = QInputDialog.getInt(self, "Вставить таблицу", "Количество строк:", default_rows, 1, 100)
+        cols, ok2 = QInputDialog.getInt(self, "Вставить таблицу", "Количество столбцов:", default_cols, 1, 100)
+        if not (ok1 and ok2):
+            return
+        is_dark = self.settings.value("theme", "dark") == "dark"
+        border_color = "white" if is_dark else "black"
+        selected_html = None
+        if has_sel:
+            sel_text = cursor.selectedText()
+            selected_html = html_lib.escape(sel_text).replace("\u2029", "<br/>")
+        rows_html = []
+        for r in range(rows):
+            cells_html = []
+            for c in range(cols):
+                if r == 0 and c == 0 and selected_html is not None:
+                    cell_content = selected_html
+                else:
+                    cell_content = "&nbsp;"
+                cells_html.append(
+                    f"<td style='min-width:1em; padding:3px; border:1px solid {border_color};'>{cell_content}</td>"
+                )
+            rows_html.append("<tr>" + "".join(cells_html) + "</tr>")
+        table_html = (
+            f"<table border='1' cellspacing='0' cellpadding='3' "
+            f"style='border-collapse:collapse; border:1px solid {border_color};'>"
+            + "".join(rows_html) +
+            "</table>"
         )
-        cols, ok2 = QInputDialog.getInt(
-            self, "Вставить таблицу", "Количество столбцов:", 2, 1, 100
-        )
-        if ok1 and ok2:
-            is_dark = self.settings.value("theme", "dark") == "dark"
-            border_color = "white" if is_dark else "black"
-
-            html = f"<table border='1' cellspacing='0' cellpadding='3' style='border-collapse:collapse; border: 1px solid {border_color};'>"
-            for _ in range(rows):
-                html += "<tr>"
-                for _ in range(cols):
-                    html += f"<td style='min-width:1em; padding:3px; border: 1px solid {border_color};'>&nbsp;</td>"
-                html += "</tr>"
-            html += "</table>"
-            self.text_edit.insertHtml(html)
+        cursor.beginEditBlock()
+        if has_sel:
+            cursor.removeSelectedText()
+        cursor.insertHtml(table_html)
+        cursor.endEditBlock()
 
     def insert_dropdown(self) -> None:
         if not self.current_note:
@@ -9450,4 +9473,4 @@ if __name__ == "__main__":
     window.show()
     sys.exit(app.exec())
 
-    # UPD 04.09.2025|16:07
+    # UPD 04.09.2025|17:03
