@@ -166,6 +166,94 @@ ICON_PATH = os.path.join(DATA_DIR, "icon.ico")
 TRAY_ICON_PATH = os.path.join(DATA_DIR, "tray_icon.ico")
 FILE_ICON_PATH = os.path.join(DATA_DIR, "file.ico")
 USER_DICT_PATH = os.path.join(DATA_DIR, "user_dictionary.txt")
+RU_REFLEXIVE = ("ся", "сь")
+RU_SUFFIXES_RU = tuple(
+    sorted(
+        {
+            # существительные и прилагательные
+            "иями",
+            "ями",
+            "ами",
+            "ями",
+            "ями",
+            "ов",
+            "ев",
+            "ёв",
+            "ам",
+            "ям",
+            "ах",
+            "ях",
+            "ою",
+            "ею",
+            "ой",
+            "ей",
+            "ою",
+            "ею",
+            "ою",
+            "ею",
+            "ый",
+            "ий",
+            "ой",
+            "ая",
+            "яя",
+            "ое",
+            "ее",
+            "ые",
+            "ие",
+            "ого",
+            "его",
+            "ому",
+            "ему",
+            "ым",
+            "им",
+            "ых",
+            "их",
+            "ую",
+            "юю",
+            "а",
+            "я",
+            "ы",
+            "и",
+            "е",
+            "у",
+            "ю",
+            "о",
+            # глаголы и причастия и краткие формы
+            "ешь",
+            "ешься",
+            "ет",
+            "ется",
+            "ем",
+            "емся",
+            "ете",
+            "етесь",
+            "ут",
+            "ют",
+            "ат",
+            "ят",
+            "ишь",
+            "ит",
+            "им",
+            "ите",
+            "ите-ка",
+            "ил",
+            "ила",
+            "ило",
+            "или",
+            "лся",
+            "лась",
+            "лось",
+            "лись",
+            "вший",
+            "щий",
+            "вшая",
+            "вшее",
+            "вшие",
+        },
+        key=len,
+        reverse=True,
+    )
+)
 os.makedirs(DATA_DIR, exist_ok=True)
 os.makedirs(NOTES_DIR, exist_ok=True)
 os.makedirs(PASSWORDS_DIR, exist_ok=True)
@@ -213,6 +301,34 @@ class SpellCheckHighlighter(QSyntaxHighlighter):
             self._dict_watcher.fileChanged.connect(self._reload_user_dictionary)
         except Exception:
             self._dict_watcher = None
+
+    def _is_known(self, w: str) -> bool:
+        if not w:
+            return False
+        lw = w.strip().lower()
+        if lw in getattr(self, "user_words", set()) or lw in getattr(
+            self, "local_ignored", set()
+        ):
+            return True
+        if not self.spell_checker:
+            return True
+        return len(self.spell_checker.unknown([lw])) == 0
+
+    def _ru_base_forms(self, w: str) -> list[str]:
+        lw = (w or "").lower()
+        out = set()
+        had_reflex = ""
+        for r in RU_REFLEXIVE:
+            if lw.endswith(r) and len(lw) - len(r) >= 3:
+                lw = lw[: -len(r)]
+                had_reflex = r
+                break
+        for suf in RU_SUFFIXES_RU:
+            if lw.endswith(suf) and len(lw) - len(suf) >= 3:
+                base = lw[: -len(suf)]
+                out.add(base)
+        out.add(lw)
+        return list(out)
 
     def _load_user_dictionary(self) -> None:
         prev_local = getattr(self, "local_ignored", set())
@@ -265,6 +381,14 @@ class SpellCheckHighlighter(QSyntaxHighlighter):
         misspelled = self.spell_checker.unknown(words)
         misspelled -= getattr(self, "user_words", set())
         misspelled -= getattr(self, "local_ignored", set())
+        to_keep = set()
+        for w in list(misspelled):
+            if re.search(r"[А-Яа-яЁё]", w):
+                bases = self._ru_base_forms(w)
+                if any(self._is_known(b) for b in bases):
+                    continue
+            to_keep.add(w)
+        misspelled = to_keep
         for match in matches:
             word = match.group().lower()
             if word in misspelled:
@@ -1709,6 +1833,38 @@ class CustomTextEdit(QTextEdit):
             except Exception:
                 user_candidates = []
         spell_candidates = []
+        morph_candidates = []
+        try:
+            if spell and re.search(r"[А-Яа-яЁё]", lw):
+                ref = ""
+                word_core = lw
+                for r in RU_REFLEXIVE:
+                    if word_core.endswith(r) and len(word_core) - len(r) >= 3:
+                        word_core = word_core[: -len(r)]
+                        ref = r
+                        break
+                suf = ""
+                for s in RU_SUFFIXES_RU:
+                    if word_core.endswith(s) and len(word_core) - len(s) >= 3:
+                        suf = s
+                        word_core = word_core[: -len(s)]
+                        break
+                base_cands = set()
+                try:
+                    corr = spell.correction(word_core)
+                    if corr:
+                        base_cands.add(corr)
+                except Exception:
+                    pass
+                try:
+                    base_cands |= set(spell.candidates(word_core))
+                except Exception:
+                    pass
+                for bc in base_cands:
+                    cand = bc + suf + ref
+                    morph_candidates.append(cand)
+        except Exception:
+            morph_candidates = []
         if spell:
             try:
                 corr = spell.correction(lw)
@@ -1741,6 +1897,8 @@ class CustomTextEdit(QTextEdit):
                 if len(out) >= 7:
                     break
             return out
+
+        spell_candidates = _clean(morph_candidates + spell_candidates)
 
         user_candidates = _clean(user_candidates)
         spell_candidates = _clean(spell_candidates)
@@ -5118,6 +5276,7 @@ class NotesApp(QMainWindow):
                         if getattr(self, "_busy_label", None):
                             self._busy_label.setText("100%")
                         QTimer.singleShot(300, self._remove_busy_progress)
+
                 _finish()
             else:
                 self._remove_busy_progress()
@@ -5519,14 +5678,20 @@ class NotesApp(QMainWindow):
 
     def insert_table(self) -> None:
         if not self.current_note:
-            QMessageBox.warning(self, "Нет заметки", "Сначала выбери или создай заметку.")
+            QMessageBox.warning(
+                self, "Нет заметки", "Сначала выбери или создай заметку."
+            )
             return
         cursor = self.text_edit.textCursor()
         has_sel = cursor.hasSelection()
         default_rows = 1 if has_sel else 2
         default_cols = 1 if has_sel else 2
-        rows, ok1 = QInputDialog.getInt(self, "Вставить таблицу", "Количество строк:", default_rows, 1, 100)
-        cols, ok2 = QInputDialog.getInt(self, "Вставить таблицу", "Количество столбцов:", default_cols, 1, 100)
+        rows, ok1 = QInputDialog.getInt(
+            self, "Вставить таблицу", "Количество строк:", default_rows, 1, 100
+        )
+        cols, ok2 = QInputDialog.getInt(
+            self, "Вставить таблицу", "Количество столбцов:", default_cols, 1, 100
+        )
         if not (ok1 and ok2):
             return
         is_dark = self.settings.value("theme", "dark") == "dark"
@@ -5550,8 +5715,8 @@ class NotesApp(QMainWindow):
         table_html = (
             f"<table border='1' cellspacing='0' cellpadding='3' "
             f"style='border-collapse:collapse; border:1px solid {border_color};'>"
-            + "".join(rows_html) +
-            "</table>"
+            + "".join(rows_html)
+            + "</table>"
         )
         cursor.beginEditBlock()
         if has_sel:
@@ -9473,4 +9638,4 @@ if __name__ == "__main__":
     window.show()
     sys.exit(app.exec())
 
-    # UPD 04.09.2025|17:03
+    # UPD 04.09.2025|17:19
