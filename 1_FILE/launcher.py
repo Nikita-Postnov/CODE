@@ -3422,6 +3422,17 @@ class NotesApp(QMainWindow):
                 "content_html": "<b>UPD [{date}]</b><br><b>Base:</b> <br><b>User:</b> <br><b>Result:</b> <br><b>Details:</b> <br><br>",
             },
         ]
+        auto_today_tpl = {
+            "name": "Сегодня (авто)",
+            "category": "Работа",
+            "description": "Строка с текущей датой, обновляется при каждом открытии заметки",
+            "content_html": (
+                '<table style="border-collapse:collapse;">'
+                '<tr><td style="border:1px solid #bdbdbd; padding:4px 8px; border-radius:4px;">'
+                'UPD [<span data-dyn="today">{today}</span>]'
+                "</td></tr></table><br>"
+            ),
+        }
         correct_range5 = {
             "name": "Интервал 5 дней",
             "category": "Работа",
@@ -3434,11 +3445,11 @@ class NotesApp(QMainWindow):
             ),
         }
         if not os.path.exists(templates_path):
-            templates = base_templates + [correct_range5]
+            templates = base_templates + [auto_today_tpl, correct_range5]
+            os.makedirs(DATA_DIR, exist_ok=True)
             with open(templates_path, "w", encoding="utf-8") as f:
                 json.dump(templates, f, ensure_ascii=False, indent=4)
             return templates
-
         try:
             with open(templates_path, "r", encoding="utf-8") as f:
                 templates = json.load(f)
@@ -3446,20 +3457,22 @@ class NotesApp(QMainWindow):
                     templates = []
         except Exception:
             templates = []
-        existing_by_name = {t.get("name"): t for t in templates}
-        for t in base_templates:
-            if t["name"] not in existing_by_name:
-                templates.append(t)
+        by_name = {t.get("name"): t for t in templates}
 
-        cur = existing_by_name.get(correct_range5["name"])
-        if cur is None:
-            templates.append(correct_range5)
-        else:
-            if cur.get("content_html") != correct_range5["content_html"]:
-                cur.update(correct_range5)
+        def upsert(tpl: dict) -> None:
+            cur = by_name.get(tpl["name"])
+            if cur is None:
+                templates.append(tpl)
+                by_name[tpl["name"]] = tpl
+            else:
+                if cur.get("content_html") != tpl.get("content_html"):
+                    cur.update(tpl)
+        for t in base_templates:
+            upsert(t)
+        upsert(auto_today_tpl)
+        upsert(correct_range5)
         with open(templates_path, "w", encoding="utf-8") as f:
             json.dump(templates, f, ensure_ascii=False, indent=4)
-
         return templates
 
     def save_templates(self, templates: list[dict]) -> None:
@@ -3547,6 +3560,17 @@ class NotesApp(QMainWindow):
             return d.toString("dd.MM.yyyy")
 
         return pattern.sub(repl, html)
+    
+    def _apply_dynamic_tokens(self, html: str) -> str:
+        today = QDate.currentDate().toString("dd.MM.yyyy")
+        html = re.sub(
+            r'(<span\b[^>]*\bdata-dyn="today"[^>]*>)(.*?)(</span>)',
+            lambda m: m.group(1) + today + m.group(3),
+            html,
+            flags=re.I | re.S,
+        )
+        html = re.sub(r"\{today\}", today, html, flags=re.I)
+        return html
 
     def insert_template(self) -> None:
         if not self.current_note:
@@ -3645,6 +3669,7 @@ class NotesApp(QMainWindow):
                         return
                     base_date = de.date()
                 content_html = self._render_date_placeholders(content_html, base_date)
+                content_html = self._apply_dynamic_tokens(content_html)
                 cursor = self.text_edit.textCursor()
                 start = cursor.position()
                 self.text_edit.insertHtml(content_html)
@@ -4178,11 +4203,14 @@ class NotesApp(QMainWindow):
             cursor_pos = cursor.position()
             anchor_pos = cursor.anchor()
         self.text_edit.blockSignals(True)
-        self.text_edit.setHtml(
+        raw_html = (
             note.content_html
             if hasattr(note, "content_html") and note.content_html
             else note.content
         )
+        rendered = self._apply_dynamic_tokens(raw_html)
+        self.text_edit.blockSignals(True)
+        self.text_edit.setHtml(rendered)
         self.text_edit.blockSignals(False)
         if hasattr(self, "_dropdown_tokens"):
             self._dropdown_tokens.clear()
@@ -9638,4 +9666,4 @@ if __name__ == "__main__":
     window.show()
     sys.exit(app.exec())
 
-    # UPD 04.09.2025|17:19
+    # UPD 11.09.2025|12:37
