@@ -5664,6 +5664,7 @@ class NotesApp(QMainWindow):
         fmt.setAnchorHref(href)
         fmt.setForeground(Qt.blue)
         fmt.setFontUnderline(True)
+        fmt.setFontPointSize(14)
         if cursor.hasSelection() and cursor.selectedText().strip():
             cursor.mergeCharFormat(fmt)
         else:
@@ -9815,4 +9816,4 @@ if __name__ == "__main__":
     window.show()
     sys.exit(app.exec())
 
-    # UPD 12.09.2025|15:33
+    # UPD 12.09.2025|16:35
