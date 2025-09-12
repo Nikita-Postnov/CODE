@@ -2086,12 +2086,28 @@ class NotesApp(QMainWindow):
 
     def __init__(self):
         super().__init__()
+        self.timer_btn = None
         self._live_toasts: list[QLabel] = []
         self.exiting = False
         self.notes = []
         self.audio_thread = None
+        self.settings = QSettings(SETTINGS_PATH, QSettings.IniFormat)
+        self._timer_mode = self.settings.value("timer/mode", "countdown")
+        self._timer_total = self.settings.value("timer/total", 25 * 60, type=int)
+        self._timer_left  = int(self._timer_total)
+        self._timer_running = False
+        self._timer = QTimer(self)
+        self._timer.setInterval(1000)
+        self._timer.timeout.connect(self._tick_timer)
         self.load_plugins_state()
         self.init_ui()
+        self._timer_mode   = self.settings.value("timer/mode", "countdown")
+        self._timer_total  = self.settings.value("timer/total", 25 * 60, type=int)
+        self._timer_left   = int(self._timer_total if self._timer_mode == "countdown" else 0)
+        self._timer_running = False
+        self._timer = QTimer(self)
+        self._timer.setInterval(1000)
+        self._timer.timeout.connect(self._tick_timer)
         self.debounce_ms = self.settings.value("autosave_debounce_ms", 1500, type=int)
         self.debounce_timer = QTimer(self)
         self.debounce_timer.setSingleShot(True)
@@ -2141,7 +2157,6 @@ class NotesApp(QMainWindow):
         self.setWindowTitle("Мои Заметки — [*]")
         self.setMinimumSize(1250, 800)
         self.setWindowIcon(QIcon(ICON_PATH))
-        self.settings = QSettings(SETTINGS_PATH, QSettings.IniFormat)
         always_on_top = self.settings.value("ui/always_on_top", True, type=bool)
         self.setWindowFlag(Qt.WindowStaysOnTopHint, always_on_top)
         pm_label = self.settings.value("password_manager_label", "PasswordManager")
@@ -2412,6 +2427,29 @@ class NotesApp(QMainWindow):
             boundary_widget=self.dock_editor.widget(),
             anchor_widget=self.password_manager_copy_btn,
         )
+
+    def start_stopwatch(self):
+        if not self.stopwatch_running:
+            self.stopwatch_running = True
+            self.stopwatch_timer.start()
+
+    def stop_stopwatch(self):
+        self.stopwatch_running = False
+        self.stopwatch_timer.stop()
+
+    def reset_stopwatch(self):
+        self.stopwatch_running = False
+        self.stopwatch_timer.stop()
+        self.stopwatch_time = 0
+        self.lbl_stopwatch.setText("00:00:00")
+
+    def _update_stopwatch(self):
+        if self.stopwatch_running:
+            self.stopwatch_time += 1
+            h = self.stopwatch_time // 3600
+            m = (self.stopwatch_time % 3600) // 60
+            s = self.stopwatch_time % 60
+            self.lbl_stopwatch.setText(f"{h:02d}:{m:02d}:{s:02d}")
 
     def copy_rdp_1c8_to_clipboard(self) -> None:
         text = self.rdp_1c8_field.text().strip()
@@ -5629,7 +5667,8 @@ class NotesApp(QMainWindow):
         if cursor.hasSelection() and cursor.selectedText().strip():
             cursor.mergeCharFormat(fmt)
         else:
-            cursor.insertHtml(f'<a href="{href}">{url}</a>')
+            fmt.setFont(self.text_edit.currentFont())
+            cursor.insertText(url, fmt)
 
         def _select_entire_anchor(self, cursor: QTextCursor) -> QTextCursor | None:
             fmt = cursor.charFormat()
@@ -5948,6 +5987,13 @@ class NotesApp(QMainWindow):
         self.audio_button.setFixedSize(32, 32)
         self.audio_button.clicked.connect(self.toggle_audio_recording)
         flow_layout.addWidget(self.audio_button)
+        self.timer_btn = QPushButton()
+        self.timer_btn.setFixedHeight(32)
+        self.timer_btn.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.timer_btn.clicked.connect(self._on_timer_clicked)
+        self.timer_btn.customContextMenuRequested.connect(self._timer_context_menu)
+        flow_layout.addWidget(self.timer_btn)
+        self._update_timer_ui()
         add_tool_button("", "𝐁 - Жирный", self.toggle_bold)
         add_tool_button("", "𝐼 - Курсив", self.toggle_italic)
         add_tool_button("", "U̲ - Подчёркнутый", self.toggle_underline)
@@ -6037,6 +6083,43 @@ class NotesApp(QMainWindow):
         self.toolbar_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.toolbar_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.search_bar.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
+        self.stopwatch_time = 0
+        self.stopwatch_running = False
+        self.stopwatch_timer = QTimer(self)
+        self.stopwatch_timer.setInterval(1000)
+        self.stopwatch_timer.timeout.connect(self._update_stopwatch)
+        self.lbl_stopwatch = QLabel("00:00:00")
+        self.btn_sw_start = QPushButton("▶️")
+        self.btn_sw_stop  = QPushButton("⏸️")
+        self.btn_sw_reset = QPushButton("⏹️")
+        self.btn_sw_start.clicked.connect(self.start_stopwatch)
+        self.btn_sw_stop.clicked.connect(self.stop_stopwatch)
+        self.btn_sw_reset.clicked.connect(self.reset_stopwatch)
+        sw_layout = QHBoxLayout()
+        sw_layout.setContentsMargins(0, 0, 0, 0)
+        sw_layout.setSpacing(4)
+        sw_layout.addWidget(self.lbl_stopwatch)
+        sw_layout.addWidget(self.btn_sw_start)
+        sw_layout.addWidget(self.btn_sw_stop)
+        sw_layout.addWidget(self.btn_sw_reset)
+        sw_widget = QWidget()
+        sw_widget.setLayout(sw_layout)
+        flow_layout.addWidget(sw_widget)
+
+    def _timer_context_menu(self, pos):
+        menu = QMenu(self)
+        act_reset = menu.addAction("Сброс")
+        act_mode  = menu.addAction("Режим: " + ("Секундомер" if self._timer_mode=="countdown" else "Обратный отсчёт"))
+        sender = self.sender()
+        try:
+            global_pos = sender.mapToGlobal(pos) if sender is not None else QCursor.pos()
+        except Exception:
+            global_pos = QCursor.pos()
+        act = menu.exec(global_pos)
+        if act == act_reset:
+            self._reset_timer()
+        elif act == act_mode:
+            self.toggle_timer_mode()
 
     def open_mass_reminders_dialog(self):
         dialog = QDialog(self)
@@ -6543,8 +6626,74 @@ class NotesApp(QMainWindow):
                     self.debounce_timer.stop()
             self.init_theme()
 
-    def show_help_window(self):
+    def _fmt_mmss(self, secs: int) -> str:
+        secs = max(0, int(secs))
+        return f"{secs // 60:02d}:{secs % 60:02d}"
 
+    def _update_timer_ui(self) -> None:
+        if hasattr(self, "timer_btn"):
+            txt = f"⏱ {self._fmt_mmss(self._timer_left if self._timer_mode=='countdown' else self._timer_total if not self._timer_running else self._timer_left)}"
+            txt = f"⏱ {self._fmt_mmss(self._timer_left)}"
+            self.timer_btn.setText(txt)
+            self.timer_btn.setToolTip(
+                f"⏱ {txt[2:].strip()} — {('идёт' if self._timer_running else 'пауза')}; "
+                "ЛКМ — старт/пауза, ПКМ — сброс, Shift+ЛКМ — задать длительность"
+            )
+
+    def _on_timer_clicked(self) -> None:
+        if QApplication.keyboardModifiers() & Qt.ShiftModifier:
+            self._set_timer_duration_dialog()
+            return
+        if not self._timer_running:
+            self._timer_running = True
+            self._timer.start()
+        else:
+            self._timer_running = False
+            self._timer.stop()
+        self._update_timer_ui()
+
+    def _reset_timer(self) -> None:
+        if self._timer_mode == "countdown":
+            self._timer_left = int(self._timer_total)
+        else:
+            self._timer_left = 0
+        self._timer_running = False
+        self._timer.stop()
+        self._update_timer_ui()
+
+    def _tick_timer(self) -> None:
+        if self._timer_mode == "countdown":
+            self._timer_left -= 1
+            if self._timer_left <= 0:
+                self._timer_left = 0
+                self._timer_running = False
+                self._timer.stop()
+                try:
+                    QApplication.beep()
+                    self.show_toast("⏱ Таймер: время вышло!", timeout_ms=3000, anchor_widget=getattr(self, "timer_btn", None))
+                except Exception:
+                    pass
+        else:
+            self._timer_left += 1
+        self._update_timer_ui()
+
+    def _set_timer_duration_dialog(self) -> None:
+        minutes, ok = QInputDialog.getInt(self, "⏱ Длительность", "Минут:", max(1, self._timer_total // 60), 1, 240, 1)
+        if not ok:
+            return
+        self._timer_total = minutes * 60
+        self.settings.setValue("timer/total", int(self._timer_total))
+        if self._timer_mode == "countdown":
+            self._timer_left = int(self._timer_total)
+        self._update_timer_ui()
+
+    def toggle_timer_mode(self) -> None:
+        self._timer_mode = "stopwatch" if self._timer_mode == "countdown" else "countdown"
+        self.settings.setValue("timer/mode", self._timer_mode)
+        self._reset_timer()
+
+
+    def show_help_window(self):
         dialog = QDialog(self)
         dialog.setWindowFlag(Qt.WindowStaysOnTopHint, True)
         dialog.setWindowTitle("Справка — Мои Заметки")
@@ -9666,4 +9815,4 @@ if __name__ == "__main__":
     window.show()
     sys.exit(app.exec())
 
-    # UPD 11.09.2025|12:37
+    # UPD 12.09.2025|15:33
