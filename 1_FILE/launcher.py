@@ -1279,7 +1279,7 @@ class DrawingDialog(QDialog):
             lambda: getattr(self.canvas, "pen_color"),
             self.canvas.set_color,
         )
-        fill_color_btn = _btn_color(
+        self.btn_fill = _btn_color(
             "Цвет заливки…",
             lambda: getattr(self.canvas, "fill_color"),
             self.canvas.set_fill_color,
@@ -1287,9 +1287,10 @@ class DrawingDialog(QDialog):
 
         self.cb_fill = QCheckBox("Заливка", self)
         self.cb_fill.setChecked(getattr(self.canvas, "fill_enabled", False))
-        self.cb_fill.toggled.connect(self.canvas.set_fill_enabled)
+        self.cb_fill.toggled.connect(self.on_fill_toggled)
+        self.btn_fill.setEnabled(self.cb_fill.isChecked())
         opts.addRow(line_color_btn)
-        opts.addRow(fill_color_btn)
+        opts.addRow(self.btn_fill)
         opts.addRow(self.cb_fill)
         self.spin_text = QSpinBox(self)
         self.spin_text.setRange(6, 96)
@@ -1316,7 +1317,7 @@ class DrawingDialog(QDialog):
 
     def _select_tool(self, btn: QPushButton, tool: str):
         for b in (
-            self.btn_pen,
+            self.btn_pencil,
             self.btn_rect,
             self.btn_ellipse,
             self.btn_line,
@@ -1490,11 +1491,64 @@ class CustomTextEdit(QTextEdit):
             html = re.sub(r"font-size:[^;\"]*;?", "", html, flags=re.IGNORECASE)
             self.textCursor().insertHtml(html)
         elif source.hasText():
-            fmt = QTextCharFormat()
-            fmt.setFont(QFont("Times New Roman", 14))
-            self.textCursor().insertText(source.text(), fmt)
+            text = source.text()
+            try:
+                html = self._linkify_plain_text(text)
+            except Exception:
+                html = None
+            if html is not None:
+                self.textCursor().insertHtml(html)
+            else:
+                fmt = QTextCharFormat()
+                fmt.setFont(QFont("Times New Roman", 14))
+                self.textCursor().insertText(text, fmt)
         else:
             super().insertFromMimeData(source)
+
+    def _linkify_plain_text(self, text: str) -> str | None:
+        if not text:
+            return None
+        token_re = re.compile(
+            r"(?:https?://|ftp://)[^\s<>\"']+"
+            r"|www\.[^\s<>\"']+"
+            r"|[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}"
+            r"|[A-Za-z]:[\\/][^\s<>\"']+"
+            r"|/[^\s<>\"']+"
+        )
+        found_any = False
+        out_parts: list[str] = []
+        pos = 0
+        for m in token_re.finditer(text):
+            if m.start() > pos:
+                out_parts.append(html_lib.escape(text[pos:m.start()]))
+            raw = m.group(0)
+            href = None
+            label = html_lib.escape(raw)
+            if re.match(r"^(?:https?://|ftp://)", raw, flags=re.I):
+                href = raw
+            elif raw.lower().startswith("www."):
+                href = "https://" + raw
+            elif re.match(r"^[A-Za-z0-9._%+-]+@", raw):
+                href = f"mailto:{raw}"
+            elif os.path.isabs(raw):
+                try:
+                    href = QUrl.fromLocalFile(os.path.abspath(raw)).toString()
+                except Exception:
+                    href = "file://" + quote(os.path.abspath(raw))
+            if href:
+                found_any = True
+                out_parts.append(
+                    f'<a href="{html_lib.escape(href)}" style="text-decoration: underline;">{label}</a>'
+                )
+            else:
+                out_parts.append(label)
+            pos = m.end()
+        if pos < len(text):
+            out_parts.append(html_lib.escape(text[pos:]))
+        if not found_any:
+            return None
+        html = "".join(out_parts).replace("\r\n", "<br>").replace("\n", "<br>")
+        return html
 
     def ignore_in_this_note(self, word: str) -> None:
         mw = self.window()
@@ -3461,9 +3515,9 @@ class NotesApp(QMainWindow):
             },
         ]
         auto_today_tpl = {
-            "name": "Сегодня (авто)",
+            "name": "Сегодня",
             "category": "Работа",
-            "description": "Строка с текущей датой, обновляется при каждом открытии заметки",
+            "description": "Строка с текущей датой",
             "content_html": (
                 '<table style="border-collapse:collapse;">'
                 '<tr><td style="border:1px solid #bdbdbd; padding:4px 8px; border-radius:4px;">'
@@ -5988,13 +6042,6 @@ class NotesApp(QMainWindow):
         self.audio_button.setFixedSize(32, 32)
         self.audio_button.clicked.connect(self.toggle_audio_recording)
         flow_layout.addWidget(self.audio_button)
-        self.timer_btn = QPushButton()
-        self.timer_btn.setFixedHeight(32)
-        self.timer_btn.setContextMenuPolicy(Qt.CustomContextMenu)
-        self.timer_btn.clicked.connect(self._on_timer_clicked)
-        self.timer_btn.customContextMenuRequested.connect(self._timer_context_menu)
-        flow_layout.addWidget(self.timer_btn)
-        self._update_timer_ui()
         add_tool_button("", "𝐁 - Жирный", self.toggle_bold)
         add_tool_button("", "𝐼 - Курсив", self.toggle_italic)
         add_tool_button("", "U̲ - Подчёркнутый", self.toggle_underline)
@@ -6084,6 +6131,13 @@ class NotesApp(QMainWindow):
         self.toolbar_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.toolbar_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.search_bar.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
+        self.timer_btn = QPushButton()
+        self.timer_btn.setFixedHeight(32)
+        self.timer_btn.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.timer_btn.clicked.connect(self._on_timer_clicked)
+        self.timer_btn.customContextMenuRequested.connect(self._timer_context_menu)
+        flow_layout.addWidget(self.timer_btn)
+        self._update_timer_ui()
         self.stopwatch_time = 0
         self.stopwatch_running = False
         self.stopwatch_timer = QTimer(self)
@@ -7722,7 +7776,6 @@ class NotesApp(QMainWindow):
         html = self.text_edit.toHtml()
         html = self._persist_dropdown_values_in_html(html)
         self.current_note.content = html
-        self.record_state_for_undo()
         self.record_state_for_undo()
 
     def hideEvent(self, event):
@@ -9816,4 +9869,4 @@ if __name__ == "__main__":
     window.show()
     sys.exit(app.exec())
 
-    # UPD 12.09.2025|16:35
+    # UPD 29.09.2025|23:12
