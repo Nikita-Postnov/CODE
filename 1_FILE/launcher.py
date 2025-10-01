@@ -167,10 +167,157 @@ TRAY_ICON_PATH = os.path.join(DATA_DIR, "tray_icon.ico")
 FILE_ICON_PATH = os.path.join(DATA_DIR, "file.ico")
 USER_DICT_PATH = os.path.join(DATA_DIR, "user_dictionary.txt")
 RU_REFLEXIVE = ("ся", "сь")
+
 RU_SUFFIXES_RU = tuple(
     sorted(
         {
-            # существительные и прилагательные
+            "иями",
+            "ями",
+            "ами",
+            "ов",
+            "ев",
+            "ёв",
+            "ам",
+            "ям",
+            "ах",
+            "ях",
+            "ою",
+            "ею",
+            "ой",
+            "ей",
+            "ый",
+            "ий",
+            "ой",
+            "ая",
+            "яя",
+            "ое",
+            "ее",
+            "ые",
+            "ие",
+            "ого",
+            "его",
+            "ому",
+            "ему",
+            "ым",
+            "им",
+            "ых",
+            "их",
+            "ую",
+            "юю",
+            "а",
+            "я",
+            "ы",
+            "и",
+            "е",
+            "у",
+            "ю",
+            "о",
+            "ешь",
+            "ешься",
+            "ет",
+            "ется",
+            "ем",
+            "емся",
+            "ете",
+            "етесь",
+            "ут",
+            "ют",
+            "ат",
+            "ят",
+            "ишь",
+            "ит",
+            "им",
+            "ите",
+            "ите-ка",
+            "ил",
+            "ила",
+            "ило",
+            "или",
+            "лся",
+            "лась",
+            "лось",
+            "лись",
+            "вший",
+            "щий",
+            "вшая",
+            "вшее",
+            "вшие",
+        },
+        key=len,
+        reverse=True,
+    )
+)
+
+RU_VARIANT_RULES: tuple[tuple[str, tuple[str]]] = tuple(
+    sorted(
+        [
+            ("ого", ("ый", "ий", "ой")),
+            ("ему", ("ый", "ий", "ой")),
+            ("ому", ("ый", "ий", "ой")),
+            ("ыми", ("ый", "ий", "ой")),
+            ("ими", ("ий",)),
+            ("ых", ("ые", "ие")),
+            ("их", ("ые", "ие")),
+            ("ая", ("ый", "ий", "ой")),
+            ("яя", ("ий",)),
+            ("ое", ("ый", "ий", "ой")),
+            ("ее", ("ий",)),
+            ("ые", ("ый", "ий", "ой")),
+            ("ие", ("ий",)),
+            ("ою", ("ая", "яя")),
+            ("ею", ("ая", "яя")),
+            ("ую", ("ая",)),
+            ("юю", ("яя",)),
+            ("ами", ("а", "")),
+            ("ями", ("я", "")),
+            ("ам", ("а", "")),
+            ("ям", ("я", "")),
+            ("ах", ("а", "")),
+            ("ях", ("я", "")),
+            ("ов", ("",)),
+            ("ев", ("",)),
+            ("ёв", ("",)),
+            ("ей", ("я", "е", "")),
+            ("ой", ("а", "о", "")),
+            ("ешься", ("ться",)),
+            ("ется", ("ться",)),
+            ("етесь", ("ться",)),
+            ("лся", ("ться",)),
+            ("лась", ("ться",)),
+            ("лось", ("ться",)),
+            ("лись", ("ться",)),
+            ("ешь", ("ть",)),
+            ("ет", ("ть",)),
+            ("ем", ("ть",)),
+            ("ете", ("ть",)),
+            ("ут", ("ть",)),
+            ("ют", ("ть",)),
+            ("ат", ("ть",)),
+            ("ят", ("ть",)),
+            ("ишь", ("ить", "ть")),
+            ("ит", ("ить", "ть")),
+            ("им", ("ить",)),
+            ("ите", ("ить", "ть")),
+            ("ил", ("ить", "ть")),
+            ("ила", ("ить", "ть")),
+            ("ило", ("ить", "ть")),
+            ("или", ("ить", "ть")),
+            ("вшийся", ("ться",)),
+            ("вшая", ("ть",)),
+            ("вшее", ("ть",)),
+            ("вшие", ("ть",)),
+            ("вшись", ("ться",)),
+            ("вши", ("ть",)),
+            ("ши", ("ть",)),
+            ("в", ("ть",)),
+        ],
+        key=lambda p: len(p[0]),
+        reverse=True,
+    )
+)
+RU_SUFFIXES_RU = tuple(
+    sorted(
+        {
             "иями",
             "ями",
             "ами",
@@ -218,7 +365,6 @@ RU_SUFFIXES_RU = tuple(
             "у",
             "ю",
             "о",
-            # глаголы и причастия и краткие формы
             "ешь",
             "ешься",
             "ет",
@@ -305,7 +451,7 @@ class SpellCheckHighlighter(QSyntaxHighlighter):
     def _is_known(self, w: str) -> bool:
         if not w:
             return False
-        lw = w.strip().lower()
+        lw = self.normalize_e(w.strip().lower())
         if lw in getattr(self, "user_words", set()) or lw in getattr(
             self, "local_ignored", set()
         ):
@@ -314,20 +460,32 @@ class SpellCheckHighlighter(QSyntaxHighlighter):
             return True
         return len(self.spell_checker.unknown([lw])) == 0
 
+    @staticmethod
+    def normalize_e(word: str) -> str:
+        return word.replace("ё", "е").replace("Ё", "Е")
+
     def _ru_base_forms(self, w: str) -> list[str]:
-        lw = (w or "").lower()
-        out = set()
-        had_reflex = ""
+        lw = self.normalize_e((w or "").lower())
+        out: set[str] = {lw}
+        stems = {lw}
         for r in RU_REFLEXIVE:
             if lw.endswith(r) and len(lw) - len(r) >= 3:
-                lw = lw[: -len(r)]
-                had_reflex = r
+                stems.add(lw[: -len(r)])
                 break
-        for suf in RU_SUFFIXES_RU:
-            if lw.endswith(suf) and len(lw) - len(suf) >= 3:
-                base = lw[: -len(suf)]
-                out.add(base)
-        out.add(lw)
+        generated = set()
+        for s in list(stems):
+            for suf in RU_SUFFIXES_RU:
+                if s.endswith(suf) and len(s) - len(suf) >= 3:
+                    generated.add(s[: -len(suf)])
+            for suf, repls in RU_VARIANT_RULES:
+                if s.endswith(suf) and len(s) - len(suf) >= 3:
+                    stem = s[: -len(suf)]
+                    for rep in repls:
+                        generated.add(stem + rep)
+        out |= stems
+        out |= generated
+        if len(out) > 32:
+            out = set(list(out)[:32])
         return list(out)
 
     def _load_user_dictionary(self) -> None:
@@ -337,7 +495,7 @@ class SpellCheckHighlighter(QSyntaxHighlighter):
         try:
             with open(USER_DICT_PATH, "r", encoding="utf-8") as f:
                 words = [line.strip().lower() for line in f if line.strip()]
-            self.user_words.update(words)
+            self.user_words.update(self.normalize_e(w) for w in words)
             if self.spell_checker and words:
                 self.spell_checker.word_frequency.load_words(words)
         except Exception:
@@ -359,7 +517,9 @@ class SpellCheckHighlighter(QSyntaxHighlighter):
         self.rehighlight()
 
     def set_local_ignored(self, words: list[str] | set[str]) -> None:
-        self.local_ignored = {w.strip().lower() for w in words if w.strip()}
+        self.local_ignored = {
+            self.normalize_e(w.strip().lower()) for w in words if w.strip()
+        }
         self.rehighlight()
 
     def _reload_user_dictionary(self, path: str) -> None:
@@ -377,7 +537,7 @@ class SpellCheckHighlighter(QSyntaxHighlighter):
         matches = list(re.finditer(r"[A-Za-zА-Яа-яЁё']+", text))
         if not matches:
             return
-        words = [m.group().lower() for m in matches]
+        words = [self.normalize_e(m.group().lower()) for m in matches]
         misspelled = self.spell_checker.unknown(words)
         misspelled -= getattr(self, "user_words", set())
         misspelled -= getattr(self, "local_ignored", set())
@@ -390,8 +550,8 @@ class SpellCheckHighlighter(QSyntaxHighlighter):
             to_keep.add(w)
         misspelled = to_keep
         for match in matches:
-            word = match.group().lower()
-            if word in misspelled:
+            word_norm = self.normalize_e(match.group().lower())
+            if word_norm in misspelled:
                 self.setFormat(match.start(), match.end() - match.start(), self.err_fmt)
 
 
@@ -1520,7 +1680,7 @@ class CustomTextEdit(QTextEdit):
         pos = 0
         for m in token_re.finditer(text):
             if m.start() > pos:
-                out_parts.append(html_lib.escape(text[pos:m.start()]))
+                out_parts.append(html_lib.escape(text[pos : m.start()]))
             raw = m.group(0)
             href = None
             label = html_lib.escape(raw)
@@ -1556,12 +1716,17 @@ class CustomTextEdit(QTextEdit):
             mw.add_word_to_note_ignore(word)
 
     def copy_without_formatting(self) -> None:
-        md = self.createMimeDataFromSelection()
+        cur = self.textCursor()
+        plain = (
+            cur.selection().toPlainText() if cur.hasSelection() else self.toPlainText()
+        )
+        md = QMimeData()
+        md.setText(self._sanitize_plain_for_copy(plain))
         QApplication.clipboard().setMimeData(md)
 
     def copy_with_formatting(self) -> None:
-        base_md = QTextEdit.createMimeDataFromSelection(self)
-        QApplication.clipboard().setMimeData(base_md)
+        md = self._build_rich_mime_from_selection()
+        QApplication.clipboard().setMimeData(md)
 
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:
         if event.mimeData().hasUrls():
@@ -1856,6 +2021,8 @@ class CustomTextEdit(QTextEdit):
         delete_action.triggered.connect(self.delete_selection)
         menu.addAction(delete_action)
         menu.addSeparator()
+        self._inject_table_context_menu(menu, event.pos())
+        menu.addSeparator()
         select_all_action = QAction("Select All", self)
         select_all_action.setShortcut("Ctrl+A")
         select_all_action.triggered.connect(self.selectAll)
@@ -2009,28 +2176,197 @@ class CustomTextEdit(QTextEdit):
             a.setEnabled(False)
         menu.exec(self.mapToGlobal(event.pos()))
 
+    def _current_table_pos(self):
+        cur = self.textCursor()
+        tbl = cur.currentTable()
+        if not tbl:
+            return None
+        cell = tbl.cellAt(cur)
+        if not cell.isValid():
+            return None
+        return tbl, cell.row(), cell.column()
+
+    def _inject_table_context_menu(self, menu: QMenu, pos) -> None:
+        cur = self.cursorForPosition(pos)
+        tbl = cur.currentTable()
+        if tbl:
+            cell = tbl.cellAt(cur)
+            if not cell.isValid():
+                return
+            r, c = cell.row(), cell.column()
+            tmenu = menu.addMenu("Table")
+            a_ins_row_above = tmenu.addAction("Вставить строку сверху")
+            a_ins_row_below = tmenu.addAction("Вставить строку снизу")
+            a_del_row = tmenu.addAction("Удалить текущую строку")
+            tmenu.addSeparator()
+            a_ins_col_left  = tmenu.addAction("Вставить столбец слева")
+            a_ins_col_right = tmenu.addAction("Вставить столбец справа")
+            a_del_col = tmenu.addAction("Удалить текущий столбец")
+            tmenu.addSeparator()
+            a_split_h = tmenu.addAction("Разделить ячейку по горизонтали (2 строки)")
+            a_split_v = tmenu.addAction("Разделить ячейку по вертикали (2 столбца)")
+            a_merge   = tmenu.addAction("Слить выделенные ячейки")
+            a_ins_row_above.triggered.connect(lambda: self._table_insert_row(r, above=True))
+            a_ins_row_below.triggered.connect(lambda: self._table_insert_row(r, above=False))
+            a_del_row.triggered.connect(lambda: self._table_delete_row(r))
+            a_ins_col_left.triggered.connect(lambda: self._table_insert_col(c, left=True))
+            a_ins_col_right.triggered.connect(lambda: self._table_insert_col(c, left=False))
+            a_del_col.triggered.connect(lambda: self._table_delete_col(c))
+            a_split_h.triggered.connect(lambda: self._table_split_cell(rows=2, cols=1))
+            a_split_v.triggered.connect(lambda: self._table_split_cell(rows=1, cols=2))
+            a_merge.triggered.connect(self._table_merge_selection)
+        else:
+            tmenu = menu.addMenu("Table")
+            a_new = tmenu.addAction("Вставить таблицу 2×2")
+            a_new.triggered.connect(lambda: self._insert_table(rows=2, cols=2))
+
+    def _insert_table(self, rows=2, cols=2) -> None:
+        cur = self.textCursor()
+        fmt = QTextTableFormat()
+        fmt.setBorder(1)
+        fmt.setCellPadding(4)
+        fmt.setCellSpacing(0)
+        cur.insertTable(rows, cols, fmt)
+
+    def _table_insert_row(self, row: int, *, above: bool) -> None:
+        cur = self.textCursor()
+        tbl = cur.currentTable()
+        if not tbl:
+            return
+        pos = max(0, min(row + (0 if above else 1), tbl.rows()))
+        tbl.insertRows(pos, 1)
+
+    def _table_delete_row(self, row: int) -> None:
+        cur = self.textCursor()
+        tbl = cur.currentTable()
+        if not tbl:
+            return
+        if 0 <= row < tbl.rows():
+            tbl.removeRows(row, 1)
+
+    def _table_insert_col(self, col: int, *, left: bool) -> None:
+        cur = self.textCursor()
+        tbl = cur.currentTable()
+        if not tbl:
+            return
+        pos = max(0, min(col + (0 if left else 1), tbl.columns()))
+        tbl.insertColumns(pos, 1)
+
+    def _table_delete_col(self, col: int) -> None:
+        cur = self.textCursor()
+        tbl = cur.currentTable()
+        if not tbl:
+            return
+        if 0 <= col < tbl.columns():
+            tbl.removeColumns(col, 1)
+
+    def _table_split_cell(self, *, rows: int, cols: int) -> None:
+        cur = self.textCursor()
+        tbl = cur.currentTable()
+        if not tbl:
+            return
+        cell = tbl.cellAt(cur)
+        if not cell.isValid():
+            return
+        r, c = cell.row(), cell.column()
+        rs, cs = cell.rowSpan(), cell.columnSpan()
+        if (rows > 1 and rs > 1) or (cols > 1 and cs > 1):
+            try:
+                tbl.splitCell(r, c, rs, cs)
+            except Exception:
+                pass
+            return
+        if rows > 1 and cols == 1:
+            tbl.insertRows(r + 1, 1)
+            ncols = tbl.columns()
+            for j in range(ncols):
+                if j == c:
+                    continue
+                try:
+                    tbl.mergeCells(r, j, 2, 1)
+                except Exception:
+                    pass
+            return
+        if cols > 1 and rows == 1:
+            tbl.insertColumns(c + 1, 1)
+            nrows = tbl.rows()
+            for i in range(nrows):
+                if i == r:
+                    continue
+                try:
+                    tbl.mergeCells(i, c, 1, 2)
+                except Exception:
+                    pass
+            return
+
+    def _table_merge_selection(self) -> None:
+        cur = self.textCursor()
+        tbl = cur.currentTable()
+        if not tbl:
+            return
+        if not cur.hasSelection():
+            cell = tbl.cellAt(cur)
+            if cell.isValid():
+                tbl.mergeCells(cell.row(), cell.column(), 1, 1)
+            return
+        start = min(cur.selectionStart(), cur.selectionEnd() - 1)
+        end   = max(cur.selectionStart(), cur.selectionEnd() - 1)
+        tl = tbl.cellAt(start)
+        br = tbl.cellAt(end)
+        if not (tl.isValid() and br.isValid()):
+            return
+        r1, c1 = tl.row(), tl.column()
+        r2, c2 = br.row(), br.column()
+        top, left = min(r1, r2), min(c1, c2)
+        nrows = abs(r2 - r1) + 1
+        ncols = abs(c2 - c1) + 1
+        tbl.mergeCells(top, left, nrows, ncols)
+
     def _sanitize_plain_for_copy(self, s: str) -> str:
         s = s.replace("▾", "").replace("▼", "")
         s = re.sub(r"[\u200b\u200c\u200d\u200e\u200f\u202a-\u202e\u2066-\u2069]", "", s)
         s = re.sub(r"[ \t]+(\r?\n)", r"\1", s)
         return s
 
-    def createMimeDataFromSelection(self):
-        if self.textCursor().charFormat().isImageFormat():
-            return super().createMimeDataFromSelection()
+    def _sanitize_html_for_copy(self, html: str) -> str:
+        if not html:
+            return html
+        html = html.replace("▾", "").replace("▼", "")
+        html = re.sub(r"&(?:#9(?:660|662);|#9660;|#9662;)", "", html, flags=re.I)
+        html = re.sub(
+            r"[\u200b\u200c\u200d\u200e\u200f\u202a-\u202e\u2066-\u2069]", "", html
+        )
+        html = re.sub(
+            r'<a\b[^>]*\bhref\s*=\s*["\']dropdown://[^"\']*["\'][^>]*>(.*?)</a>',
+            r"\1",
+            html,
+            flags=re.I | re.S,
+        )
+        html = re.sub(
+            r'\bhref\s*=\s*["\']dropdown://[^"\']*["\']', "", html, flags=re.I
+        )
+        return html
 
+    def _build_rich_mime_from_selection(self) -> QMimeData:
         cur = self.textCursor()
         if cur.hasSelection():
             frag = cur.selection()
+            html = frag.toHtml()
             plain = frag.toPlainText()
         else:
+            html = self.document().toHtml()
             plain = self.toPlainText()
-
-        from PySide6.QtCore import QMimeData
-
+        html = self._sanitize_html_for_copy(html)
+        plain = self._sanitize_plain_for_copy(plain)
         md = QMimeData()
-        md.setText(self._sanitize_plain_for_copy(plain))
+        md.setHtml(html)
+        md.setText(plain)
         return md
+
+    def createMimeDataFromSelection(self):
+        if self.textCursor().charFormat().isImageFormat():
+            return super().createMimeDataFromSelection()
+        return self._build_rich_mime_from_selection()
 
     def startDrag(self, supportedActions: Qt.DropActions) -> None:
         cursor = self.textCursor()
@@ -2148,16 +2484,18 @@ class NotesApp(QMainWindow):
         self.settings = QSettings(SETTINGS_PATH, QSettings.IniFormat)
         self._timer_mode = self.settings.value("timer/mode", "countdown")
         self._timer_total = self.settings.value("timer/total", 25 * 60, type=int)
-        self._timer_left  = int(self._timer_total)
+        self._timer_left = int(self._timer_total)
         self._timer_running = False
         self._timer = QTimer(self)
         self._timer.setInterval(1000)
         self._timer.timeout.connect(self._tick_timer)
         self.load_plugins_state()
         self.init_ui()
-        self._timer_mode   = self.settings.value("timer/mode", "countdown")
-        self._timer_total  = self.settings.value("timer/total", 25 * 60, type=int)
-        self._timer_left   = int(self._timer_total if self._timer_mode == "countdown" else 0)
+        self._timer_mode = self.settings.value("timer/mode", "countdown")
+        self._timer_total = self.settings.value("timer/total", 25 * 60, type=int)
+        self._timer_left = int(
+            self._timer_total if self._timer_mode == "countdown" else 0
+        )
         self._timer_running = False
         self._timer = QTimer(self)
         self._timer.setInterval(1000)
@@ -3559,6 +3897,7 @@ class NotesApp(QMainWindow):
             else:
                 if cur.get("content_html") != tpl.get("content_html"):
                     cur.update(tpl)
+
         for t in base_templates:
             upsert(t)
         upsert(auto_today_tpl)
@@ -3652,7 +3991,7 @@ class NotesApp(QMainWindow):
             return d.toString("dd.MM.yyyy")
 
         return pattern.sub(repl, html)
-    
+
     def _apply_dynamic_tokens(self, html: str) -> str:
         today = QDate.currentDate().toString("dd.MM.yyyy")
         html = re.sub(
@@ -6145,7 +6484,7 @@ class NotesApp(QMainWindow):
         self.stopwatch_timer.timeout.connect(self._update_stopwatch)
         self.lbl_stopwatch = QLabel("00:00:00")
         self.btn_sw_start = QPushButton("▶️")
-        self.btn_sw_stop  = QPushButton("⏸️")
+        self.btn_sw_stop = QPushButton("⏸️")
         self.btn_sw_reset = QPushButton("⏹️")
         self.btn_sw_start.clicked.connect(self.start_stopwatch)
         self.btn_sw_stop.clicked.connect(self.stop_stopwatch)
@@ -6164,10 +6503,15 @@ class NotesApp(QMainWindow):
     def _timer_context_menu(self, pos):
         menu = QMenu(self)
         act_reset = menu.addAction("Сброс")
-        act_mode  = menu.addAction("Режим: " + ("Секундомер" if self._timer_mode=="countdown" else "Обратный отсчёт"))
+        act_mode = menu.addAction(
+            "Режим: "
+            + ("Секундомер" if self._timer_mode == "countdown" else "Обратный отсчёт")
+        )
         sender = self.sender()
         try:
-            global_pos = sender.mapToGlobal(pos) if sender is not None else QCursor.pos()
+            global_pos = (
+                sender.mapToGlobal(pos) if sender is not None else QCursor.pos()
+            )
         except Exception:
             global_pos = QCursor.pos()
         act = menu.exec(global_pos)
@@ -6725,7 +7069,11 @@ class NotesApp(QMainWindow):
                 self._timer.stop()
                 try:
                     QApplication.beep()
-                    self.show_toast("⏱ Таймер: время вышло!", timeout_ms=3000, anchor_widget=getattr(self, "timer_btn", None))
+                    self.show_toast(
+                        "⏱ Таймер: время вышло!",
+                        timeout_ms=3000,
+                        anchor_widget=getattr(self, "timer_btn", None),
+                    )
                 except Exception:
                     pass
         else:
@@ -6733,7 +7081,9 @@ class NotesApp(QMainWindow):
         self._update_timer_ui()
 
     def _set_timer_duration_dialog(self) -> None:
-        minutes, ok = QInputDialog.getInt(self, "⏱ Длительность", "Минут:", max(1, self._timer_total // 60), 1, 240, 1)
+        minutes, ok = QInputDialog.getInt(
+            self, "⏱ Длительность", "Минут:", max(1, self._timer_total // 60), 1, 240, 1
+        )
         if not ok:
             return
         self._timer_total = minutes * 60
@@ -6743,10 +7093,11 @@ class NotesApp(QMainWindow):
         self._update_timer_ui()
 
     def toggle_timer_mode(self) -> None:
-        self._timer_mode = "stopwatch" if self._timer_mode == "countdown" else "countdown"
+        self._timer_mode = (
+            "stopwatch" if self._timer_mode == "countdown" else "countdown"
+        )
         self.settings.setValue("timer/mode", self._timer_mode)
         self._reset_timer()
-
 
     def show_help_window(self):
         dialog = QDialog(self)
@@ -7096,6 +7447,27 @@ class NotesApp(QMainWindow):
             )
             cursor.insertHtml(html)
             self.text_edit.setTextCursor(cursor)
+
+    def _resize_editor_dock(self, delta_px: int) -> None:
+        if not hasattr(self, "dock_editor") or self.dock_editor is None:
+            return
+        left_dock = getattr(self, "dock_notes_list", None)
+        if left_dock is None:
+            return
+        editor_w = max(0, self.dock_editor.width())
+        left_w = max(0, left_dock.width())
+        total_w = max(1, editor_w + left_w)
+        min_editor = 300
+        max_editor = int(self.width() * 0.85)
+        new_editor = max(min_editor, min(max_editor, editor_w + delta_px))
+        new_left = max(80, total_w - new_editor)
+        try:
+            self.resizeDocks(
+                [left_dock, self.dock_editor], [new_left, new_editor], Qt.Horizontal
+            )
+        except Exception:
+            self.dock_editor.setMinimumWidth(new_editor)
+            self.dock_editor.resize(new_editor, self.dock_editor.height())
 
     def update_tag_filter_items(self):
         all_tags = sorted(self.get_all_tags())
@@ -9869,4 +10241,4 @@ if __name__ == "__main__":
     window.show()
     sys.exit(app.exec())
 
-    # UPD 29.09.2025|23:12
+    # UPD 01.10.2025|12:01
