@@ -6,6 +6,7 @@ import string
 import html
 import random
 import difflib
+import requests
 import tkinter as tk
 from tkinter import ttk
 import wave
@@ -29,6 +30,7 @@ import tkinter.messagebox as tk_messagebox
 from tkinter import filedialog as tk_filedialog
 from functools import partial
 import pyperclip
+import subprocess
 from PySide6.QtCore import (
     Qt,
     QMimeData,
@@ -162,6 +164,7 @@ if getattr(sys, "frozen", False):
     APPDIR = os.path.dirname(sys.executable)
 else:
     APPDIR = os.path.abspath(os.path.dirname(__file__))
+
 DATA_DIR = os.path.join(APPDIR, "Data")
 NOTES_DIR = os.path.join(APPDIR, "Notes")
 PASSWORDS_DIR = os.path.join(APPDIR, "Passwords")
@@ -451,25 +454,20 @@ class DesktopNotesWidget(QWidget):
         header_layout = QHBoxLayout()
         header_layout.setContentsMargins(0, 0, 0, 0)
         header_layout.setSpacing(6)
-
         self.title_lbl = QLabel("📋 Заметки", self)
         self.title_lbl.setStyleSheet("font-size: 18px; font-weight: 600; color: white;")
-
         self.btn_close = QToolButton(self)
         self.btn_close.setObjectName("dnw_close")
         self.btn_close.setText("✕")
         self.btn_close.setCursor(Qt.PointingHandCursor)
         self.btn_close.setToolTip("Закрыть")
         self.btn_close.clicked.connect(self.close)
-
         header_layout.addWidget(self.title_lbl)
         header_layout.addStretch(1)
         header_layout.addWidget(self.btn_close)
-
         self.header_widget = QWidget(self)
         self.header_widget.setLayout(header_layout)
         self.header_widget.setProperty("drag_handle", True)
-
         root.addWidget(self.header_widget)
         self.notes_list = QListWidget(self)
         self.notes_list.setSelectionMode(QAbstractItemView.SingleSelection)
@@ -606,7 +604,6 @@ class DesktopNotesWidget(QWidget):
     def _read_json_any(self, path: str) -> list[dict]:
         if not os.path.exists(path):
             return []
-
         try:
             raw = open(path, "r", encoding="utf-8").read().strip()
             if not raw:
@@ -1032,8 +1029,8 @@ class DesktopNotesWidget(QWidget):
         super().showEvent(e)
         QTimer.singleShot(0, self._apply_auto_min_height)
 
-class SpellCheckHighlighter(QSyntaxHighlighter):
 
+class SpellCheckHighlighter(QSyntaxHighlighter):
     def __init__(self, parent):
         super().__init__(parent)
         self.err_fmt = QTextCharFormat()
@@ -1041,31 +1038,73 @@ class SpellCheckHighlighter(QSyntaxHighlighter):
         self.err_fmt.setUnderlineStyle(QTextCharFormat.SpellCheckUnderline)
         try:
             from spellchecker import SpellChecker as _SpellChecker
-
             try:
                 self.spell_checker = _SpellChecker(language="ru")
             except Exception:
-                self.spell_checker = _SpellChecker()
-        except ImportError:
+                self.spell_checker = _SpellChecker(language=None)
+        except Exception:
             self.spell_checker = None
+        self._checked_cache = {}
         self._load_user_dictionary()
         try:
             self._dict_watcher = QFileSystemWatcher([USER_DICT_PATH])
             self._dict_watcher.fileChanged.connect(self._reload_user_dictionary)
         except Exception:
             self._dict_watcher = None
+        try:
+            self.online_enabled = QSettings(SETTINGS_PATH, QSettings.IniFormat)\
+                .value("spell/online_check", True, type=bool)
+        except Exception:
+            self.online_enabled = True
+
+    def _check_online(self, word: str, lang: str) -> bool:
+        key = f"{lang}:{word.lower()}"
+        if key in self._checked_cache:
+            return self._checked_cache[key]
+        try:
+            if lang == "ru":
+                resp = requests.get(
+                    "https://speller.yandex.net/services/spellservice.json/checkText",
+                    params={"text": word, "lang": "ru"},
+                    timeout=2,
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    ok = len(data) == 0
+                    self._checked_cache[key] = ok
+                    return ok
+            elif lang == "en":
+                resp = requests.post(
+                    "https://api.languagetool.org/v2/check",
+                    data={"text": word, "language": "en-US"},
+                    timeout=2,
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    ok = len(data.get("matches", [])) == 0
+                    self._checked_cache[key] = ok
+                    return ok
+        except Exception:
+            pass
+        self._checked_cache[key] = True
+        return True
 
     def _is_known(self, w: str) -> bool:
         if not w:
             return False
         lw = self.normalize_e(w.strip().lower())
-        if lw in getattr(self, "user_words", set()) or lw in getattr(
-            self, "local_ignored", set()
-        ):
+        if lw in getattr(self, "user_words", set()) or lw in getattr(self, "local_ignored", set()):
             return True
         if not self.spell_checker:
             return True
-        return len(self.spell_checker.unknown([lw])) == 0
+        if len(self.spell_checker.unknown([lw])) == 0:
+            return True
+        if self.online_enabled:
+            if re.search(r"[А-Яа-яЁё]", lw):
+                return self._check_online(lw, "ru")
+            elif re.search(r"[A-Za-z]", lw):
+                return self._check_online(lw, "en")
+        return False
 
     @staticmethod
     def normalize_e(word: str) -> str:
@@ -1124,9 +1163,7 @@ class SpellCheckHighlighter(QSyntaxHighlighter):
         self.rehighlight()
 
     def set_local_ignored(self, words: list[str] | set[str]) -> None:
-        self.local_ignored = {
-            self.normalize_e(w.strip().lower()) for w in words if w.strip()
-        }
+        self.local_ignored = {self.normalize_e(w.strip().lower()) for w in words if w.strip()}
         self.rehighlight()
 
     def _reload_user_dictionary(self, path: str) -> None:
@@ -1154,13 +1191,14 @@ class SpellCheckHighlighter(QSyntaxHighlighter):
                 bases = self._ru_base_forms(w)
                 if any(self._is_known(b) for b in bases):
                     continue
+            elif self._is_known(w):
+                continue
             to_keep.add(w)
         misspelled = to_keep
         for match in matches:
             word_norm = self.normalize_e(match.group().lower())
             if word_norm in misspelled:
                 self.setFormat(match.start(), match.end() - match.start(), self.err_fmt)
-
 
 def create_dropdown_combo(*items, parent=None):
     combo = QComboBox(parent)
@@ -3211,6 +3249,27 @@ class NotesApp(QMainWindow):
         self.reminder_timer = QTimer(self)
         self.reminder_timer.timeout.connect(self.check_reminders)
         self.reminder_timer.start(60000)
+
+    def _install_dialog_probe():
+        class _Probe(QDialog):
+            def showEvent(self, e):
+                try:
+                    print("\n=== DIALOG OPENED ===", type(self).__name__)
+                    traceback.print_stack(limit=25, file=sys.stdout)
+                    print("===  END STACK   ===\n")
+                except Exception:
+                    pass
+                super().showEvent(e)
+        old_showEvent = QDialog.showEvent
+        def patched(self, e):
+            try:
+                print(f"\n[Dialog] {type(self).__name__} shown")
+            except Exception:
+                pass
+            return old_showEvent(self, e)
+        QDialog.showEvent = patched
+
+    _install_dialog_probe()
 
     def _on_text_changed(self) -> None:
         self.pending_save = True
@@ -6071,8 +6130,9 @@ class NotesApp(QMainWindow):
 
     def insert_horizontal_line(self) -> None:
         cursor = self.text_edit.textCursor()
-        cursor.insertHtml("<hr style='border:1px solid #888;'><br>")
-        cursor.movePosition(QTextCursor.EndOfBlock)
+        cursor.beginEditBlock()
+        cursor.insertHtml("<hr style='border:1px solid #888; margin:0;'>")
+        cursor.endEditBlock()
         self.text_edit.setTextCursor(cursor)
 
     def insert_image_html(
@@ -6751,11 +6811,11 @@ class NotesApp(QMainWindow):
         else:
             if not re.match(r"^[a-zA-Z][a-zA-Z0-9+\-.]*://", url):
                 href = "https://" + url
+        fmt = QTextCharFormat()
         fmt.setAnchor(True)
         fmt.setAnchorHref(href)
         fmt.setForeground(Qt.blue)
         fmt.setFontUnderline(True)
-        fmt = QTextCharFormat()
         fmt.setFont(QFont("Times New Roman", 14))
 
         if cursor.hasSelection() and cursor.selectedText().strip():
@@ -7526,7 +7586,6 @@ class NotesApp(QMainWindow):
     def clear_formatting(self):
         te = self.text_edit
         c = te.textCursor()
-        default_text_color = te.palette().color(QPalette.Text)
         ch = QTextCharFormat()
         f = QFont("Times New Roman", 14)
         ch.setFont(f)
@@ -7534,8 +7593,8 @@ class NotesApp(QMainWindow):
         ch.setFontItalic(False)
         ch.setFontUnderline(False)
         ch.setFontStrikeOut(False)
-        ch.setForeground(default_text_color)
-        ch.clearBackground()
+        ch.setForeground(QBrush())
+        ch.setBackground(QBrush())
         bf = QTextBlockFormat()
         bf.setHeadingLevel(0)
         if c.hasSelection():
@@ -7682,22 +7741,13 @@ class NotesApp(QMainWindow):
         dialog.setWindowFlag(Qt.WindowStaysOnTopHint, True)
         dialog.setWindowTitle("Настройки")
         layout = QFormLayout(dialog)
+        online_check_cb = QCheckBox()
+        online_check_cb.setChecked(self.settings.value("spell/online_check", True, type=bool))
+        layout.addRow("Онлайн-проверка орфографии:", online_check_cb)
         theme_combo = QComboBox()
         theme_combo.addItems(["Светлая", "Тёмная"])
-        theme_combo.setCurrentIndex(
-            0 if self.settings.value("theme", "dark") == "light" else 1
-        )
+        theme_combo.setCurrentIndex(0 if self.settings.value("theme", "dark") == "light" else 1)
         layout.addRow("Тема:", theme_combo)
-        autosave_checkbox = QCheckBox()
-        autosave_checkbox.setChecked(self.autosave_enabled)
-        layout.addRow("Автосохранение:", autosave_checkbox)
-        interval_spinbox = QSpinBox()
-        interval_spinbox.setRange(1, 120)
-        interval_spinbox.setSuffix(" сек")
-        interval_spinbox.setValue(self.autosave_interval // 1000)
-        layout.addRow("Интервал автосохранения:", interval_spinbox)
-        interval_spinbox.setEnabled(autosave_checkbox.isChecked())
-        autosave_checkbox.toggled.connect(interval_spinbox.setEnabled)
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         buttons.accepted.connect(dialog.accept)
         buttons.rejected.connect(dialog.reject)
@@ -7706,16 +7756,13 @@ class NotesApp(QMainWindow):
         if dialog.exec() == QDialog.DialogCode.Accepted:
             new_theme = "light" if theme_combo.currentIndex() == 0 else "dark"
             self.settings.setValue("theme", new_theme)
-            self.autosave_enabled = autosave_checkbox.isChecked()
-            self.autosave_interval = interval_spinbox.value() * 1000
-            self.settings.setValue("autosave_enabled", self.autosave_enabled)
-            self.settings.setValue("autosave_interval", self.autosave_interval)
-            if self.autosave_enabled:
-                self.autosave_timer.start(self.autosave_interval)
-            else:
-                self.autosave_timer.stop()
-                if hasattr(self, "debounce_timer"):
-                    self.debounce_timer.stop()
+            online_enabled = online_check_cb.isChecked()
+            self.settings.setValue("spell/online_check", online_enabled)
+            self.settings.sync()
+            if hasattr(self, "spell_highlighter"):
+                self.spell_highlighter.online_enabled = online_enabled
+                self.spell_highlighter._checked_cache.clear()
+                self.spell_highlighter.rehighlight()
             self.init_theme()
 
     def _fmt_mmss(self, secs: int) -> str:
@@ -8211,7 +8258,6 @@ class NotesApp(QMainWindow):
     def update_search_filter_items(self) -> None:
         if not hasattr(self, "search_mode_combo") or self.search_mode_combo is None:
             return
-
         modes = ["Заголовок", "Содержимое", "Напоминание"]
         self.search_mode_combo.blockSignals(True)
         self.search_mode_combo.clear()
@@ -8648,9 +8694,11 @@ class NotesApp(QMainWindow):
                     cursor.movePosition(QTextCursor.End)
                     self.text_edit.setTextCursor(cursor)
                     self.text_edit.insertHtml(f'📄 <a href="{file_url}">{filename}</a>')
-        QMessageBox.information(
-            self, "Перетаскивание файлов", "Файлы прикреплены к заметке."
-        )
+        try:
+            self.show_toast("Файлы прикреплены", timeout_ms=1400,
+                            anchor_widget=getattr(self, "attachments_scroll", None))
+        except Exception:
+            pass
         self.save_note()
 
     def closeEvent(self, event: QCloseEvent):
@@ -10037,15 +10085,13 @@ class PasswordGeneratorApp:
 
     def _switch_to_launcher(self, event=None):
         try:
-            from PySide6.QtWidgets import QApplication
-
             if QApplication.instance() is not None:
                 self._on_close()
                 return
         except Exception:
             pass
 
-        import subprocess, sys, os
+        
 
         subprocess.Popen([sys.executable, os.path.abspath(__file__)])
         self._on_close()
@@ -10663,6 +10709,15 @@ class PasswordGeneratorApp:
         new_password = self.password_generator.generate_password()
         self.password_var.set(new_password)
         self._update_strength_bar(new_password)
+        try:
+            if self._safe_copy_to_clipboard(new_password, clear_after_ms=60000):
+                messagebox.showinfo("Сгенерировано", "Пароль сгенерирован и скопирован в буфер обмена.")
+            else:
+                import pyperclip
+                pyperclip.copy(new_password)
+                messagebox.showinfo("Сгенерировано", "Пароль сгенерирован и скопирован в буфер обмена (pyperclip).")
+        except Exception:
+            pass
 
     def _update_strength_bar(self, password):
         score = self.password_generator.evaluate_password_strength(password)
@@ -10676,6 +10731,21 @@ class PasswordGeneratorApp:
 
     def _copy_password(self):
         password = self.password_var.get()
+        if not password:
+            messagebox.showerror("Ошибка", "Пароль отсутствует. Сначала сгенерируйте пароль.")
+            return
+        try:
+            if self._safe_copy_to_clipboard(password, clear_after_ms=60000):
+                messagebox.showinfo("Успешно", "Пароль скопирован в буфер обмена (очистится через 60 с).")
+                return
+        except Exception:
+            pass
+        try:
+            import pyperclip
+            pyperclip.copy(password)
+            messagebox.showinfo("Успешно", "Пароль скопирован в буфер обмена (pyperclip).")
+        except Exception as e:
+            messagebox.showerror("Ошибка", f"Не удалось скопировать пароль: {e}")
 
     def _save_password_dialog(self):
         password = self.password_var.get()
@@ -10969,19 +11039,19 @@ class LauncherWindow(QMainWindow):
         btn_screenshot.setFocusPolicy(Qt.NoFocus)
         btn_screenshot.clicked.connect(self.launch_screenshoter)
         layout.addWidget(btn_screenshot)
-
         btn_tg_outgoing = QPushButton("Отчет: исходящие в Telegram")
         btn_tg_outgoing.setMinimumHeight(40)
         btn_tg_outgoing.setFocusPolicy(Qt.NoFocus)
         btn_tg_outgoing.clicked.connect(self.launch_tg_outgoing)
         layout.addWidget(btn_tg_outgoing)
-
         btn_testdata = QPushButton("Тестовые данные")
         btn_testdata.setMinimumHeight(40)
         btn_testdata.setFocusPolicy(Qt.NoFocus)
         btn_testdata.clicked.connect(self.launch_testdata)
         layout.addWidget(btn_testdata)
         btn_notes_widget = QPushButton("Виджет заметок", self)
+        btn_notes_widget.setMinimumHeight(40)
+        btn_notes_widget.setFocusPolicy(Qt.NoFocus)
         btn_notes_widget.clicked.connect(self.launch_desktop_notes)
         layout.addWidget(btn_notes_widget)
         btn_exit = QPushButton("Выход")
@@ -11051,12 +11121,25 @@ class LauncherWindow(QMainWindow):
 
     def launch_notes(self):
         self.hide()
-        if self.notes_window is None:
-            self.notes_window = NotesApp()
-            self.notes_window.window_hidden.connect(self.on_notes_hidden)
-        self.notes_window.show()
-        self.notes_window.raise_()
-        self.notes_window.activateWindow()
+        try:
+            if self.notes_window is None:
+                self.notes_window = NotesApp()
+                self.notes_window.window_hidden.connect(self.on_notes_hidden)
+            self.notes_window.show()
+            self.notes_window.raise_()
+            self.notes_window.activateWindow()
+        except Exception as e:
+            log_path = os.path.join(APPDIR, "notespm_last_error.log")
+            try:
+                with open(log_path, "w", encoding="utf-8") as f:
+                    f.write(traceback.format_exc())
+            except Exception:
+                pass
+            QMessageBox.critical(self, "Ошибка запуска «Заметок»",
+                                f"{e}\n\nЛог записан в:\n{log_path}")
+            self.show()
+            self.raise_()
+            self.activateWindow()
 
     def on_notes_hidden(self):
         self.show()
