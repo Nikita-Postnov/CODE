@@ -6688,9 +6688,8 @@ class NotesApp(QMainWindow):
                 f'<img src="Data:image/png;base64,{base64_data}" width="200"><br>'
             )
             cursor = self.text_edit.textCursor()
-            cursor.movePosition(QTextCursor.End)
+            cursor.insertHtml(html_img)
             self.text_edit.setTextCursor(cursor)
-            self.text_edit.insertHtml(html_img)
             self.record_state_for_undo()
 
         self.save_note()
@@ -11729,4 +11728,3 @@ if __name__ == "__main__":
         win.show()
     sys.exit(app.exec())
 
-# UPD 28.12.2025     22:01
