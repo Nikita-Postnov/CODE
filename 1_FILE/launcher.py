@@ -87,6 +87,7 @@ from PySide6.QtGui import (
     QPalette,
     QTextDocument,
     QSyntaxHighlighter,
+    QFocusEvent,
 )
 from PySide6.QtWidgets import (
     QApplication,
@@ -2317,6 +2318,13 @@ class CustomTextEdit(QTextEdit):
         self.setFontPointSize(14)
         self.document().setDefaultFont(QFont("Times New Roman", 14))
         self.setAcceptDrops(True)
+        self.setCursorWidth(2)
+        self._cursor_visible = True
+        self._cursor_blink_timer = QTimer(self)
+        self._cursor_blink_timer.timeout.connect(self._toggle_cursor_visible)
+        self.cursorPositionChanged.connect(self._reset_cursor_blink)
+        self.selectionChanged.connect(self._reset_cursor_blink)
+        self._update_cursor_blink_timer()
 
     def insertFromMimeData(self, source: QMimeData) -> None:
         if source.hasImage() and self.paste_image_callback:
@@ -2344,51 +2352,66 @@ class CustomTextEdit(QTextEdit):
         else:
             super().insertFromMimeData(source)
 
-    def _linkify_plain_text(self, text: str) -> str | None:
-        if not text:
-            return None
-        token_re = re.compile(
-            r"(?:https?://|ftp://)[^\s<>\"']+"
-            r"|www\.[^\s<>\"']+"
-            r"|[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}"
-            r"|[A-Za-z]:[\\/][^\s<>\"']+"
-            r"|/[^\s<>\"']+"
-        )
-        found_any = False
-        out_parts: list[str] = []
-        pos = 0
-        for m in token_re.finditer(text):
-            if m.start() > pos:
-                out_parts.append(html_lib.escape(text[pos : m.start()]))
-            raw = m.group(0)
-            href = None
-            label = html_lib.escape(raw)
-            if re.match(r"^(?:https?://|ftp://)", raw, flags=re.I):
-                href = raw
-            elif raw.lower().startswith("www."):
-                href = "https://" + raw
-            elif re.match(r"^[A-Za-z0-9._%+-]+@", raw):
-                href = f"mailto:{raw}"
-            elif os.path.isabs(raw):
-                try:
-                    href = QUrl.fromLocalFile(os.path.abspath(raw)).toString()
-                except Exception:
-                    href = "file://" + quote(os.path.abspath(raw))
-            if href:
-                found_any = True
-                out_parts.append(
-                    f'<a href="{html_lib.escape(href)}" style="text-decoration: underline;">{label}</a>'
-                )
-            else:
-                out_parts.append(label)
-            pos = m.end()
-        if pos < len(text):
-            out_parts.append(html_lib.escape(text[pos:]))
-        if not found_any:
-            return None
-        html = "".join(out_parts).replace("\r\n", "<br>").replace("\n", "<br>")
-        html = f"<span style=\"font-family:'Times New Roman'; font-size:14pt;\">{html}</span>"
-        return html
+    def focusInEvent(self, event: QFocusEvent) -> None:
+        super().focusInEvent(event)
+        self._cursor_visible = True
+        self._update_cursor_blink_timer()
+        self.viewport().update()
+
+    def focusOutEvent(self, event: QFocusEvent) -> None:
+        super().focusOutEvent(event)
+        self._cursor_blink_timer.stop()
+        self._cursor_visible = False
+        self.viewport().update()
+
+    def paintEvent(self, event) -> None:
+        super().paintEvent(event)
+        if not self._cursor_visible or not self.hasFocus() or self.isReadOnly():
+            return
+        cursor = self.textCursor()
+        if cursor.hasSelection():
+            cursor = QTextCursor(cursor)
+            cursor.clearSelection()
+        rect = self.cursorRect(cursor)
+        if not rect.isValid():
+            return
+        painter = QPainter(self.viewport())
+        pen = QPen(self.palette().color(QPalette.Text))
+        pen.setWidth(max(1, self.cursorWidth()))
+        painter.setPen(pen)
+        painter.drawLine(rect.topLeft(), rect.bottomLeft())
+
+    def setReadOnly(self, readonly: bool) -> None:
+        super().setReadOnly(readonly)
+        if readonly:
+            self._cursor_blink_timer.stop()
+            self._cursor_visible = False
+        else:
+            self._cursor_visible = True
+            self._update_cursor_blink_timer()
+        self.viewport().update()
+
+    def _toggle_cursor_visible(self) -> None:
+        self._cursor_visible = not self._cursor_visible
+        self.viewport().update()
+
+    def _reset_cursor_blink(self) -> None:
+        self._cursor_visible = True
+        self._update_cursor_blink_timer()
+        self.viewport().update()
+
+    def _update_cursor_blink_timer(self) -> None:
+        flash_time = QApplication.cursorFlashTime()
+        if flash_time <= 0:
+            self._cursor_blink_timer.stop()
+            self._cursor_visible = True
+            self.viewport().update()
+            return
+        interval = max(100, flash_time // 2)
+        if self.hasFocus() and not self.isReadOnly():
+            self._cursor_blink_timer.start(interval)
+        else:
+            self._cursor_blink_timer.stop()
 
     def ignore_in_this_note(self, word: str) -> None:
         mw = self.window()
