@@ -11729,4 +11729,4 @@ if __name__ == "__main__":
         win.show()
     sys.exit(app.exec())
 
-# UPD 28.12.2025     22:01
+# 
