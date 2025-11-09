@@ -3513,7 +3513,12 @@ class NotesApp(QMainWindow):
         hist_layout.addWidget(self.delete_history_button)
         self.history_widget = QWidget()
         self.history_widget.setLayout(hist_layout)
-        self.history_widget.setMinimumWidth(200)
+        self.history_widget.setMinimumWidth(
+            max(
+                self.delete_history_button.sizeHint().width() + 24,
+                self.history_list.sizeHint().width(),
+            )
+        )
         self.history_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.text_edit = CustomTextEdit(parent=self, paste_image_callback=self.insert_image_from_clipboard)
         self.autosave_delay_ms = 1000
@@ -3587,6 +3592,7 @@ class NotesApp(QMainWindow):
         self.dock_history.setAllowedAreas(
             Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea
         )
+        self.addDockWidget(Qt.LeftDockWidgetArea, self.dock_history)
         self.addDockWidget(Qt.LeftDockWidgetArea, self.dock_history)
         self.dock_buttons = QDockWidget("Управление", self)
         self.dock_buttons.setObjectName("dock_buttons")
@@ -3713,11 +3719,15 @@ class NotesApp(QMainWindow):
             Qt.TopDockWidgetArea | Qt.BottomDockWidgetArea
         )
         self.addDockWidget(Qt.TopDockWidgetArea, self.dock_toolbar)
-        self.resizeDocks(
-            [self.dock_notes_list, self.dock_editor, self.dock_history],
-            [280, 800, 240],
-            Qt.Horizontal
+        self._update_side_dock_constraints()
+        self._min_editor_width = max(
+            400,
+            self.dock_editor.minimumSizeHint().width(),
+            self.dock_editor.widget().minimumSizeHint().width()
+            if self.dock_editor.widget()
+            else 0,
         )
+        self._apply_initial_dock_widths()
         self.resizeDocks(
             [self.dock_toolbar, self.dock_editor],
             [120, 1000],
@@ -3832,7 +3842,58 @@ class NotesApp(QMainWindow):
         self.resizeDocks(
             [self.dock_toolbar, self.dock_editor],
             [h, max(300, self.height() - h)],
-            Qt.Vertical
+            Qt.Vertical,
+        )
+
+    def _calc_dock_min_width(self, dock: QDockWidget) -> int:
+        if dock is None:
+            return 0
+        width = max(dock.minimumWidth(), dock.minimumSizeHint().width())
+        widget = dock.widget()
+        if widget is not None:
+            hints = [widget.minimumSizeHint().width(), widget.sizeHint().width()]
+            size_hint_for_column = getattr(widget, "sizeHintForColumn", None)
+            if callable(size_hint_for_column):
+                try:
+                    column_hint = size_hint_for_column(0)
+                except Exception:
+                    column_hint = -1
+                if column_hint and column_hint > 0:
+                    frame_width = getattr(widget, "frameWidth", lambda: 0)()
+                    scroll_width = 0
+                    vertical_scroll = getattr(widget, "verticalScrollBar", None)
+                    if callable(vertical_scroll):
+                        try:
+                            scroll = vertical_scroll()
+                        except Exception:
+                            scroll = None
+                        if scroll is not None:
+                            scroll_width = scroll.sizeHint().width()
+                    hints.append(column_hint + 2 * frame_width + scroll_width + 4)
+            width = max(width, *(hints or [0]))
+        margins = dock.contentsMargins()
+        try:
+            width += margins.left() + margins.right()
+        except Exception:
+            pass
+        return int(max(width, 0))
+
+    def _update_side_dock_constraints(self) -> None:
+        self._min_notes_width = max(1, self._calc_dock_min_width(self.dock_notes_list))
+        self._min_history_width = max(1, self._calc_dock_min_width(self.dock_history))
+        self.dock_notes_list.setMinimumWidth(self._min_notes_width)
+        self.dock_history.setMinimumWidth(self._min_history_width)
+
+    def _apply_initial_dock_widths(self) -> None:
+        notes_min = getattr(self, "_min_notes_width", 200)
+        history_min = getattr(self, "_min_history_width", 200)
+        center_min = getattr(self, "_min_editor_width", 600)
+        available = max(self.width(), notes_min + history_min + center_min)
+        center = max(center_min, available - notes_min - history_min)
+        self.resizeDocks(
+            [self.dock_notes_list, self.dock_editor, self.dock_history],
+            [notes_min, center, history_min],
+            Qt.Horizontal,
         )
 
     def _current_dock_widths(self):
@@ -3869,9 +3930,9 @@ class NotesApp(QMainWindow):
         self._resizing_apply = True
         try:
             total = max(1, self.width())
-            min_left = 180
-            min_center = 400
-            min_right = 180
+            min_left = max(180, getattr(self, "_min_notes_width", 0))
+            min_center = max(400, getattr(self, "_min_editor_width", 0))
+            min_right = max(180, getattr(self, "_min_history_width", 0))
             rl, rc, rr = self._dock_ratios
             left  = int(total * rl)
             center= int(total * rc)
