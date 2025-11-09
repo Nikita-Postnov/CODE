@@ -11688,6 +11688,33 @@ class LauncherWindow(QMainWindow):
         self._geometry_save_timer.timeout.connect(self._save_window_size)
         self._restore_window_size()
 
+    def _on_notes_destroyed(self, *_):
+        if getattr(self, "notes_window", None) is not None:
+            self.notes_window = None
+
+    def _register_notes_window(self, win: "NotesApp") -> None:
+        self.notes_window = win
+        try:
+            win.window_hidden.connect(
+                self.on_notes_hidden, Qt.ConnectionType.UniqueConnection
+            )
+        except TypeError:
+            try:
+                win.window_hidden.disconnect(self.on_notes_hidden)
+            except (TypeError, RuntimeError):
+                pass
+            win.window_hidden.connect(self.on_notes_hidden)
+        try:
+            win.destroyed.connect(
+                self._on_notes_destroyed, Qt.ConnectionType.UniqueConnection
+            )
+        except TypeError:
+            try:
+                win.destroyed.disconnect(self._on_notes_destroyed)
+            except (TypeError, RuntimeError):
+                pass
+            win.destroyed.connect(self._on_notes_destroyed)
+
     def _start_external(self, title: str, candidates: list[str]) -> None:
         path = self._find_first_existing(candidates)
         if not path:
@@ -11733,6 +11760,9 @@ class LauncherWindow(QMainWindow):
         if getattr(self, "notes_window", None) is not None:
             try:
                 if self.notes_window.isVisible():
+                    self._register_notes_window(self.notes_window)
+                    if self.isVisible():
+                        self.hide()
                     if self.notes_window.isMinimized():
                         self.notes_window.showNormal()
                     self.notes_window.raise_()
@@ -11743,25 +11773,23 @@ class LauncherWindow(QMainWindow):
         for w in QApplication.topLevelWidgets():
             try:
                 if isinstance(w, NotesApp):
-                    self.notes_window = w
+                    self._register_notes_window(w)
                     if self.isVisible():
                         self.hide()
                     if w.isMinimized():
                         w.showNormal()
                     w.raise_()
                     w.activateWindow()
-                    w.destroyed.connect(lambda *_: setattr(self, "notes_window", None))
                     return
             except Exception:
                 pass
         if self.isVisible():
             self.hide()
         win = NotesApp()
-        self.notes_window = win
+        self._register_notes_window(win)
         win.show()
         win.raise_()
         win.activateWindow()
-        win.destroyed.connect(lambda *_: setattr(self, "notes_window", None))
 
     def on_notes_hidden(self):
         self.show()
@@ -11778,11 +11806,15 @@ class LauncherWindow(QMainWindow):
     def launch_desktop_notes(self):
         try:
             if self.notes_widget is not None and self.notes_widget.isVisible():
+                if self.isVisible():
+                    self.hide()
                 self.notes_widget.showNormal()
                 self.notes_widget.raise_()
                 self.notes_widget.activateWindow()
                 return
             self.notes_widget = DesktopNotesWidget()
+            if self.isVisible():
+                self.hide()
             self.notes_widget.destroyed.connect(lambda: setattr(self, "notes_widget", None))
             self.notes_widget.show()
             self.notes_widget.raise_()
