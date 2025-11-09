@@ -5891,55 +5891,12 @@ class NotesApp(QMainWindow):
                         continue
                     attachments_found = True
                     file_path = os.path.join(note_dir, filename)
-                    item_widget = QWidget()
-                    layout = QHBoxLayout(item_widget)
-                    if filename.lower().endswith(tuple(IMAGE_EXTENSIONS)):
-                        pixmap = QPixmap(file_path)
-                        icon_label = QLabel()
-                        icon_label.setPixmap(
-                            pixmap.scaled(
-                                48, 48, Qt.KeepAspectRatio, Qt.SmoothTransformation
-                            )
-                        )
-                        layout.addWidget(icon_label)
-                    else:
-                        icon_label = QLabel()
-                        if os.path.exists(FILE_ICON_PATH):
-                            icon_label.setPixmap(
-                                QPixmap(FILE_ICON_PATH).scaled(
-                                    48, 48, Qt.KeepAspectRatio, Qt.SmoothTransformation
-                                )
-                            )
-                        else:
-                            icon_label.setPixmap(
-                                self.style()
-                                .standardIcon(QStyle.SP_FileIcon)
-                                .pixmap(32, 32)
-                            )
-                        layout.addWidget(icon_label)
-                    label = QLabel(filename)
-                    label.setTextInteractionFlags(Qt.TextSelectableByMouse)
-                    layout.addWidget(label)
-                    open_btn = QPushButton("Открыть")
-                    open_btn.setToolTip("Открыть вложение")
-                    open_btn.setFixedSize(60, 24)
-                    open_btn.clicked.connect(
-                        lambda _, path=file_path: self.text_edit._open_any_link(path)
-                    )
-                    layout.addWidget(open_btn)
-                    del_btn = QPushButton("❌")
-                    del_btn.setToolTip("Удалить вложение")
-                    del_btn.setFixedSize(28, 24)
-                    del_btn.clicked.connect(
-                        lambda _, path=file_path: self.delete_attachment_from_panel(
-                            path
-                        )
-                    )
-                    layout.addWidget(del_btn)
-                    item_widget.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Maximum)
                     if self.attachments_layout.count() > 0:
-                        self.attachments_layout.addWidget(QLabel(" - "))
-                    self.attachments_layout.addWidget(item_widget)
+                        separator = QLabel(" - ", self.attachments_panel)
+                        self.attachments_layout.addWidget(separator)
+                    self.attachments_layout.addWidget(
+                        self._create_attachment_widget(file_path)
+                    )
                 if note_dir not in self.attachments_watcher.directories():
                     self.attachments_watcher.addPath(note_dir)
             self.attachments_scroll.setVisible(attachments_found)
@@ -7219,47 +7176,66 @@ class NotesApp(QMainWindow):
                     continue
                 attachments_found = True
                 file_path = os.path.join(note_dir, filename)
-                item_widget = QWidget()
-                layout = QHBoxLayout(item_widget)
-                icon_label = QLabel()
-                if filename.lower().endswith(tuple(IMAGE_EXTENSIONS)):
-                    pixmap = QPixmap(file_path)
-                    icon_label.setPixmap(
-                        pixmap.scaled(
-                            48, 48, Qt.KeepAspectRatio, Qt.SmoothTransformation
-                        )
-                    )
-                else:
-                    if os.path.exists(FILE_ICON_PATH):
-                        icon_label.setPixmap(
-                            QPixmap(FILE_ICON_PATH).scaled(
-                                48, 48, Qt.KeepAspectRatio, Qt.SmoothTransformation
-                            )
-                        )
-                    else:
-                        icon_label.setPixmap(
-                            self.style().standardIcon(QStyle.SP_FileIcon).pixmap(32, 32)
-                        )
-                layout.addWidget(icon_label)
-                label = QLabel(filename)
-                label.setTextInteractionFlags(Qt.TextSelectableByMouse)
-                layout.addWidget(label)
-                open_btn = QPushButton("Открыть")
-                open_btn.setToolTip("Открыть вложение")
-                open_btn.setFixedSize(60, 24)
-                open_btn.clicked.connect(
-                    lambda _, path=file_path: self.text_edit._open_any_link(path)
+                if self.attachments_layout.count() > 0:
+                    separator = QLabel(" - ", self.attachments_panel)
+                    self.attachments_layout.addWidget(separator)
+                self.attachments_layout.addWidget(
+                    self._create_attachment_widget(file_path)
                 )
-                layout.addWidget(open_btn)
-                del_btn = QPushButton("❌")
-                del_btn.setToolTip("Удалить вложение")
-                del_btn.setFixedSize(28, 24)
-                del_btn.clicked.connect(
-                    lambda _, path=file_path: self.delete_attachment_from_panel(path)
-                )
-                layout.addWidget(del_btn)
-                self.attachments_layout.addWidget(item_widget)
+        if attachments_found and note_dir not in self.attachments_watcher.directories():
+            self.attachments_watcher.addPath(note_dir)
         self.attachments_scroll.setVisible(attachments_found)
+
+    def _create_attachment_widget(self, file_path: str) -> QWidget:
+        filename = os.path.basename(file_path)
+        item_widget = QWidget(self.attachments_panel)
+        layout = QHBoxLayout(item_widget)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
+        icon_label = QLabel(item_widget)
+        if filename.lower().endswith(tuple(IMAGE_EXTENSIONS)) and os.path.exists(
+            file_path
+        ):
+            pixmap = QPixmap(file_path)
+            if not pixmap.isNull():
+                icon_label.setPixmap(
+                    pixmap.scaled(48, 48, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                )
+        if icon_label.pixmap() is None:
+            if os.path.exists(FILE_ICON_PATH):
+                icon_label.setPixmap(
+                    QPixmap(FILE_ICON_PATH).scaled(
+                        48, 48, Qt.KeepAspectRatio, Qt.SmoothTransformation
+                    )
+                )
+            else:
+                icon_label.setPixmap(
+                    self.style().standardIcon(QStyle.SP_FileIcon).pixmap(32, 32)
+                )
+        layout.addWidget(icon_label)
+
+        label = QLabel(filename, item_widget)
+        label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        layout.addWidget(label)
+
+        open_btn = QPushButton("Открыть", item_widget)
+        open_btn.setToolTip("Открыть вложение")
+        open_btn.setFixedSize(60, 24)
+        open_btn.clicked.connect(
+            lambda _, path=file_path: self.text_edit._open_any_link(path)
+        )
+        layout.addWidget(open_btn)
+
+        del_btn = QPushButton("❌", item_widget)
+        del_btn.setToolTip("Удалить вложение")
+        del_btn.setFixedSize(28, 24)
+        del_btn.clicked.connect(
+            lambda _, path=file_path: self.delete_attachment_from_panel(path)
+        )
+        layout.addWidget(del_btn)
+
+        item_widget.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Maximum)
+        return item_widget
 
     def insert_link(self) -> None:
         cursor = self.text_edit.textCursor()
