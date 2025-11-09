@@ -8036,6 +8036,7 @@ class NotesApp(QMainWindow):
         act_switch.triggered.connect(self.show_app_launcher)
         apps_menu.addAction(act_switch)
         plugins_menu = menu_bar.addMenu("Плагины")
+        self.plugins_menu = plugins_menu
         act = QAction("Управление плагинами", self)
         act.triggered.connect(self.manage_plugins_dialog)
         plugins_menu.addAction(act)
@@ -9286,15 +9287,7 @@ class NotesApp(QMainWindow):
         dialog.exec()
 
     def clear_plugin_menu_actions(self):
-        menu_bar = self.menuBar()
-        plugins_menu = None
-        for menu in menu_bar.children():
-            try:
-                if menu.title() == "Плагины":
-                    plugins_menu = menu
-                    break
-            except Exception:
-                continue
+        plugins_menu = getattr(self, "plugins_menu", None)
         if plugins_menu:
             static_actions = {"Управление плагинами", "Перезагрузить плагины"}
             actions_to_remove = []
