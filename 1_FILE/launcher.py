@@ -38,7 +38,6 @@ def safe_listdir(path) -> list[str]:
         fs_path = os.fspath(path)
     except TypeError:
         return []
-
     try:
         return os.listdir(fs_path)
     except OSError:
@@ -4504,7 +4503,7 @@ class NotesApp(QMainWindow):
     def load_notes_from_disk(self) -> None:
         self.ensure_notes_directory()
         loaded_notes = []
-        for folder in os.listdir(NOTES_DIR):
+        for folder in safe_listdir(NOTES_DIR):
             folder_path = os.path.join(NOTES_DIR, folder)
             if os.path.isdir(folder_path):
                 file_path = os.path.join(folder_path, "note.json")
@@ -9430,12 +9429,18 @@ class NotesApp(QMainWindow):
         pass
 
     def load_plugins(app, plugins_folder="Plugins"):
-        if not os.path.exists(plugins_folder):
-            os.makedirs(plugins_folder)
+        if isinstance(plugins_folder, bool) or plugins_folder in (None, ""):
+            plugins_folder = "Plugins"
+        try:
+            plugins_folder_path = os.fspath(plugins_folder)
+        except TypeError:
             return
-        for filename in safe_listdir(plugins_folder):
+        if not os.path.exists(plugins_folder_path):
+            os.makedirs(plugins_folder_path)
+            return
+        for filename in safe_listdir(plugins_folder_path):
             if filename.endswith(".py"):
-                plugin_path = os.path.join(plugins_folder, filename)
+                plugin_path = os.path.join(plugins_folder_path, filename)
                 spec = importlib.util.spec_from_file_location(filename[:-3], plugin_path)
                 if spec is None:
                     continue
@@ -9447,10 +9452,8 @@ class NotesApp(QMainWindow):
                 except Exception as e:
                     print(f"Ошибка при загрузке плагина {filename}: {e}")
 
-
     def get_app_dir():
         return APPDIR
-
 
 def create_default_config():
     config_path = os.path.join(PASSWORDS_DIR, "config.json")
