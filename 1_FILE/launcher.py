@@ -10551,6 +10551,7 @@ class RegenerateSaltDialog(tk.Toplevel):
 class PasswordGeneratorApp:
     def __init__(self, master):
         self.master = master
+        self.settings = QSettings(SETTINGS_PATH, QSettings.IniFormat)
         master.title("Генератор паролей")
         master.geometry("800x600")
         self._backup_job = None
@@ -10560,8 +10561,12 @@ class PasswordGeneratorApp:
         self._closing = False
         self.master.protocol("WM_DELETE_WINDOW", self._on_close)
         master.minsize(800, 600)
+        self._size_after_id = None
+        self._last_reported_size: tuple[int, int] | None = None
+        self._restore_window_size()
         master.attributes("-topmost", True)
         master.lift()
+        master.bind("<Configure>", self._on_configure)
         self.idle_timer = None
         self.idle_timeout = 120000
         self.setup_activity_tracking()
@@ -10581,6 +10586,55 @@ class PasswordGeneratorApp:
         self.master.deiconify()
         self.master.after_idle(self._refresh_password_list)
         self.master.after(2000, self.schedule_backup)
+
+    def _restore_window_size(self) -> None:
+        try:
+            stored_w = self.settings.value("ui/password_manager_width", type=int)
+            stored_h = self.settings.value("ui/password_manager_height", type=int)
+        except Exception:
+            stored_w = stored_h = None
+        if isinstance(stored_w, int) and isinstance(stored_h, int):
+            min_w, min_h = self.master.minsize()
+            if isinstance(min_w, int) and min_w > 0:
+                stored_w = max(min_w, stored_w)
+            if isinstance(min_h, int) and min_h > 0:
+                stored_h = max(min_h, stored_h)
+            if stored_w > 0 and stored_h > 0:
+                self.master.geometry(f"{stored_w}x{stored_h}")
+
+    def _on_configure(self, event):
+        if event.widget is not self.master:
+            return
+        if event.width <= 1 or event.height <= 1:
+            return
+        current = (int(event.width), int(event.height))
+        if self._last_reported_size == current:
+            return
+        self._last_reported_size = current
+        self._schedule_window_size_save()
+
+    def _schedule_window_size_save(self) -> None:
+        if self._size_after_id is not None:
+            try:
+                self.master.after_cancel(self._size_after_id)
+            except Exception:
+                pass
+        self._size_after_id = self.master.after(350, self._save_window_size)
+
+    def _save_window_size(self) -> None:
+        if not self.master.winfo_exists():
+            return
+        try:
+            width = int(self.master.winfo_width())
+            height = int(self.master.winfo_height())
+        except Exception:
+            return
+        if width <= 1 or height <= 1:
+            return
+        self.settings.setValue("ui/password_manager_width", width)
+        self.settings.setValue("ui/password_manager_height", height)
+        self.settings.sync()
+        self._size_after_id = None
 
     def _safe_copy_to_clipboard(self, text: str, clear_after_ms: int = 60000) -> bool:
         if not text:
@@ -10691,6 +10745,13 @@ class PasswordGeneratorApp:
                 self.idle_timer = None
         except Exception:
             pass
+        if getattr(self, "_size_after_id", None) is not None:
+            try:
+                self.master.after_cancel(self._size_after_id)
+            except Exception:
+                pass
+            self._size_after_id = None
+        self._save_window_size()
         self.master.destroy()
 
     def schedule_backup(self):
@@ -11621,6 +11682,11 @@ class LauncherWindow(QMainWindow):
             }
             """
         )
+        self._geometry_save_timer = QTimer(self)
+        self._geometry_save_timer.setSingleShot(True)
+        self._geometry_save_timer.setInterval(300)
+        self._geometry_save_timer.timeout.connect(self._save_window_size)
+        self._restore_window_size()
 
     def _start_external(self, title: str, candidates: list[str]) -> None:
         path = self._find_first_existing(candidates)
@@ -11729,6 +11795,35 @@ class LauncherWindow(QMainWindow):
             except Exception:
                 pass
             QMessageBox.critical(self, "Ошибка", f"Не удалось открыть Заметки:\n{e}")
+
+    def _restore_window_size(self) -> None:
+        try:
+            w = self.settings.value("ui/launcher_width", type=int)
+            h = self.settings.value("ui/launcher_height", type=int)
+        except Exception:
+            w = h = None
+        if isinstance(w, int) and isinstance(h, int) and w > 0 and h > 0:
+            self.resize(max(self.minimumWidth(), w), max(self.minimumHeight(), h))
+
+    def _schedule_window_size_save(self) -> None:
+        if getattr(self, "_geometry_save_timer", None):
+            self._geometry_save_timer.start()
+
+    def _save_window_size(self) -> None:
+        try:
+            size = self.size()
+            self.settings.setValue("ui/launcher_width", int(size.width()))
+            self.settings.setValue("ui/launcher_height", int(size.height()))
+        except Exception:
+            pass
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._schedule_window_size_save()
+
+    def closeEvent(self, event):
+        self._save_window_size()
+        super().closeEvent(event)
 
     def launch_screenshoter(self):
         self._start_external("Скриншотер", ["ScreenshotPN.exe"])
