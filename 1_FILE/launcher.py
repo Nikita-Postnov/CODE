@@ -424,10 +424,11 @@ if not os.path.exists(USER_DICT_PATH):
 MAX_HISTORY = 250
 IMAGE_EXTENSIONS = [".png", ".jpg", ".jpeg", ".bmp", ".gif"]
 AUDIO_EXTENSIONS = [".wav", ".mp3", ".ogg"]
+ATTACH_ALL_FILES_FILTER = "Все файлы (*)"
 ATTACH_FILE_FILTER = (
     f"Изображения ({' '.join('*' + ext for ext in IMAGE_EXTENSIONS)})"
     f";;Аудио ({' '.join('*' + ext for ext in AUDIO_EXTENSIONS)})"
-    f";;Все файлы (*)"
+    f";;{ATTACH_ALL_FILES_FILTER}"
 )
 
 
@@ -6095,6 +6096,7 @@ class NotesApp(QMainWindow):
             "Прикрепить файл",
             "",
             ATTACH_FILE_FILTER,
+            ATTACH_ALL_FILES_FILTER,
         )
         if not file_path:
             return
