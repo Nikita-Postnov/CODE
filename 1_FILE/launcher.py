@@ -9417,28 +9417,33 @@ class NotesApp(QMainWindow):
     def on_text_changed_autosave(self):
         pass
 
-    def load_plugins(app, plugins_folder="Plugins"):
-        if not os.path.exists(plugins_folder):
-            os.makedirs(plugins_folder)
-            return
-        for filename in os.listdir(plugins_folder):
-            if filename.endswith(".py"):
-                plugin_path = os.path.join(plugins_folder, filename)
-                spec = importlib.util.spec_from_file_location(filename[:-3], plugin_path)
-                if spec is None:
-                    continue
-                plugin = importlib.util.module_from_spec(spec)
-                try:
-                    spec.loader.exec_module(plugin)
-                    if hasattr(plugin, "register_plugin"):
-                        plugin.register_plugin(app)
-                except Exception as e:
-                    print(f"Ошибка при загрузке плагина {filename}: {e}")
+def load_plugins(app, plugins_folder=None):
+    if isinstance(plugins_folder, bool) or plugins_folder is None:
+        plugins_folder = os.path.join(APPDIR, "Plugins")
+    else:
+        plugins_folder = os.fspath(plugins_folder)
+
+    if not os.path.exists(plugins_folder):
+        os.makedirs(plugins_folder)
+        return
+
+    for filename in os.listdir(plugins_folder):
+        if filename.endswith(".py"):
+            plugin_path = os.path.join(plugins_folder, filename)
+            spec = importlib.util.spec_from_file_location(filename[:-3], plugin_path)
+            if spec is None:
+                continue
+            plugin = importlib.util.module_from_spec(spec)
+            try:
+                spec.loader.exec_module(plugin)
+                if hasattr(plugin, "register_plugin"):
+                    plugin.register_plugin(app)
+            except Exception as e:
+                print(f"Ошибка при загрузке плагина {filename}: {e}")
 
 
-    def get_app_dir():
-        return APPDIR
-
+def get_app_dir():
+    return APPDIR
 
 def create_default_config():
     config_path = os.path.join(PASSWORDS_DIR, "config.json")
