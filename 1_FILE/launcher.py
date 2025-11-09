@@ -32,17 +32,6 @@ from tkinter import filedialog as tk_filedialog
 from functools import partial
 import pyperclip
 import subprocess
-
-def safe_listdir(path) -> list[str]:
-    try:
-        fs_path = os.fspath(path)
-    except TypeError:
-        return []
-    try:
-        return os.listdir(fs_path)
-    except OSError:
-        return []
-
 from PySide6.QtCore import (
     Qt,
     QMimeData,
@@ -827,7 +816,7 @@ class DesktopNotesWidget(QWidget):
         try:
             if not os.path.isdir(NOTES_DIR):
                 return items
-            for folder in safe_listdir(NOTES_DIR):
+            for folder in os.listdir(NOTES_DIR):
                 if folder == "Trash":
                     continue
                 folder_path = os.path.join(NOTES_DIR, folder)
@@ -4503,7 +4492,7 @@ class NotesApp(QMainWindow):
     def load_notes_from_disk(self) -> None:
         self.ensure_notes_directory()
         loaded_notes = []
-        for folder in safe_listdir(NOTES_DIR):
+        for folder in os.listdir(NOTES_DIR):
             folder_path = os.path.join(NOTES_DIR, folder)
             if os.path.isdir(folder_path):
                 file_path = os.path.join(folder_path, "note.json")
@@ -5375,7 +5364,7 @@ class NotesApp(QMainWindow):
         self.notes_list.clear()
         if not os.path.exists(self.TRASH_DIR):
             return
-        for folder in safe_listdir(self.TRASH_DIR):
+        for folder in os.listdir(self.TRASH_DIR):
             folder_path = os.path.join(self.TRASH_DIR, folder)
             if os.path.isdir(folder_path):
                 file_path = os.path.join(folder_path, "note.json")
@@ -5454,7 +5443,7 @@ class NotesApp(QMainWindow):
                 QMessageBox.Yes | QMessageBox.No,
             )
             if reply == QMessageBox.Yes:
-                for folder in safe_listdir(self.TRASH_DIR):
+                for folder in os.listdir(self.TRASH_DIR):
                     folder_path = os.path.join(self.TRASH_DIR, folder)
                     shutil.rmtree(folder_path)
                 self.refresh_notes_list()
@@ -5820,7 +5809,7 @@ class NotesApp(QMainWindow):
                 ignored_files = {"note.json", ".DS_Store", "Thumbs.db"}
                 ignored_prefixes = ("~$", ".~")
                 ignored_suffixes = ("~", ".tmp", ".temp")
-                for filename in safe_listdir(note_dir):
+                for filename in os.listdir(note_dir):
                     if (
                         filename in ignored_files
                         or filename.startswith(ignored_prefixes)
@@ -7151,7 +7140,7 @@ class NotesApp(QMainWindow):
             ignored_files = {"note.json", ".DS_Store", "Thumbs.db"}
             ignored_prefixes = ("~$", ".~")
             ignored_suffixes = ("~", ".tmp", ".temp")
-            for filename in safe_listdir(note_dir):
+            for filename in os.listdir(note_dir):
                 if (
                     filename in ignored_files
                     or filename.startswith(ignored_prefixes)
@@ -8036,7 +8025,6 @@ class NotesApp(QMainWindow):
         act_switch.triggered.connect(self.show_app_launcher)
         apps_menu.addAction(act_switch)
         plugins_menu = menu_bar.addMenu("Плагины")
-        self.plugins_menu = plugins_menu
         act = QAction("Управление плагинами", self)
         act.triggered.connect(self.manage_plugins_dialog)
         plugins_menu.addAction(act)
@@ -8637,7 +8625,7 @@ class NotesApp(QMainWindow):
         if not os.path.exists(note_dir):
             return
         attachments = []
-        for file_name in safe_listdir(note_dir):
+        for file_name in os.listdir(note_dir):
             if file_name != "note.json":
                 attachments.append(file_name)
         attachment_links = "\n".join(
@@ -9170,7 +9158,7 @@ class NotesApp(QMainWindow):
         plugins_state_path = os.path.join(DATA_DIR, "plugins_state.json")
         plugins = []
         if os.path.exists(plugins_folder):
-            for fname in safe_listdir(plugins_folder):
+            for fname in os.listdir(plugins_folder):
                 if fname.endswith(".py"):
                     plugins.append(fname[:-3])
         if os.path.exists(plugins_state_path):
@@ -9287,7 +9275,15 @@ class NotesApp(QMainWindow):
         dialog.exec()
 
     def clear_plugin_menu_actions(self):
-        plugins_menu = getattr(self, "plugins_menu", None)
+        menu_bar = self.menuBar()
+        plugins_menu = None
+        for menu in menu_bar.children():
+            try:
+                if menu.title() == "Плагины":
+                    plugins_menu = menu
+                    break
+            except Exception:
+                continue
         if plugins_menu:
             static_actions = {"Управление плагинами", "Перезагрузить плагины"}
             actions_to_remove = []
@@ -9320,7 +9316,7 @@ class NotesApp(QMainWindow):
         self.active_plugins = {}
         if not os.path.exists(plugins_folder):
             return
-        for fname in safe_listdir(plugins_folder):
+        for fname in os.listdir(plugins_folder):
             if fname.endswith(".py"):
                 plugin_name = fname[:-3]
                 plugin_path = os.path.join(plugins_folder, fname)
@@ -9344,7 +9340,7 @@ class NotesApp(QMainWindow):
         plugins = []
         plugins_folder = os.path.join(APPDIR, "Plugins")
         if os.path.exists(plugins_folder):
-            for file in safe_listdir(plugins_folder):
+            for file in os.listdir(plugins_folder):
                 if file.endswith(".py"):
                     plugins.append(file[:-3])
         return plugins
@@ -9422,18 +9418,12 @@ class NotesApp(QMainWindow):
         pass
 
     def load_plugins(app, plugins_folder="Plugins"):
-        if isinstance(plugins_folder, bool) or plugins_folder in (None, ""):
-            plugins_folder = "Plugins"
-        try:
-            plugins_folder_path = os.fspath(plugins_folder)
-        except TypeError:
+        if not os.path.exists(plugins_folder):
+            os.makedirs(plugins_folder)
             return
-        if not os.path.exists(plugins_folder_path):
-            os.makedirs(plugins_folder_path)
-            return
-        for filename in safe_listdir(plugins_folder_path):
+        for filename in os.listdir(plugins_folder):
             if filename.endswith(".py"):
-                plugin_path = os.path.join(plugins_folder_path, filename)
+                plugin_path = os.path.join(plugins_folder, filename)
                 spec = importlib.util.spec_from_file_location(filename[:-3], plugin_path)
                 if spec is None:
                     continue
@@ -9445,8 +9435,10 @@ class NotesApp(QMainWindow):
                 except Exception as e:
                     print(f"Ошибка при загрузке плагина {filename}: {e}")
 
+
     def get_app_dir():
         return APPDIR
+
 
 def create_default_config():
     config_path = os.path.join(PASSWORDS_DIR, "config.json")
@@ -11737,4 +11729,4 @@ if __name__ == "__main__":
         win.show()
     sys.exit(app.exec())
 
-# 
+# UPD 28.12.2025     22:01
