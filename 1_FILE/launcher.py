@@ -9339,11 +9339,28 @@ class NotesApp(QMainWindow):
                     spec.loader.exec_module(module)
                     self.active_plugins[plugin_name] = module
                     if plugins_state.get(plugin_name, False):
+                        if hasattr(module, "register_plugin"):
+                            try:
+                                module.register_plugin(self)
+                            except Exception as e:
+                                print(
+                                    f"Ошибка при регистрации плагина {plugin_name}: {e}"
+                                )
                         if hasattr(module, "on_enable"):
-                            module.on_enable(parent=self)
+                            try:
+                                module.on_enable(parent=self)
+                            except Exception as e:
+                                print(
+                                    f"Ошибка при инициализации плагина {plugin_name}: {e}"
+                                )
                     else:
                         if hasattr(module, "on_disable"):
-                            module.on_disable(parent=self)
+                            try:
+                                module.on_disable(parent=self)
+                            except Exception as e:
+                                print(
+                                    f"Ошибка при деинициализации плагина {plugin_name}: {e}"
+                                )
                 except Exception as e:
                     print(f"Ошибка при загрузке плагина {fname}:", e)
 
@@ -11743,5 +11760,3 @@ if __name__ == "__main__":
         app.launcher_window = win
         win.show()
     sys.exit(app.exec())
-
-# 
