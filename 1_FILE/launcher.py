@@ -6965,7 +6965,7 @@ class NotesApp(QMainWindow):
         try:
             self.show_toast(
                 "Обновляю…",
-                timeout_ms=1600,
+                ms=1600,
                 anchor_widget=getattr(self, "refresh_button", None),
             )
         except Exception:
@@ -7045,10 +7045,17 @@ class NotesApp(QMainWindow):
                     added.append(tag)
             if added:
                 self.update_tag_filter_items()
-                self.show_toast("Теги добавлены", "Добавлены теги: " + ", ".join(added))
+                self.show_toast(
+                    "Теги добавлены",
+                    detail="Добавлены теги: " + ", ".join(added),
+                )
                 self.tags_label.setText(f"Теги: {', '.join(self.current_note.tags)}")
             else:
-                self.show_toast(self, "Нет новых тегов", "Все введённые теги уже есть у заметки.")
+                self.show_toast(
+                    "Нет новых тегов",
+                    detail="Все введённые теги уже есть у заметки.",
+                    boundary_widget=self,
+                )
 
     def manage_tags_dialog(self) -> None:
         dialog = QDialog(self)
@@ -8987,11 +8994,24 @@ class NotesApp(QMainWindow):
         text: str,
         ms: int = 1200,
         *,
+        detail: str | None = None,
         boundary_widget: QWidget | None = None,
         anchor_widget: QWidget | None = None,
+        timeout_ms: int | None = None,
     ) -> None:
-        overlay_parent = boundary_widget or self
-        lbl = QLabel(text, overlay_parent)
+        if timeout_ms is not None:
+            ms = timeout_ms
+        try:
+            ms = int(ms)
+        except (TypeError, ValueError):
+            ms = 1200
+        label_text = str(text)
+        if detail:
+            label_text = f"{label_text}\n{detail}" if label_text else detail
+        overlay_parent = (
+            boundary_widget if isinstance(boundary_widget, QWidget) else self
+        )
+        lbl = QLabel(label_text, overlay_parent)
         lbl.setObjectName("toast")
         lbl.setAttribute(Qt.WA_TransparentForMouseEvents)
         lbl.setStyleSheet(
@@ -9008,7 +9028,7 @@ class NotesApp(QMainWindow):
         )
         lbl.setWordWrap(False)
         lbl.adjustSize()
-        if anchor_widget is not None:
+        if isinstance(anchor_widget, QWidget):
             anchor_center = anchor_widget.mapTo(
                 overlay_parent, anchor_widget.rect().center()
             )
@@ -9157,8 +9177,11 @@ class NotesApp(QMainWindow):
                     self.text_edit.setTextCursor(cursor)
                     self.text_edit.insertHtml(f'📄 <a href="{file_url}">{filename}</a>')
         try:
-            self.show_toast("Файлы прикреплены", timeout_ms=1400,
-                            anchor_widget=getattr(self, "attachments_scroll", None))
+            self.show_toast(
+                "Файлы прикреплены",
+                ms=1400,
+                anchor_widget=getattr(self, "attachments_scroll", None),
+            )
         except Exception:
             pass
         self.save_note()
