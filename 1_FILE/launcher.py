@@ -32,6 +32,7 @@ from tkinter import filedialog as tk_filedialog
 from functools import partial
 import pyperclip
 import subprocess
+import ctypes
 from PySide6.QtCore import (
     Qt,
     QMimeData,
@@ -2519,11 +2520,17 @@ class CustomTextEdit(QTextEdit):
                         except Exception:
                             pass
                         try:
-                            from PySide6.QtCore import QProcess
-
-                            return QProcess.startDetached(
-                                "cmd", ["/c", "start", "", f'"{p}"']
+                            path = os.fspath(p)
+                            rc = ctypes.windll.shell32.ShellExecuteW(
+                                None,
+                                "open",
+                                path,
+                                None,
+                                None,
+                                1,
                             )
+                            if rc > 32:
+                                return True
                         except Exception:
                             pass
                     return QDesktopServices.openUrl(QUrl.fromLocalFile(p))
