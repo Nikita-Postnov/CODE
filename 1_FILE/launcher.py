@@ -48,6 +48,7 @@ from PySide6.QtCore import (
     QThread,
     Signal,
     QBuffer,
+    QByteArray,
     QPointF,
     QIODevice,
     QFileSystemWatcher,
@@ -4746,11 +4747,11 @@ class NotesApp(QMainWindow):
         self.resizeDocks([self.dock_toolbar, self.dock_editor],
                         [h, max(300, self.height() - h)], Qt.Vertical)
         self.dock_toolbar.setMinimumHeight(36)
-        geometry = self.settings.value("geometry")
-        if geometry:
+        geometry = self.settings.value("geometry", None, QByteArray)
+        if isinstance(geometry, QByteArray) and not geometry.isEmpty():
             self.restoreGeometry(geometry)
-        state = self.settings.value("windowState")
-        if state:
+        state = self.settings.value("windowState", None, QByteArray)
+        if isinstance(state, QByteArray) and not state.isEmpty():
             self.restoreState(state)
         last_text = self.settings.value("lastNoteText")
         if last_text and not getattr(self, "current_note", None):
