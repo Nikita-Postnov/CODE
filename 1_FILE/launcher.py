@@ -3373,6 +3373,7 @@ class NotesApp(QMainWindow):
         self.autosave_enabled = True
         self.debounce_timer = QTimer(self)
         self.debounce_timer.setSingleShot(True)
+        self.debounce_timer.setInterval(self.debounce_ms)
         self.debounce_timer.timeout.connect(self.autosave_current_note)
         self.text_edit.textChanged.connect(self._on_text_changed)
         self.current_note = None
@@ -3431,12 +3432,8 @@ class NotesApp(QMainWindow):
         if getattr(self, "_edit_session_note_uuid", None) and self._edit_session_note_uuid != self.current_note.uuid:
             return
         self._edit_session_note_uuid = self.current_note.uuid
-        self.update_current_note_content()
         self.pending_save = True
         self._set_unsaved(True)
-        if getattr(self, "autosave_enabled", True):
-            if self.autosave_enabled:
-                self.save_note_quiet(force=True)
         if hasattr(self, "debounce_timer"):
             self.debounce_timer.start()
 
@@ -3804,6 +3801,18 @@ class NotesApp(QMainWindow):
         if not getattr(self, "autosave_enabled", True):
             return
         self.autosave_timer.start(self.autosave_delay_ms)
+
+    def _iter_persisted_docks(self):
+        docks = (
+            getattr(self, "dock_notes_list", None),
+            getattr(self, "dock_history", None),
+            getattr(self, "dock_buttons", None),
+            getattr(self, "dock_editor", None),
+            getattr(self, "dock_toolbar", None),
+        )
+        for dock in docks:
+            if dock is not None:
+                yield dock
 
     def _apply_dock_proportions(self):
         left_width = 360
@@ -4675,6 +4684,26 @@ class NotesApp(QMainWindow):
             self.settings.setValue("lastNoteText", "")
         self._apply_vertical_defaults()
 
+        ratios_raw = self.settings.value("ui/dockRatios", "")
+        ratios: list[float] | None = None
+        if ratios_raw:
+            try:
+                parsed = json.loads(ratios_raw)
+            except Exception:
+                parsed = None
+            if (
+                isinstance(parsed, (list, tuple))
+                and len(parsed) == 3
+                and all(isinstance(v, (int, float)) for v in parsed)
+            ):
+                total = float(sum(parsed)) or 1.0
+                ratios = [max(0.0, float(v)) for v in parsed]
+                total = float(sum(ratios)) or 1.0
+                ratios = [v / total for v in ratios]
+        if ratios:
+            self._dock_ratios = ratios
+            QTimer.singleShot(0, self._apply_dock_ratios)
+
     def _note_dir(self, note=None) -> str | None:
         n = note or getattr(self, "current_note", None)
         if not n:
@@ -4685,6 +4714,8 @@ class NotesApp(QMainWindow):
         )
 
     def save_settings(self) -> None:
+        self._capture_dock_ratios()
+        self.settings.setValue("ui/dockRatios", json.dumps(self._dock_ratios))
         self.settings.setValue("geometry", self.saveGeometry())
         self.settings.setValue("ui/dock_toolbar_height", self.dock_toolbar.height())
         self.settings.setValue("windowState", self.saveState())
