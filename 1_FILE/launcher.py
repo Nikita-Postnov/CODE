@@ -3485,6 +3485,8 @@ class NotesApp(QMainWindow):
         self.topmost_checkbox.setChecked(always_on_top)
         self.topmost_checkbox.toggled.connect(self._toggle_always_on_top)
         btns = QVBoxLayout()
+        btns.setContentsMargins(0, 0, 0, 0)
+        btns.setSpacing(6)
         btns.addWidget(self.new_note_button)
         btns.addWidget(self.save_note_button)
         btns.addWidget(self.delete_note_button)
@@ -3494,7 +3496,11 @@ class NotesApp(QMainWindow):
         btns.addStretch()
         buttons_widget = QWidget()
         buttons_widget.setLayout(btns)
+        buttons_widget.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Expanding)
         self.notes_list = QListWidget()
+        self.notes_list.setSizePolicy(
+            QSizePolicy.MinimumExpanding, QSizePolicy.Expanding
+        )
         self.notes_list.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.notes_list.setDragEnabled(True)
         self.notes_list.setAcceptDrops(True)
@@ -3899,12 +3905,16 @@ class NotesApp(QMainWindow):
     def _update_side_dock_constraints(self) -> None:
         self._min_notes_width = max(1, self._calc_dock_min_width(self.dock_notes_list))
         self._min_history_width = max(1, self._calc_dock_min_width(self.dock_history))
+        self._min_buttons_width = max(1, self._calc_dock_min_width(self.dock_buttons))
         self.dock_notes_list.setMinimumWidth(self._min_notes_width)
         self.dock_history.setMinimumWidth(self._min_history_width)
+        self.dock_buttons.setMinimumWidth(self._min_buttons_width)
 
     def _apply_initial_dock_widths(self) -> None:
         notes_min = getattr(self, "_min_notes_width", 200)
         history_min = getattr(self, "_min_history_width", 200)
+        buttons_min = getattr(self, "_min_buttons_width", notes_min)
+        notes_min = max(notes_min, buttons_min)
         center_min = getattr(self, "_min_editor_width", 600)
         available = max(self.width(), notes_min + history_min + center_min)
         center = max(center_min, available - notes_min - history_min)
@@ -3923,7 +3933,8 @@ class NotesApp(QMainWindow):
     def _capture_dock_ratios(self):
         l, c, r = self._current_dock_widths()
         total = max(1, l + c + r)
-        self._dock_ratios = [l/total, c/total, r/total]
+        self._dock_ratios = [l / total, c / total, r / total]
+        self._dock_widths = [l, c, r]
 
     def start_stopwatch(self):
         if not getattr(self, "stopwatch_running", False):
@@ -3946,15 +3957,38 @@ class NotesApp(QMainWindow):
         if self._resizing_apply:
             return
         self._resizing_apply = True
+        desired_raw = getattr(self, "_pending_dock_widths", None)
         try:
-            total = max(1, self.width())
-            min_left = max(180, getattr(self, "_min_notes_width", 0))
+            desired = desired_raw
+            if desired:
+                desired = [max(0, int(v)) for v in desired]
+                if sum(desired) <= 0:
+                    desired = None
+                    self._pending_dock_widths = None
+            min_left = max(
+                1,
+                getattr(self, "_min_notes_width", 0),
+                getattr(self, "_min_buttons_width", 0),
+            )
             min_center = max(400, getattr(self, "_min_editor_width", 0))
-            min_right = max(180, getattr(self, "_min_history_width", 0))
-            rl, rc, rr = self._dock_ratios
-            left  = int(total * rl)
-            center= int(total * rc)
-            right = int(total * rr)
+            min_right = max(1, getattr(self, "_min_history_width", 0))
+            rl, rc, rr = getattr(self, "_dock_ratios", (0.22, 0.56, 0.22))
+            if desired:
+                left, center, right = desired
+                left = max(min_left, left)
+                center = max(min_center, center)
+                right = max(min_right, right)
+                total = max(1, left + center + right)
+                available = max(total, min_left + min_center + min_right)
+                available = max(available, self.width())
+                if total < available:
+                    center += available - total
+                    total = left + center + right
+            else:
+                total = max(1, self.width())
+                left = int(total * rl)
+                center = int(total * rc)
+                right = int(total * rr)
             if center < min_center:
                 delta = min_center - center
                 take = min(delta, max(0, left - min_left))
@@ -3990,6 +4024,8 @@ class NotesApp(QMainWindow):
                 Qt.Horizontal
             )
         finally:
+            if desired_raw:
+                self._pending_dock_widths = None
             QTimer.singleShot(0, self._capture_dock_ratios)
             self._resizing_apply = False
 
@@ -4764,6 +4800,19 @@ class NotesApp(QMainWindow):
 
         ratios_raw = self.settings.value("ui/dockRatios", "")
         ratios: list[float] | None = None
+        widths_raw = self.settings.value("ui/dockWidths", "")
+        pending_widths: list[int] | None = None
+        if widths_raw:
+            try:
+                parsed_w = json.loads(widths_raw)
+            except Exception:
+                parsed_w = None
+            if (
+                isinstance(parsed_w, (list, tuple))
+                and len(parsed_w) == 3
+                and all(isinstance(v, (int, float)) for v in parsed_w)
+            ):
+                pending_widths = [max(0, int(v)) for v in parsed_w]
         if ratios_raw:
             try:
                 parsed = json.loads(ratios_raw)
@@ -4778,7 +4827,12 @@ class NotesApp(QMainWindow):
                 ratios = [max(0.0, float(v)) for v in parsed]
                 total = float(sum(ratios)) or 1.0
                 ratios = [v / total for v in ratios]
-        if ratios:
+        if pending_widths and sum(pending_widths) > 0:
+            total_w = float(sum(pending_widths))
+            self._pending_dock_widths = pending_widths
+            self._dock_ratios = [v / total_w for v in pending_widths]
+            QTimer.singleShot(0, self._apply_dock_ratios)
+        elif ratios:
             self._dock_ratios = ratios
             QTimer.singleShot(0, self._apply_dock_ratios)
 
@@ -4794,6 +4848,10 @@ class NotesApp(QMainWindow):
     def save_settings(self) -> None:
         self._capture_dock_ratios()
         self.settings.setValue("ui/dockRatios", json.dumps(self._dock_ratios))
+        if self._dock_widths:
+            self.settings.setValue("ui/dockWidths", json.dumps(self._dock_widths))
+        else:
+            self.settings.remove("ui/dockWidths")
         self.settings.setValue("geometry", self.saveGeometry())
         self.settings.setValue("ui/dock_toolbar_height", self.dock_toolbar.height())
         self.settings.setValue("windowState", self.saveState())
