@@ -11958,6 +11958,7 @@ class LauncherWindow(QMainWindow):
             size = self.size()
             self.settings.setValue("ui/launcher_width", int(size.width()))
             self.settings.setValue("ui/launcher_height", int(size.height()))
+            self.settings.sync()
         except Exception:
             pass
 
