@@ -4091,6 +4091,81 @@ class NotesApp(QMainWindow):
             self.action_toggle_rdp.setVisible(False)
             self.action_toggle_rdp.blockSignals(False)
 
+    def _field_visibility_settings_key(
+        self, field_id: str, note: Note | None = None
+    ) -> str:
+        if note and getattr(note, "uuid", None):
+            return f"ui/fieldVisibility/{note.uuid}/{field_id}"
+        return f"ui/fieldVisibility/{field_id}"
+
+    @staticmethod
+    def _coerce_to_bool(value, default: bool = False) -> bool:
+        if isinstance(value, bool):
+            return value
+        if value is None:
+            return default
+        if isinstance(value, (int, float)):
+            return value != 0
+        text = str(value).strip().lower()
+        if text in {"1", "true", "yes", "on"}:
+            return True
+        if text in {"0", "false", "no", "off"}:
+            return False
+        return default
+
+    def _load_field_visibility_pref(
+        self, field_id: str, default: bool, note: Note | None = None
+    ) -> bool:
+        if not hasattr(self, "settings"):
+            return default
+        key = self._field_visibility_settings_key(field_id, note)
+        if self.settings.contains(key):
+            return self._coerce_to_bool(self.settings.value(key), default)
+        return default
+
+    def _save_field_visibility_pref(
+        self, field_id: str, visible: bool, note: Note | None = None
+    ) -> None:
+        if not hasattr(self, "settings"):
+            return
+        key = self._field_visibility_settings_key(field_id, note)
+        self.settings.setValue(key, int(bool(visible)))
+        self.settings.sync()
+
+    def _clear_field_visibility_pref(
+        self, field_id: str, note: Note | None = None
+    ) -> None:
+        if not hasattr(self, "settings"):
+            return
+        key = self._field_visibility_settings_key(field_id, note)
+        self.settings.remove(key)
+
+    def _apply_saved_field_visibility(self, note: Note | None) -> None:
+        if note is None:
+            return
+        note.password_manager_visible = self._load_field_visibility_pref(
+            "password_manager",
+            self._coerce_to_bool(
+                getattr(note, "password_manager_visible", False), False
+            ),
+            note,
+        )
+        note.rdp_1c8_visible = self._load_field_visibility_pref(
+            "rdp_1c8",
+            self._coerce_to_bool(getattr(note, "rdp_1c8_visible", False), False),
+            note,
+        )
+        updated_fields = []
+        for field in list(getattr(note, "custom_fields", [])):
+            fid = field.get("id") or f"cf::{uuid.uuid4().hex}"
+            field["id"] = fid
+            default_visible = self._coerce_to_bool(field.get("visible", True), True)
+            field["visible"] = self._load_field_visibility_pref(
+                f"custom/{fid}", default_visible, note
+            )
+            updated_fields.append(field)
+        note.custom_fields = updated_fields
+
     def add_custom_field(self, data: dict | None = None) -> None:
         row = QWidget()
         layout = QHBoxLayout(row)
@@ -4132,12 +4207,17 @@ class NotesApp(QMainWindow):
         fid = (data.get("id") if data else None) or f"cf::{uuid4().hex}"
         action = QAction(f"🙈 {label}", self)
         action.setCheckable(True)
-        fid = label_edit.text().strip() or "field"
-        visible = bool(int(self.settings.value(f"ui/customFieldVisible/{fid}", 1)))
+        raw_visible = True
         if data and "visible" in data:
-            raw = data.get("visible", False)
-            visible = (raw is True) or (str(raw).lower() in {"1", "true", "yes"})
+            raw_visible = data.get("visible", True)
+        visible = self._coerce_to_bool(raw_visible, True)
+        if getattr(self, "current_note", None):
+            visible = self._load_field_visibility_pref(
+                f"custom/{fid}", visible, self.current_note
+            )
+        action.blockSignals(True)
         action.setChecked(visible)
+        action.blockSignals(False)
         row.setVisible(visible)
         self._update_eye_action(action, visible, label)
         widget = {
@@ -4149,16 +4229,6 @@ class NotesApp(QMainWindow):
             "action": action,
             "id": fid,
         }
-        if data and "visible" in data:
-            raw = data["visible"]
-            visible = (raw is True) or (str(raw).lower() in {"1", "true", "yes"})
-        else:
-            visible = bool(int(self.settings.value(f"ui/customFieldVisible/{fid}", 1)))
-            action.blockSignals(True)
-        action.setChecked(visible)
-        action.blockSignals(False)
-        row.setVisible(visible)
-        self._update_eye_action(action, visible, label)
         action.toggled.connect(lambda checked, w=widget: self.on_toggle_custom_field(w, checked))
         label_edit.textChanged.connect(lambda text, w=widget: self.on_custom_field_label_changed(w, text))
         remove_btn.clicked.connect(lambda _, w=widget: self.remove_custom_field(w))
@@ -4193,6 +4263,8 @@ class NotesApp(QMainWindow):
         widget["action"].deleteLater()
         widget["row"].deleteLater()
         self.custom_fields_widgets.remove(widget)
+        if fid := widget.get("id"):
+            self._clear_field_visibility_pref(f"custom/{fid}", self.current_note)
         self.update_current_note_custom_fields()
         if self.current_note:
             self.save_note_to_file(self.current_note)
@@ -4242,9 +4314,9 @@ class NotesApp(QMainWindow):
         self._update_eye_action(widget["action"], checked, widget["label_edit"].text())
         fid = widget.get("id")
         if fid:
-            self.settings.setValue(f"ui/customFieldVisible/{fid}", int(checked))
-            self.settings.sync()
-        self.settings.setValue(f"ui/customFieldVisible/{fid}", int(checked))
+            self._save_field_visibility_pref(
+                f"custom/{fid}", checked, self.current_note
+            )
         self.update_current_note_custom_fields()
         self.save_note_to_file(self.current_note)
         self.save_note_quiet(force=True)
@@ -4319,6 +4391,9 @@ class NotesApp(QMainWindow):
         self._update_eye_action(
             self.action_toggle_pm, checked, self.password_manager_label.text()
         )
+        self._save_field_visibility_pref(
+            "password_manager", checked, self.current_note
+        )
         self.save_note_to_file(self.current_note)
 
     def on_toggle_rdp_visible(self, checked: bool) -> None:
@@ -4339,6 +4414,7 @@ class NotesApp(QMainWindow):
         self._update_eye_action(
             self.action_toggle_rdp, checked, self.rdp_1c8_label.text()
         )
+        self._save_field_visibility_pref("rdp_1c8", checked, self.current_note)
         self.save_note_to_file(self.current_note)
 
     def delete_selected_history_entries(self) -> None:
@@ -4584,6 +4660,7 @@ class NotesApp(QMainWindow):
                         doc = QTextDocument()
                         doc.setHtml(note.content)
                         note.content_txt = doc.toPlainText()
+                    self._apply_saved_field_visibility(note)
                     loaded_notes.append(note)
         unique = {}
         for note in loaded_notes:
@@ -5587,6 +5664,7 @@ class NotesApp(QMainWindow):
                 self.current_note.content = html
                 self.save_note_to_file(self.current_note)
             self.current_note = note
+            self._apply_saved_field_visibility(note)
             self.tags_label.setText(f"Теги: {', '.join(note.tags) if note and note.tags else 'нет'}")
             if hasattr(self, "settings"):
                 self.settings.setValue("lastNoteText", "")
@@ -6019,6 +6097,8 @@ class NotesApp(QMainWindow):
 
     def _update_editor_visibility(self):
         has = self.current_note is not None
+        if has:
+            self._apply_saved_field_visibility(self.current_note)
         self.dock_editor.setVisible(has)
         self.dock_toolbar.setVisible(has)
         self.visibility_toolbar.setVisible(has)
