@@ -5833,12 +5833,7 @@ class NotesApp(QMainWindow):
             self.text_edit.blockSignals(True)
             self.text_edit.clear()
             self.text_edit.blockSignals(False)
-            if hasattr(self, "attachments_layout"):
-                for i in reversed(range(self.attachments_layout.count())):
-                    widget = self.attachments_layout.itemAt(i).widget()
-                    if widget:
-                        widget.setParent(None)
-                        widget.deleteLater()
+            self._clear_attachments_layout()
             self.attachments_scroll.setVisible(False)
             return
         cursor_pos = None
@@ -5863,42 +5858,49 @@ class NotesApp(QMainWindow):
         self.text_edit.blockSignals(False)
         if cursor_pos is not None and anchor_pos is not None:
             self._safe_restore_cursor(anchor_pos, cursor_pos)
-        if hasattr(self, "attachments_layout"):
-            for i in reversed(range(self.attachments_layout.count())):
-                widget = self.attachments_layout.itemAt(i).widget()
-                if widget:
-                    widget.setParent(None)
-                    widget.deleteLater()
-            note_dir = os.path.join(
-                NOTES_DIR,
-                NotesApp.safe_folder_name(note.title, note.uuid, note.timestamp),
-            )
-            attachments_found = False
-            if os.path.isdir(note_dir):
-                ignored_files = {"note.json", ".DS_Store", "Thumbs.db"}
-                ignored_prefixes = ("~$", ".~")
-                ignored_suffixes = ("~", ".tmp", ".temp")
-                for filename in sorted(os.listdir(note_dir)):
-                    if (
-                        filename in ignored_files
-                        or filename.startswith(ignored_prefixes)
-                        or filename.endswith(ignored_suffixes)
-                        or (
-                            filename.startswith("backup(")
-                            and filename.endswith(".json")
-                        )
-                    ):
-                        continue
-                    attachments_found = True
-                    file_path = os.path.join(note_dir, filename)
-                    self.attachments_layout.addWidget(
-                        self._create_attachment_widget(file_path)
+        self._clear_attachments_layout()
+        note_dir = os.path.join(
+            NOTES_DIR,
+            NotesApp.safe_folder_name(note.title, note.uuid, note.timestamp),
+        )
+        attachments_found = False
+        if os.path.isdir(note_dir):
+            ignored_files = {"note.json", ".DS_Store", "Thumbs.db"}
+            ignored_prefixes = ("~$", ".~")
+            ignored_suffixes = ("~", ".tmp", ".temp")
+            for filename in sorted(os.listdir(note_dir)):
+                if (
+                    filename in ignored_files
+                    or filename.startswith(ignored_prefixes)
+                    or filename.endswith(ignored_suffixes)
+                    or (
+                        filename.startswith("backup(")
+                        and filename.endswith(".json")
                     )
-                if note_dir not in self.attachments_watcher.directories():
-                    self.attachments_watcher.addPath(note_dir)
-            self.attachments_scroll.setVisible(attachments_found)
+                ):
+                    continue
+                attachments_found = True
+                file_path = os.path.join(note_dir, filename)
+                self.attachments_layout.addWidget(
+                    self._create_attachment_widget(file_path)
+                )
+            if note_dir not in self.attachments_watcher.directories():
+                self.attachments_watcher.addPath(note_dir)
+        self.attachments_scroll.setVisible(attachments_found)
         self.tags_label.setText(f"Теги: {', '.join(note.tags) if note.tags else 'нет'}")
 
+
+    def _clear_attachments_layout(self) -> None:
+        layout = getattr(self, "attachments_layout", None)
+        if layout is None:
+            return
+        while layout.count():
+            item = layout.takeAt(0)
+            if not item:
+                continue
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
 
     def _refresh_attachments(self, *_) -> None:
         if not self.current_note:
@@ -7153,16 +7155,12 @@ class NotesApp(QMainWindow):
             self.show_notes_by_tag(selected_tag)
 
     def _rebuild_attachments_panel(self, note: Note | None) -> None:
-        if hasattr(self, "attachments_layout"):
-            for i in reversed(range(self.attachments_layout.count())):
-                w = self.attachments_layout.itemAt(i).widget()
-                if w:
-                    w.setParent(None)
-                    w.deleteLater()
+        self._clear_attachments_layout()
         if not note:
             self.attachments_scroll.setVisible(False)
             return
         note_dir = os.path.join(
+
             NOTES_DIR, NotesApp.safe_folder_name(note.title, note.uuid, note.timestamp)
         )
         attachments_found = False
