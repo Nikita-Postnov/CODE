@@ -4495,11 +4495,13 @@ class NotesApp(QMainWindow):
         cursor = self.text_edit.textCursor()
 
         html = (
-            f"<b>UPD [{date_str}]</b><br>"
-            f"<b>Base:</b> <br>"
-            f"<b>User:</b> <br>"
-            f"<b>Result:</b> <br>"
-            f"<b>Details:</b> <br><br>"
+            "<div style=\"border:1px solid #bdbdbd; border-radius:6px; padding:8px 12px; margin-bottom:8px;\">"
+            f"<p style=\"margin:0 0 6px 0;\"><b>UPD [{date_str}]</b></p>"
+            "<p style=\"margin:0 0 4px 0;\"><b>Base:</b> </p>"
+            "<p style=\"margin:0 0 4px 0;\"><b>User:</b> </p>"
+            "<p style=\"margin:0 0 4px 0;\"><b>Result:</b> </p>"
+            "<p style=\"margin:0;\"><b>Details:</b> </p>"
+            "</div><br>"
         )
         cursor.insertHtml(html)
         self.text_edit.setTextCursor(cursor)
@@ -5221,7 +5223,15 @@ class NotesApp(QMainWindow):
                 "name": "UPD блок",
                 "category": "Работа",
                 "description": "Блок обновления с датой, базой, пользователем, результатом и деталями",
-                "content_html": "<b>UPD [{date}]</b><br><b>Base:</b> <br><b>User:</b> <br><b>Result:</b> <br><b>Details:</b> <br><br>",
+                "content_html": (
+                    "<div style=\"border:1px solid #bdbdbd; border-radius:6px; padding:8px 12px; margin-bottom:8px;\">"
+                    "<p style=\"margin:0 0 6px 0;\"><b>UPD [{date}]</b></p>"
+                    "<p style=\"margin:0 0 4px 0;\"><b>Base:</b> </p>"
+                    "<p style=\"margin:0 0 4px 0;\"><b>User:</b> </p>"
+                    "<p style=\"margin:0 0 4px 0;\"><b>Result:</b> </p>"
+                    "<p style=\"margin:0;\"><b>Details:</b> </p>"
+                    "</div><br>"
+                ),
             },
         ]
         auto_today_tpl = {
