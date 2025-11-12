@@ -3496,10 +3496,10 @@ class NotesApp(QMainWindow):
         btns.addStretch()
         buttons_widget = QWidget()
         buttons_widget.setLayout(btns)
-        buttons_widget.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Expanding)
+        buttons_widget.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Minimum)
         self.notes_list = QListWidget()
         self.notes_list.setSizePolicy(
-            QSizePolicy.MinimumExpanding, QSizePolicy.Expanding
+            QSizePolicy.MinimumExpanding, QSizePolicy.Minimum
         )
         self.notes_list.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.notes_list.setDragEnabled(True)
@@ -3597,6 +3597,9 @@ class NotesApp(QMainWindow):
         self.dock_notes_list.setAllowedAreas(
             Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea
         )
+        self.dock_notes_list.setSizePolicy(
+            QSizePolicy.MinimumExpanding, QSizePolicy.Minimum
+        )
         self.addDockWidget(Qt.LeftDockWidgetArea, self.dock_notes_list)
         self.dock_history = QDockWidget("История", self)
         self.dock_history.setObjectName("dock_history")
@@ -3605,14 +3608,19 @@ class NotesApp(QMainWindow):
             Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea
         )
         self.addDockWidget(Qt.LeftDockWidgetArea, self.dock_history)
-        self.addDockWidget(Qt.LeftDockWidgetArea, self.dock_history)
         self.dock_buttons = QDockWidget("Управление", self)
         self.dock_buttons.setObjectName("dock_buttons")
         self.dock_buttons.setWidget(buttons_widget)
         self.dock_buttons.setAllowedAreas(
             Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea
         )
+        self.dock_buttons.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Minimum)
         self.addDockWidget(Qt.LeftDockWidgetArea, self.dock_buttons)
+        try:
+            self.splitDockWidget(self.dock_notes_list, self.dock_history, Qt.Vertical)
+            self.splitDockWidget(self.dock_history, self.dock_buttons, Qt.Vertical)
+        except Exception:
+            pass
         self.dock_editor = QDockWidget("Редактор", self)
         self.dock_editor.setObjectName("dock_editor")
         self.dock_editor.setWidget(editor_combined)
@@ -3829,12 +3837,25 @@ class NotesApp(QMainWindow):
             [left_width, right_width],
             Qt.Horizontal
         )
+        notes_height = max(1, self._calc_dock_height_hint(self.dock_notes_list))
+        buttons_height = max(1, self._calc_dock_height_hint(self.dock_buttons))
+        history_hint = max(1, self._calc_dock_height_hint(self.dock_history))
+        available = max(
+            self.height(),
+            notes_height + history_hint + buttons_height,
+            300,
+        )
+        history_height = max(
+            history_hint,
+            available - notes_height - buttons_height,
+        )
+        self.dock_notes_list.setMinimumHeight(notes_height)
+        self.dock_buttons.setMinimumHeight(buttons_height)
         self.resizeDocks(
             [self.dock_notes_list, self.dock_history, self.dock_buttons],
-            [1, 1, 1],
+            [notes_height, history_height, buttons_height],
             Qt.Vertical
         )
-        self._apply_dock_proportions()
 
     def show_number_generator(self):
         try:
@@ -3901,6 +3922,58 @@ class NotesApp(QMainWindow):
         except Exception:
             pass
         return int(max(width, 0))
+
+    def _calc_dock_height_hint(self, dock: QDockWidget) -> int:
+        if dock is None:
+            return 0
+        hints: list[int] = []
+        for hint in (
+            dock.minimumHeight(),
+            dock.minimumSizeHint().height(),
+            dock.sizeHint().height(),
+        ):
+            if hint and hint > 0:
+                hints.append(int(hint))
+        widget = dock.widget()
+        if widget is not None:
+            for hint in (
+                widget.minimumHeight(),
+                widget.minimumSizeHint().height(),
+                widget.sizeHint().height(),
+            ):
+                if hint and hint > 0:
+                    hints.append(int(hint))
+            if isinstance(widget, QListWidget):
+                count = max(0, widget.count())
+                try:
+                    row_height = widget.sizeHintForRow(0)
+                except Exception:
+                    row_height = -1
+                if row_height is None or row_height <= 0:
+                    row_height = widget.fontMetrics().height() + 8
+                frame = getattr(widget, "frameWidth", lambda: 0)()
+                try:
+                    spacing = widget.spacing()
+                except Exception:
+                    spacing = 0
+                margins = widget.contentsMargins()
+                margin_total = margins.top() + margins.bottom()
+                list_height = (
+                    frame * 2
+                    + margin_total
+                    + row_height * max(1, count)
+                    + spacing * max(0, count - 1)
+                )
+                hints.append(int(list_height))
+            else:
+                margins = widget.contentsMargins()
+                margin_total = margins.top() + margins.bottom()
+                if margin_total > 0:
+                    if hints:
+                        hints.append(hints[-1] + margin_total)
+                    else:
+                        hints.append(int(margin_total))
+        return max(hints) if hints else 0
 
     def _update_side_dock_constraints(self) -> None:
         self._min_notes_width = max(1, self._calc_dock_min_width(self.dock_notes_list))
@@ -7030,6 +7103,10 @@ class NotesApp(QMainWindow):
                     if n:
                         self.select_note(n)
                     break
+        try:
+            self._apply_dock_proportions()
+        except Exception:
+            pass
 
     def get_contrast_favorite_color(self) -> QColor:
         bg = self.notes_list.palette().color(self.notes_list.backgroundRole())
