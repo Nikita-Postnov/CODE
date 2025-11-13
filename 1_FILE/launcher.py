@@ -1065,7 +1065,13 @@ class SpellCheckHighlighter(QSyntaxHighlighter):
             except Exception:
                 spell = _SpellChecker(language=None)
             try:
-                self.spell_checker = _SpellChecker(language="ru")
+                try:
+                    self.spell_checker = _SpellChecker(language="ru")
+                except Exception:
+                    try:
+                        self.spell_checker = _SpellChecker(language="en")
+                    except Exception:
+                        self.spell_checker = None
             except Exception:
                 self.spell_checker = _SpellChecker()
         except ImportError:
