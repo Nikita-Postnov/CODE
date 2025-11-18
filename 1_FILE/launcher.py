@@ -32,7 +32,6 @@ from tkinter import filedialog as tk_filedialog
 from functools import partial
 import pyperclip
 import subprocess
-import ctypes
 from PySide6.QtCore import (
     Qt,
     QMimeData,
@@ -48,7 +47,6 @@ from PySide6.QtCore import (
     QThread,
     Signal,
     QBuffer,
-    QByteArray,
     QPointF,
     QIODevice,
     QFileSystemWatcher,
@@ -187,7 +185,6 @@ RU_LAYOUT = "ёйцукенгшщзхъфывапролджэячсмитьбю"
 EN_LAYOUT = "`qwertyuiop[]asdfghjkl;'zxcvbnm,."
 RU_TO_EN = str.maketrans(RU_LAYOUT + RU_LAYOUT.upper(), EN_LAYOUT + EN_LAYOUT.upper())
 EN_TO_RU = str.maketrans(EN_LAYOUT + EN_LAYOUT.upper(), RU_LAYOUT + RU_LAYOUT.upper())
-NOTES_WIDGET_BAK = os.path.join(DATA_DIR, "desktop_notes.json.bak")
 RU_REFLEXIVE = ("ся", "сь")
 RU_SUFFIXES_RU = tuple(
     sorted(
@@ -430,11 +427,10 @@ if not os.path.exists(USER_DICT_PATH):
 MAX_HISTORY = 250
 IMAGE_EXTENSIONS = [".png", ".jpg", ".jpeg", ".bmp", ".gif"]
 AUDIO_EXTENSIONS = [".wav", ".mp3", ".ogg"]
-ATTACH_ALL_FILES_FILTER = "Все файлы (*)"
 ATTACH_FILE_FILTER = (
     f"Изображения ({' '.join('*' + ext for ext in IMAGE_EXTENSIONS)})"
     f";;Аудио ({' '.join('*' + ext for ext in AUDIO_EXTENSIONS)})"
-    f";;{ATTACH_ALL_FILES_FILTER}"
+    f";;Все файлы (*)"
 )
 
 
@@ -1070,13 +1066,7 @@ class SpellCheckHighlighter(QSyntaxHighlighter):
             except Exception:
                 spell = _SpellChecker(language=None)
             try:
-                try:
-                    self.spell_checker = _SpellChecker(language="ru")
-                except Exception:
-                    try:
-                        self.spell_checker = _SpellChecker(language="en")
-                    except Exception:
-                        self.spell_checker = None
+                self.spell_checker = _SpellChecker(language="ru")
             except Exception:
                 self.spell_checker = _SpellChecker()
         except ImportError:
@@ -2533,17 +2523,11 @@ class CustomTextEdit(QTextEdit):
                         except Exception:
                             pass
                         try:
-                            path = os.fspath(p)
-                            rc = ctypes.windll.shell32.ShellExecuteW(
-                                None,
-                                "open",
-                                path,
-                                None,
-                                None,
-                                1,
+                            from PySide6.QtCore import QProcess
+
+                            return QProcess.startDetached(
+                                "cmd", ["/c", "start", "", f'"{p}"']
                             )
-                            if rc > 32:
-                                return True
                         except Exception:
                             pass
                     return QDesktopServices.openUrl(QUrl.fromLocalFile(p))
@@ -3385,7 +3369,6 @@ class NotesApp(QMainWindow):
         self.autosave_enabled = True
         self.debounce_timer = QTimer(self)
         self.debounce_timer.setSingleShot(True)
-        self.debounce_timer.setInterval(self.debounce_ms)
         self.debounce_timer.timeout.connect(self.autosave_current_note)
         self.text_edit.textChanged.connect(self._on_text_changed)
         self.current_note = None
@@ -3406,11 +3389,12 @@ class NotesApp(QMainWindow):
         open_launcher_action = QAction("Выбрать приложение…", self)
         open_launcher_action.triggered.connect(self.show_app_launcher)
         menu.addAction(open_launcher_action)
-        translate_clipboard_action = QAction(
-            "Перевести буфер раскладка+регистр", self
-        )
-        translate_clipboard_action.triggered.connect(self.translate_layout_and_case)
-        menu.addAction(translate_clipboard_action)
+        translate_layout_action = QAction("Перевести буфер (раскладка)", self)
+        translate_layout_action.triggered.connect(self.translate_layout_only)
+        menu.addAction(translate_layout_action)
+        toggle_clipboard_case_action = QAction("Сменить регистр буфера", self)
+        toggle_clipboard_case_action.triggered.connect(self.translate_case_only)
+        menu.addAction(toggle_clipboard_case_action)
         exit_action = QAction("Выход", self)
         exit_action.triggered.connect(self.exit_app)
         menu.addAction(restore_action)
@@ -3449,8 +3433,12 @@ class NotesApp(QMainWindow):
         if getattr(self, "_edit_session_note_uuid", None) and self._edit_session_note_uuid != self.current_note.uuid:
             return
         self._edit_session_note_uuid = self.current_note.uuid
+        self.update_current_note_content()
         self.pending_save = True
         self._set_unsaved(True)
+        if getattr(self, "autosave_enabled", True):
+            if self.autosave_enabled:
+                self.save_note_quiet(force=True)
         if hasattr(self, "debounce_timer"):
             self.debounce_timer.start()
 
@@ -3501,8 +3489,6 @@ class NotesApp(QMainWindow):
         self.topmost_checkbox.setChecked(always_on_top)
         self.topmost_checkbox.toggled.connect(self._toggle_always_on_top)
         btns = QVBoxLayout()
-        btns.setContentsMargins(0, 0, 0, 0)
-        btns.setSpacing(6)
         btns.addWidget(self.new_note_button)
         btns.addWidget(self.save_note_button)
         btns.addWidget(self.delete_note_button)
@@ -3512,11 +3498,7 @@ class NotesApp(QMainWindow):
         btns.addStretch()
         buttons_widget = QWidget()
         buttons_widget.setLayout(btns)
-        buttons_widget.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Minimum)
         self.notes_list = QListWidget()
-        self.notes_list.setSizePolicy(
-            QSizePolicy.MinimumExpanding, QSizePolicy.Minimum
-        )
         self.notes_list.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.notes_list.setDragEnabled(True)
         self.notes_list.setAcceptDrops(True)
@@ -3541,12 +3523,7 @@ class NotesApp(QMainWindow):
         hist_layout.addWidget(self.delete_history_button)
         self.history_widget = QWidget()
         self.history_widget.setLayout(hist_layout)
-        self.history_widget.setMinimumWidth(
-            max(
-                self.delete_history_button.sizeHint().width() + 24,
-                self.history_list.sizeHint().width(),
-            )
-        )
+        self.history_widget.setMinimumWidth(200)
         self.history_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.text_edit = CustomTextEdit(parent=self, paste_image_callback=self.insert_image_from_clipboard)
         self.autosave_delay_ms = 1000
@@ -3564,11 +3541,11 @@ class NotesApp(QMainWindow):
         self._save_debouncer.setSingleShot(True)
         self._save_debouncer.setInterval(400)
         self.attachments_panel = QWidget()
-        self.attachments_layout = FlowLayout(self.attachments_panel, margin=0, spacing=8)
+        self.attachments_layout = QHBoxLayout(self.attachments_panel)
+        self.attachments_layout.setAlignment(Qt.AlignLeft)
+        self.attachments_layout.setContentsMargins(0, 0, 0, 0)
         self.attachments_scroll = QScrollArea()
         self.attachments_scroll.setWidgetResizable(True)
-        self.attachments_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self.attachments_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.attachments_scroll.setWidget(self.attachments_panel)
         self.attachments_scroll.setVisible(False)
         self.attachments_scroll.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
@@ -3587,11 +3564,11 @@ class NotesApp(QMainWindow):
         self.tags_label = QLabel("Теги: нет")
         self.tags_label.setAlignment(Qt.AlignLeft)
         self.attachments_panel = QWidget()
-        self.attachments_layout = FlowLayout(self.attachments_panel, margin=0, spacing=8)
+        self.attachments_layout = QHBoxLayout(self.attachments_panel)
+        self.attachments_layout.setAlignment(Qt.AlignLeft)
+        self.attachments_layout.setContentsMargins(0, 0, 0, 0)
         self.attachments_scroll = QScrollArea()
         self.attachments_scroll.setWidgetResizable(True)
-        self.attachments_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self.attachments_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.attachments_scroll.setWidget(self.attachments_panel)
         self.attachments_scroll.setVisible(False)
         self.attachments_scroll.setSizePolicy(
@@ -3613,9 +3590,6 @@ class NotesApp(QMainWindow):
         self.dock_notes_list.setAllowedAreas(
             Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea
         )
-        self.dock_notes_list.setSizePolicy(
-            QSizePolicy.MinimumExpanding, QSizePolicy.Minimum
-        )
         self.addDockWidget(Qt.LeftDockWidgetArea, self.dock_notes_list)
         self.dock_history = QDockWidget("История", self)
         self.dock_history.setObjectName("dock_history")
@@ -3630,13 +3604,7 @@ class NotesApp(QMainWindow):
         self.dock_buttons.setAllowedAreas(
             Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea
         )
-        self.dock_buttons.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Minimum)
         self.addDockWidget(Qt.LeftDockWidgetArea, self.dock_buttons)
-        try:
-            self.splitDockWidget(self.dock_notes_list, self.dock_history, Qt.Vertical)
-            self.splitDockWidget(self.dock_history, self.dock_buttons, Qt.Vertical)
-        except Exception:
-            pass
         self.dock_editor = QDockWidget("Редактор", self)
         self.dock_editor.setObjectName("dock_editor")
         self.dock_editor.setWidget(editor_combined)
@@ -3755,15 +3723,11 @@ class NotesApp(QMainWindow):
             Qt.TopDockWidgetArea | Qt.BottomDockWidgetArea
         )
         self.addDockWidget(Qt.TopDockWidgetArea, self.dock_toolbar)
-        self._update_side_dock_constraints()
-        self._min_editor_width = max(
-            400,
-            self.dock_editor.minimumSizeHint().width(),
-            self.dock_editor.widget().minimumSizeHint().width()
-            if self.dock_editor.widget()
-            else 0,
+        self.resizeDocks(
+            [self.dock_notes_list, self.dock_editor, self.dock_history],
+            [280, 800, 240],
+            Qt.Horizontal
         )
-        self._apply_initial_dock_widths()
         self.resizeDocks(
             [self.dock_toolbar, self.dock_editor],
             [120, 1000],
@@ -3812,7 +3776,10 @@ class NotesApp(QMainWindow):
         sc_redo_notes.activated.connect(self.redo)
         sc_translate_layout = QShortcut(QKeySequence("Ctrl+Shift+F12"), self)
         sc_translate_layout.setContext(Qt.ApplicationShortcut)
-        sc_translate_layout.activated.connect(self.translate_layout_and_case)
+        sc_translate_layout.activated.connect(self.translate_layout_only)
+        sc_toggle_case = QShortcut(QKeySequence("Ctrl+Alt+F12"), self)
+        sc_toggle_case.setContext(Qt.ApplicationShortcut)
+        sc_toggle_case.activated.connect(self.translate_case_only)
         self._dock_ratios = [0.22, 0.56, 0.22]
         self._resizing_apply = False
         self._resize_deb = QTimer(self)
@@ -3836,18 +3803,6 @@ class NotesApp(QMainWindow):
             return
         self.autosave_timer.start(self.autosave_delay_ms)
 
-    def _iter_persisted_docks(self):
-        docks = (
-            getattr(self, "dock_notes_list", None),
-            getattr(self, "dock_history", None),
-            getattr(self, "dock_buttons", None),
-            getattr(self, "dock_editor", None),
-            getattr(self, "dock_toolbar", None),
-        )
-        for dock in docks:
-            if dock is not None:
-                yield dock
-
     def _apply_dock_proportions(self):
         left_width = 360
         right_width = max(600, self.width() - left_width)
@@ -3856,25 +3811,12 @@ class NotesApp(QMainWindow):
             [left_width, right_width],
             Qt.Horizontal
         )
-        notes_height = max(1, self._calc_dock_height_hint(self.dock_notes_list))
-        buttons_height = max(1, self._calc_dock_height_hint(self.dock_buttons))
-        history_hint = max(1, self._calc_dock_height_hint(self.dock_history))
-        available = max(
-            self.height(),
-            notes_height + history_hint + buttons_height,
-            300,
-        )
-        history_height = max(
-            history_hint,
-            available - notes_height - buttons_height,
-        )
-        self.dock_notes_list.setMinimumHeight(notes_height)
-        self.dock_buttons.setMinimumHeight(buttons_height)
         self.resizeDocks(
             [self.dock_notes_list, self.dock_history, self.dock_buttons],
-            [notes_height, history_height, buttons_height],
+            [1, 1, 1],
             Qt.Vertical
         )
+        self._apply_dock_proportions()
 
     def show_number_generator(self):
         try:
@@ -3906,114 +3848,7 @@ class NotesApp(QMainWindow):
         self.resizeDocks(
             [self.dock_toolbar, self.dock_editor],
             [h, max(300, self.height() - h)],
-            Qt.Vertical,
-        )
-
-    def _calc_dock_min_width(self, dock: QDockWidget) -> int:
-        if dock is None:
-            return 0
-        width = max(dock.minimumWidth(), dock.minimumSizeHint().width())
-        widget = dock.widget()
-        if widget is not None:
-            hints = [widget.minimumSizeHint().width(), widget.sizeHint().width()]
-            size_hint_for_column = getattr(widget, "sizeHintForColumn", None)
-            if callable(size_hint_for_column):
-                try:
-                    column_hint = size_hint_for_column(0)
-                except Exception:
-                    column_hint = -1
-                if column_hint and column_hint > 0:
-                    frame_width = getattr(widget, "frameWidth", lambda: 0)()
-                    scroll_width = 0
-                    vertical_scroll = getattr(widget, "verticalScrollBar", None)
-                    if callable(vertical_scroll):
-                        try:
-                            scroll = vertical_scroll()
-                        except Exception:
-                            scroll = None
-                        if scroll is not None:
-                            scroll_width = scroll.sizeHint().width()
-                    hints.append(column_hint + 2 * frame_width + scroll_width + 4)
-            width = max(width, *(hints or [0]))
-        margins = dock.contentsMargins()
-        try:
-            width += margins.left() + margins.right()
-        except Exception:
-            pass
-        return int(max(width, 0))
-
-    def _calc_dock_height_hint(self, dock: QDockWidget) -> int:
-        if dock is None:
-            return 0
-        hints: list[int] = []
-        for hint in (
-            dock.minimumHeight(),
-            dock.minimumSizeHint().height(),
-            dock.sizeHint().height(),
-        ):
-            if hint and hint > 0:
-                hints.append(int(hint))
-        widget = dock.widget()
-        if widget is not None:
-            for hint in (
-                widget.minimumHeight(),
-                widget.minimumSizeHint().height(),
-                widget.sizeHint().height(),
-            ):
-                if hint and hint > 0:
-                    hints.append(int(hint))
-            if isinstance(widget, QListWidget):
-                count = max(0, widget.count())
-                try:
-                    row_height = widget.sizeHintForRow(0)
-                except Exception:
-                    row_height = -1
-                if row_height is None or row_height <= 0:
-                    row_height = widget.fontMetrics().height() + 8
-                frame = getattr(widget, "frameWidth", lambda: 0)()
-                try:
-                    spacing = widget.spacing()
-                except Exception:
-                    spacing = 0
-                margins = widget.contentsMargins()
-                margin_total = margins.top() + margins.bottom()
-                list_height = (
-                    frame * 2
-                    + margin_total
-                    + row_height * max(1, count)
-                    + spacing * max(0, count - 1)
-                )
-                hints.append(int(list_height))
-            else:
-                margins = widget.contentsMargins()
-                margin_total = margins.top() + margins.bottom()
-                if margin_total > 0:
-                    if hints:
-                        hints.append(hints[-1] + margin_total)
-                    else:
-                        hints.append(int(margin_total))
-        return max(hints) if hints else 0
-
-    def _update_side_dock_constraints(self) -> None:
-        self._min_notes_width = max(1, self._calc_dock_min_width(self.dock_notes_list))
-        self._min_history_width = max(1, self._calc_dock_min_width(self.dock_history))
-        self._min_buttons_width = max(1, self._calc_dock_min_width(self.dock_buttons))
-        self.dock_notes_list.setMinimumWidth(self._min_notes_width)
-        self.dock_history.setMinimumWidth(self._min_history_width)
-        self.dock_buttons.setMinimumWidth(self._min_buttons_width)
-
-    def _apply_initial_dock_widths(self) -> None:
-        notes_min = getattr(self, "_min_notes_width", 200)
-        history_min = getattr(self, "_min_history_width", 200)
-        buttons_min = getattr(self, "_min_buttons_width", notes_min)
-        notes_min = max(notes_min, buttons_min)
-        center_min = getattr(self, "_min_editor_width", 600)
-        available = max(self.width(), notes_min + history_min + center_min)
-        center = max(center_min, available - notes_min - history_min)
-        self.resizeDocks(
-            [self.dock_notes_list, self.dock_editor, self.dock_history],
-            [notes_min, center, history_min],
-            Qt.Horizontal,
+            Qt.Vertical
         )
 
     def _current_dock_widths(self):
@@ -4025,8 +3860,7 @@ class NotesApp(QMainWindow):
     def _capture_dock_ratios(self):
         l, c, r = self._current_dock_widths()
         total = max(1, l + c + r)
-        self._dock_ratios = [l / total, c / total, r / total]
-        self._dock_widths = [l, c, r]
+        self._dock_ratios = [l/total, c/total, r/total]
 
     def start_stopwatch(self):
         if not getattr(self, "stopwatch_running", False):
@@ -4049,38 +3883,15 @@ class NotesApp(QMainWindow):
         if self._resizing_apply:
             return
         self._resizing_apply = True
-        desired_raw = getattr(self, "_pending_dock_widths", None)
         try:
-            desired = desired_raw
-            if desired:
-                desired = [max(0, int(v)) for v in desired]
-                if sum(desired) <= 0:
-                    desired = None
-                    self._pending_dock_widths = None
-            min_left = max(
-                1,
-                getattr(self, "_min_notes_width", 0),
-                getattr(self, "_min_buttons_width", 0),
-            )
-            min_center = max(400, getattr(self, "_min_editor_width", 0))
-            min_right = max(1, getattr(self, "_min_history_width", 0))
-            rl, rc, rr = getattr(self, "_dock_ratios", (0.22, 0.56, 0.22))
-            if desired:
-                left, center, right = desired
-                left = max(min_left, left)
-                center = max(min_center, center)
-                right = max(min_right, right)
-                total = max(1, left + center + right)
-                available = max(total, min_left + min_center + min_right)
-                available = max(available, self.width())
-                if total < available:
-                    center += available - total
-                    total = left + center + right
-            else:
-                total = max(1, self.width())
-                left = int(total * rl)
-                center = int(total * rc)
-                right = int(total * rr)
+            total = max(1, self.width())
+            min_left = 180
+            min_center = 400
+            min_right = 180
+            rl, rc, rr = self._dock_ratios
+            left  = int(total * rl)
+            center= int(total * rc)
+            right = int(total * rr)
             if center < min_center:
                 delta = min_center - center
                 take = min(delta, max(0, left - min_left))
@@ -4116,8 +3927,6 @@ class NotesApp(QMainWindow):
                 Qt.Horizontal
             )
         finally:
-            if desired_raw:
-                self._pending_dock_widths = None
             QTimer.singleShot(0, self._capture_dock_ratios)
             self._resizing_apply = False
 
@@ -4220,81 +4029,6 @@ class NotesApp(QMainWindow):
             self.action_toggle_rdp.setVisible(False)
             self.action_toggle_rdp.blockSignals(False)
 
-    def _field_visibility_settings_key(
-        self, field_id: str, note: Note | None = None
-    ) -> str:
-        if note and getattr(note, "uuid", None):
-            return f"ui/fieldVisibility/{note.uuid}/{field_id}"
-        return f"ui/fieldVisibility/{field_id}"
-
-    @staticmethod
-    def _coerce_to_bool(value, default: bool = False) -> bool:
-        if isinstance(value, bool):
-            return value
-        if value is None:
-            return default
-        if isinstance(value, (int, float)):
-            return value != 0
-        text = str(value).strip().lower()
-        if text in {"1", "true", "yes", "on"}:
-            return True
-        if text in {"0", "false", "no", "off"}:
-            return False
-        return default
-
-    def _load_field_visibility_pref(
-        self, field_id: str, default: bool, note: Note | None = None
-    ) -> bool:
-        if not hasattr(self, "settings"):
-            return default
-        key = self._field_visibility_settings_key(field_id, note)
-        if self.settings.contains(key):
-            return self._coerce_to_bool(self.settings.value(key), default)
-        return default
-
-    def _save_field_visibility_pref(
-        self, field_id: str, visible: bool, note: Note | None = None
-    ) -> None:
-        if not hasattr(self, "settings"):
-            return
-        key = self._field_visibility_settings_key(field_id, note)
-        self.settings.setValue(key, int(bool(visible)))
-        self.settings.sync()
-
-    def _clear_field_visibility_pref(
-        self, field_id: str, note: Note | None = None
-    ) -> None:
-        if not hasattr(self, "settings"):
-            return
-        key = self._field_visibility_settings_key(field_id, note)
-        self.settings.remove(key)
-
-    def _apply_saved_field_visibility(self, note: Note | None) -> None:
-        if note is None:
-            return
-        note.password_manager_visible = self._load_field_visibility_pref(
-            "password_manager",
-            self._coerce_to_bool(
-                getattr(note, "password_manager_visible", False), False
-            ),
-            note,
-        )
-        note.rdp_1c8_visible = self._load_field_visibility_pref(
-            "rdp_1c8",
-            self._coerce_to_bool(getattr(note, "rdp_1c8_visible", False), False),
-            note,
-        )
-        updated_fields = []
-        for field in list(getattr(note, "custom_fields", [])):
-            fid = field.get("id") or f"cf::{uuid.uuid4().hex}"
-            field["id"] = fid
-            default_visible = self._coerce_to_bool(field.get("visible", True), True)
-            field["visible"] = self._load_field_visibility_pref(
-                f"custom/{fid}", default_visible, note
-            )
-            updated_fields.append(field)
-        note.custom_fields = updated_fields
-
     def add_custom_field(self, data: dict | None = None) -> None:
         row = QWidget()
         layout = QHBoxLayout(row)
@@ -4336,17 +4070,12 @@ class NotesApp(QMainWindow):
         fid = (data.get("id") if data else None) or f"cf::{uuid4().hex}"
         action = QAction(f"🙈 {label}", self)
         action.setCheckable(True)
-        raw_visible = True
+        fid = label_edit.text().strip() or "field"
+        visible = bool(int(self.settings.value(f"ui/customFieldVisible/{fid}", 1)))
         if data and "visible" in data:
-            raw_visible = data.get("visible", True)
-        visible = self._coerce_to_bool(raw_visible, True)
-        if getattr(self, "current_note", None):
-            visible = self._load_field_visibility_pref(
-                f"custom/{fid}", visible, self.current_note
-            )
-        action.blockSignals(True)
+            raw = data.get("visible", False)
+            visible = (raw is True) or (str(raw).lower() in {"1", "true", "yes"})
         action.setChecked(visible)
-        action.blockSignals(False)
         row.setVisible(visible)
         self._update_eye_action(action, visible, label)
         widget = {
@@ -4358,6 +4087,16 @@ class NotesApp(QMainWindow):
             "action": action,
             "id": fid,
         }
+        if data and "visible" in data:
+            raw = data["visible"]
+            visible = (raw is True) or (str(raw).lower() in {"1", "true", "yes"})
+        else:
+            visible = bool(int(self.settings.value(f"ui/customFieldVisible/{fid}", 1)))
+            action.blockSignals(True)
+        action.setChecked(visible)
+        action.blockSignals(False)
+        row.setVisible(visible)
+        self._update_eye_action(action, visible, label)
         action.toggled.connect(lambda checked, w=widget: self.on_toggle_custom_field(w, checked))
         label_edit.textChanged.connect(lambda text, w=widget: self.on_custom_field_label_changed(w, text))
         remove_btn.clicked.connect(lambda _, w=widget: self.remove_custom_field(w))
@@ -4392,8 +4131,6 @@ class NotesApp(QMainWindow):
         widget["action"].deleteLater()
         widget["row"].deleteLater()
         self.custom_fields_widgets.remove(widget)
-        if fid := widget.get("id"):
-            self._clear_field_visibility_pref(f"custom/{fid}", self.current_note)
         self.update_current_note_custom_fields()
         if self.current_note:
             self.save_note_to_file(self.current_note)
@@ -4443,9 +4180,9 @@ class NotesApp(QMainWindow):
         self._update_eye_action(widget["action"], checked, widget["label_edit"].text())
         fid = widget.get("id")
         if fid:
-            self._save_field_visibility_pref(
-                f"custom/{fid}", checked, self.current_note
-            )
+            self.settings.setValue(f"ui/customFieldVisible/{fid}", int(checked))
+            self.settings.sync()
+        self.settings.setValue(f"ui/customFieldVisible/{fid}", int(checked))
         self.update_current_note_custom_fields()
         self.save_note_to_file(self.current_note)
         self.save_note_quiet(force=True)
@@ -4520,9 +4257,6 @@ class NotesApp(QMainWindow):
         self._update_eye_action(
             self.action_toggle_pm, checked, self.password_manager_label.text()
         )
-        self._save_field_visibility_pref(
-            "password_manager", checked, self.current_note
-        )
         self.save_note_to_file(self.current_note)
 
     def on_toggle_rdp_visible(self, checked: bool) -> None:
@@ -4543,7 +4277,6 @@ class NotesApp(QMainWindow):
         self._update_eye_action(
             self.action_toggle_rdp, checked, self.rdp_1c8_label.text()
         )
-        self._save_field_visibility_pref("rdp_1c8", checked, self.current_note)
         self.save_note_to_file(self.current_note)
 
     def delete_selected_history_entries(self) -> None:
@@ -4587,13 +4320,11 @@ class NotesApp(QMainWindow):
         cursor = self.text_edit.textCursor()
 
         html = (
-            "<div style=\"border:1px solid #bdbdbd; border-radius:6px; padding:8px 12px; margin-bottom:8px;\">"
-            f"<p style=\"margin:0 0 6px 0;\"><b>UPD [{date_str}]</b></p>"
-            "<p style=\"margin:0 0 4px 0;\"><b>Base:</b> </p>"
-            "<p style=\"margin:0 0 4px 0;\"><b>User:</b> </p>"
-            "<p style=\"margin:0 0 4px 0;\"><b>Result:</b> </p>"
-            "<p style=\"margin:0;\"><b>Details:</b> </p>"
-            "</div><br>"
+            f"<b>UPD [{date_str}]</b><br>"
+            f"<b>Base:</b> <br>"
+            f"<b>User:</b> <br>"
+            f"<b>Result:</b> <br>"
+            f"<b>Details:</b> <br><br>"
         )
         cursor.insertHtml(html)
         self.text_edit.setTextCursor(cursor)
@@ -4791,7 +4522,6 @@ class NotesApp(QMainWindow):
                         doc = QTextDocument()
                         doc.setHtml(note.content)
                         note.content_txt = doc.toPlainText()
-                    self._apply_saved_field_visibility(note)
                     loaded_notes.append(note)
         unique = {}
         for note in loaded_notes:
@@ -4877,11 +4607,11 @@ class NotesApp(QMainWindow):
         self.resizeDocks([self.dock_toolbar, self.dock_editor],
                         [h, max(300, self.height() - h)], Qt.Vertical)
         self.dock_toolbar.setMinimumHeight(36)
-        geometry = self.settings.value("geometry", None, QByteArray)
-        if isinstance(geometry, QByteArray) and not geometry.isEmpty():
+        geometry = self.settings.value("geometry")
+        if geometry:
             self.restoreGeometry(geometry)
-        state = self.settings.value("windowState", None, QByteArray)
-        if isinstance(state, QByteArray) and not state.isEmpty():
+        state = self.settings.value("windowState")
+        if state:
             self.restoreState(state)
         last_text = self.settings.value("lastNoteText")
         if last_text and not getattr(self, "current_note", None):
@@ -4891,44 +4621,6 @@ class NotesApp(QMainWindow):
         else:
             self.settings.setValue("lastNoteText", "")
         self._apply_vertical_defaults()
-
-        ratios_raw = self.settings.value("ui/dockRatios", "")
-        ratios: list[float] | None = None
-        widths_raw = self.settings.value("ui/dockWidths", "")
-        pending_widths: list[int] | None = None
-        if widths_raw:
-            try:
-                parsed_w = json.loads(widths_raw)
-            except Exception:
-                parsed_w = None
-            if (
-                isinstance(parsed_w, (list, tuple))
-                and len(parsed_w) == 3
-                and all(isinstance(v, (int, float)) for v in parsed_w)
-            ):
-                pending_widths = [max(0, int(v)) for v in parsed_w]
-        if ratios_raw:
-            try:
-                parsed = json.loads(ratios_raw)
-            except Exception:
-                parsed = None
-            if (
-                isinstance(parsed, (list, tuple))
-                and len(parsed) == 3
-                and all(isinstance(v, (int, float)) for v in parsed)
-            ):
-                total = float(sum(parsed)) or 1.0
-                ratios = [max(0.0, float(v)) for v in parsed]
-                total = float(sum(ratios)) or 1.0
-                ratios = [v / total for v in ratios]
-        if pending_widths and sum(pending_widths) > 0:
-            total_w = float(sum(pending_widths))
-            self._pending_dock_widths = pending_widths
-            self._dock_ratios = [v / total_w for v in pending_widths]
-            QTimer.singleShot(0, self._apply_dock_ratios)
-        elif ratios:
-            self._dock_ratios = ratios
-            QTimer.singleShot(0, self._apply_dock_ratios)
 
     def _note_dir(self, note=None) -> str | None:
         n = note or getattr(self, "current_note", None)
@@ -4940,12 +4632,6 @@ class NotesApp(QMainWindow):
         )
 
     def save_settings(self) -> None:
-        self._capture_dock_ratios()
-        self.settings.setValue("ui/dockRatios", json.dumps(self._dock_ratios))
-        if self._dock_widths:
-            self.settings.setValue("ui/dockWidths", json.dumps(self._dock_widths))
-        else:
-            self.settings.remove("ui/dockWidths")
         self.settings.setValue("geometry", self.saveGeometry())
         self.settings.setValue("ui/dock_toolbar_height", self.dock_toolbar.height())
         self.settings.setValue("windowState", self.saveState())
@@ -5315,15 +5001,7 @@ class NotesApp(QMainWindow):
                 "name": "UPD блок",
                 "category": "Работа",
                 "description": "Блок обновления с датой, базой, пользователем, результатом и деталями",
-                "content_html": (
-                    "<div style=\"border:1px solid #bdbdbd; border-radius:6px; padding:8px 12px; margin-bottom:8px;\">"
-                    "<p style=\"margin:0 0 6px 0;\"><b>UPD [{date}]</b></p>"
-                    "<p style=\"margin:0 0 4px 0;\"><b>Base:</b> </p>"
-                    "<p style=\"margin:0 0 4px 0;\"><b>User:</b> </p>"
-                    "<p style=\"margin:0 0 4px 0;\"><b>Result:</b> </p>"
-                    "<p style=\"margin:0;\"><b>Details:</b> </p>"
-                    "</div><br>"
-                ),
+                "content_html": "<b>UPD [{date}]</b><br><b>Base:</b> <br><b>User:</b> <br><b>Result:</b> <br><b>Details:</b> <br><br>",
             },
         ]
         auto_today_tpl = {
@@ -5825,7 +5503,6 @@ class NotesApp(QMainWindow):
                 self.current_note.content = html
                 self.save_note_to_file(self.current_note)
             self.current_note = note
-            self._apply_saved_field_visibility(note)
             self.tags_label.setText(f"Теги: {', '.join(note.tags) if note and note.tags else 'нет'}")
             if hasattr(self, "settings"):
                 self.settings.setValue("lastNoteText", "")
@@ -6103,7 +5780,12 @@ class NotesApp(QMainWindow):
             self.text_edit.blockSignals(True)
             self.text_edit.clear()
             self.text_edit.blockSignals(False)
-            self._clear_attachments_layout()
+            if hasattr(self, "attachments_layout"):
+                for i in reversed(range(self.attachments_layout.count())):
+                    widget = self.attachments_layout.itemAt(i).widget()
+                    if widget:
+                        widget.setParent(None)
+                        widget.deleteLater()
             self.attachments_scroll.setVisible(False)
             return
         cursor_pos = None
@@ -6128,49 +5810,88 @@ class NotesApp(QMainWindow):
         self.text_edit.blockSignals(False)
         if cursor_pos is not None and anchor_pos is not None:
             self._safe_restore_cursor(anchor_pos, cursor_pos)
-        self._clear_attachments_layout()
-        note_dir = os.path.join(
-            NOTES_DIR,
-            NotesApp.safe_folder_name(note.title, note.uuid, note.timestamp),
-        )
-        attachments_found = False
-        if os.path.isdir(note_dir):
-            ignored_files = {"note.json", ".DS_Store", "Thumbs.db"}
-            ignored_prefixes = ("~$", ".~")
-            ignored_suffixes = ("~", ".tmp", ".temp")
-            for filename in sorted(os.listdir(note_dir)):
-                if (
-                    filename in ignored_files
-                    or filename.startswith(ignored_prefixes)
-                    or filename.endswith(ignored_suffixes)
-                    or (
-                        filename.startswith("backup(")
-                        and filename.endswith(".json")
+        if hasattr(self, "attachments_layout"):
+            for i in reversed(range(self.attachments_layout.count())):
+                widget = self.attachments_layout.itemAt(i).widget()
+                if widget:
+                    widget.setParent(None)
+                    widget.deleteLater()
+            note_dir = os.path.join(
+                NOTES_DIR,
+                NotesApp.safe_folder_name(note.title, note.uuid, note.timestamp),
+            )
+            attachments_found = False
+            if os.path.isdir(note_dir):
+                ignored_files = {"note.json", ".DS_Store", "Thumbs.db"}
+                ignored_prefixes = ("~$", ".~")
+                ignored_suffixes = ("~", ".tmp", ".temp")
+                for filename in os.listdir(note_dir):
+                    if (
+                        filename in ignored_files
+                        or filename.startswith(ignored_prefixes)
+                        or filename.endswith(ignored_suffixes)
+                        or (
+                            filename.startswith("backup(")
+                            and filename.endswith(".json")
+                        )
+                    ):
+                        continue
+                    attachments_found = True
+                    file_path = os.path.join(note_dir, filename)
+                    item_widget = QWidget()
+                    layout = QHBoxLayout(item_widget)
+                    if filename.lower().endswith(tuple(IMAGE_EXTENSIONS)):
+                        pixmap = QPixmap(file_path)
+                        icon_label = QLabel()
+                        icon_label.setPixmap(
+                            pixmap.scaled(
+                                48, 48, Qt.KeepAspectRatio, Qt.SmoothTransformation
+                            )
+                        )
+                        layout.addWidget(icon_label)
+                    else:
+                        icon_label = QLabel()
+                        if os.path.exists(FILE_ICON_PATH):
+                            icon_label.setPixmap(
+                                QPixmap(FILE_ICON_PATH).scaled(
+                                    48, 48, Qt.KeepAspectRatio, Qt.SmoothTransformation
+                                )
+                            )
+                        else:
+                            icon_label.setPixmap(
+                                self.style()
+                                .standardIcon(QStyle.SP_FileIcon)
+                                .pixmap(32, 32)
+                            )
+                        layout.addWidget(icon_label)
+                    label = QLabel(filename)
+                    label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+                    layout.addWidget(label)
+                    open_btn = QPushButton("Открыть")
+                    open_btn.setToolTip("Открыть вложение")
+                    open_btn.setFixedSize(60, 24)
+                    open_btn.clicked.connect(
+                        lambda _, path=file_path: self.text_edit._open_any_link(path)
                     )
-                ):
-                    continue
-                attachments_found = True
-                file_path = os.path.join(note_dir, filename)
-                self.attachments_layout.addWidget(
-                    self._create_attachment_widget(file_path)
-                )
-            if note_dir not in self.attachments_watcher.directories():
-                self.attachments_watcher.addPath(note_dir)
-        self.attachments_scroll.setVisible(attachments_found)
+                    layout.addWidget(open_btn)
+                    del_btn = QPushButton("❌")
+                    del_btn.setToolTip("Удалить вложение")
+                    del_btn.setFixedSize(28, 24)
+                    del_btn.clicked.connect(
+                        lambda _, path=file_path: self.delete_attachment_from_panel(
+                            path
+                        )
+                    )
+                    layout.addWidget(del_btn)
+                    item_widget.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Maximum)
+                    if self.attachments_layout.count() > 0:
+                        self.attachments_layout.addWidget(QLabel(" - "))
+                    self.attachments_layout.addWidget(item_widget)
+                if note_dir not in self.attachments_watcher.directories():
+                    self.attachments_watcher.addPath(note_dir)
+            self.attachments_scroll.setVisible(attachments_found)
         self.tags_label.setText(f"Теги: {', '.join(note.tags) if note.tags else 'нет'}")
 
-
-    def _clear_attachments_layout(self) -> None:
-        layout = getattr(self, "attachments_layout", None)
-        if layout is None:
-            return
-        while layout.count():
-            item = layout.takeAt(0)
-            if not item:
-                continue
-            widget = item.widget()
-            if widget is not None:
-                widget.deleteLater()
 
     def _refresh_attachments(self, *_) -> None:
         if not self.current_note:
@@ -6258,8 +5979,6 @@ class NotesApp(QMainWindow):
 
     def _update_editor_visibility(self):
         has = self.current_note is not None
-        if has:
-            self._apply_saved_field_visibility(self.current_note)
         self.dock_editor.setVisible(has)
         self.dock_toolbar.setVisible(has)
         self.visibility_toolbar.setVisible(has)
@@ -6324,7 +6043,6 @@ class NotesApp(QMainWindow):
             "Прикрепить файл",
             "",
             ATTACH_FILE_FILTER,
-            ATTACH_ALL_FILES_FILTER,
         )
         if not file_path:
             return
@@ -6756,16 +6474,18 @@ class NotesApp(QMainWindow):
             text = text.swapcase()
             cursor.insertText(text)
 
-    def _convert_layout_and_case_text(self, text: str) -> str:
+    def _convert_layout_text(self, text: str) -> str:
         ru_count = sum(1 for ch in text if ch.lower() in RU_LAYOUT)
         en_count = sum(1 for ch in text if ch.lower() in EN_LAYOUT)
         if ru_count == 0 and en_count == 0:
-            return text.swapcase()
+            return text
         table = EN_TO_RU if en_count >= ru_count else RU_TO_EN
-        translated = text.translate(table)
-        return translated.swapcase()
+        return text.translate(table)
 
-    def translate_layout_and_case(self) -> None:
+    def _swap_case_text(self, text: str) -> str:
+        return text.swapcase()
+
+    def _apply_text_transform(self, transform: Callable[[str], str], message: str) -> None:
         cursor = self.text_edit.textCursor()
         clipboard = QApplication.clipboard()
         used_selection = False
@@ -6776,7 +6496,7 @@ class NotesApp(QMainWindow):
             text = clipboard.text()
         if not text:
             return
-        converted = self._convert_layout_and_case_text(text)
+        converted = transform(text)
         if used_selection:
             cursor.insertText(converted)
             self.text_edit.setTextCursor(cursor)
@@ -6784,17 +6504,27 @@ class NotesApp(QMainWindow):
         else:
             clipboard.setText(converted)
             if self.isVisible():
-                self.show_toast("Текст в буфере переведен и сменен регистр")
+                self.show_toast(message)
             else:
                 try:
                     self.tray_icon.showMessage(
                         "Мои Заметки",
-                        "Текст в буфере переведен и сменен регистр",
+                        message,
                         QSystemTrayIcon.Information,
                         3000,
                     )
                 except Exception:
                     pass
+
+    def translate_layout_only(self) -> None:
+        self._apply_text_transform(
+            self._convert_layout_text, "Текст в буфере переведен (раскладка)"
+        )
+
+    def translate_case_only(self) -> None:
+        self._apply_text_transform(
+            self._swap_case_text, "Регистр текста в буфере изменен"
+        )
 
     def apply_heading(self, level: int) -> None:
         cursor = self.text_edit.textCursor()
@@ -7026,6 +6756,7 @@ class NotesApp(QMainWindow):
                 f'<img src="Data:image/png;base64,{base64_data}" width="200"><br>'
             )
             cursor = self.text_edit.textCursor()
+            cursor.movePosition(QTextCursor.End)
             self.text_edit.setTextCursor(cursor)
             self.text_edit.insertHtml(html_img)
             self.record_state_for_undo()
@@ -7162,10 +6893,6 @@ class NotesApp(QMainWindow):
                     if n:
                         self.select_note(n)
                     break
-        try:
-            self._apply_dock_proportions()
-        except Exception:
-            pass
 
     def get_contrast_favorite_color(self) -> QColor:
         bg = self.notes_list.palette().color(self.notes_list.backgroundRole())
@@ -7283,7 +7010,7 @@ class NotesApp(QMainWindow):
         try:
             self.show_toast(
                 "Обновляю…",
-                ms=1600,
+                timeout_ms=1600,
                 anchor_widget=getattr(self, "refresh_button", None),
             )
         except Exception:
@@ -7363,17 +7090,10 @@ class NotesApp(QMainWindow):
                     added.append(tag)
             if added:
                 self.update_tag_filter_items()
-                self.show_toast(
-                    "Теги добавлены",
-                    detail="Добавлены теги: " + ", ".join(added),
-                )
+                self.show_toast("Теги добавлены", "Добавлены теги: " + ", ".join(added))
                 self.tags_label.setText(f"Теги: {', '.join(self.current_note.tags)}")
             else:
-                self.show_toast(
-                    "Нет новых тегов",
-                    detail="Все введённые теги уже есть у заметки.",
-                    boundary_widget=self,
-                )
+                self.show_toast(self, "Нет новых тегов", "Все введённые теги уже есть у заметки.")
 
     def manage_tags_dialog(self) -> None:
         dialog = QDialog(self)
@@ -7471,12 +7191,16 @@ class NotesApp(QMainWindow):
             self.show_notes_by_tag(selected_tag)
 
     def _rebuild_attachments_panel(self, note: Note | None) -> None:
-        self._clear_attachments_layout()
+        if hasattr(self, "attachments_layout"):
+            for i in reversed(range(self.attachments_layout.count())):
+                w = self.attachments_layout.itemAt(i).widget()
+                if w:
+                    w.setParent(None)
+                    w.deleteLater()
         if not note:
             self.attachments_scroll.setVisible(False)
             return
         note_dir = os.path.join(
-
             NOTES_DIR, NotesApp.safe_folder_name(note.title, note.uuid, note.timestamp)
         )
         attachments_found = False
@@ -7484,7 +7208,7 @@ class NotesApp(QMainWindow):
             ignored_files = {"note.json", ".DS_Store", "Thumbs.db"}
             ignored_prefixes = ("~$", ".~")
             ignored_suffixes = ("~", ".tmp", ".temp")
-            for filename in sorted(os.listdir(note_dir)):
+            for filename in os.listdir(note_dir):
                 if (
                     filename in ignored_files
                     or filename.startswith(ignored_prefixes)
@@ -7494,65 +7218,47 @@ class NotesApp(QMainWindow):
                     continue
                 attachments_found = True
                 file_path = os.path.join(note_dir, filename)
-                self.attachments_layout.addWidget(
-                    self._create_attachment_widget(file_path)
-                )
-        if attachments_found and note_dir not in self.attachments_watcher.directories():
-            self.attachments_watcher.addPath(note_dir)
-        self.attachments_scroll.setVisible(attachments_found)
-
-    def _create_attachment_widget(self, file_path: str) -> QWidget:
-        filename = os.path.basename(file_path)
-        item_widget = QWidget(self.attachments_panel)
-        layout = QHBoxLayout(item_widget)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(6)
-        icon_label = QLabel(item_widget)
-        if filename.lower().endswith(tuple(IMAGE_EXTENSIONS)) and os.path.exists(
-            file_path
-        ):
-            pixmap = QPixmap(file_path)
-            if not pixmap.isNull():
-                icon_label.setPixmap(
-                    pixmap.scaled(48, 48, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-                )
-        if icon_label.pixmap() is None:
-            if os.path.exists(FILE_ICON_PATH):
-                icon_label.setPixmap(
-                    QPixmap(FILE_ICON_PATH).scaled(
-                        48, 48, Qt.KeepAspectRatio, Qt.SmoothTransformation
+                item_widget = QWidget()
+                layout = QHBoxLayout(item_widget)
+                icon_label = QLabel()
+                if filename.lower().endswith(tuple(IMAGE_EXTENSIONS)):
+                    pixmap = QPixmap(file_path)
+                    icon_label.setPixmap(
+                        pixmap.scaled(
+                            48, 48, Qt.KeepAspectRatio, Qt.SmoothTransformation
+                        )
                     )
+                else:
+                    if os.path.exists(FILE_ICON_PATH):
+                        icon_label.setPixmap(
+                            QPixmap(FILE_ICON_PATH).scaled(
+                                48, 48, Qt.KeepAspectRatio, Qt.SmoothTransformation
+                            )
+                        )
+                    else:
+                        icon_label.setPixmap(
+                            self.style().standardIcon(QStyle.SP_FileIcon).pixmap(32, 32)
+                        )
+                layout.addWidget(icon_label)
+                label = QLabel(filename)
+                label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+                layout.addWidget(label)
+                open_btn = QPushButton("Открыть")
+                open_btn.setToolTip("Открыть вложение")
+                open_btn.setFixedSize(60, 24)
+                open_btn.clicked.connect(
+                    lambda _, path=file_path: self.text_edit._open_any_link(path)
                 )
-            else:
-                icon_label.setPixmap(
-                    self.style().standardIcon(QStyle.SP_FileIcon).pixmap(32, 32)
+                layout.addWidget(open_btn)
+                del_btn = QPushButton("❌")
+                del_btn.setToolTip("Удалить вложение")
+                del_btn.setFixedSize(28, 24)
+                del_btn.clicked.connect(
+                    lambda _, path=file_path: self.delete_attachment_from_panel(path)
                 )
-        layout.addWidget(icon_label)
-
-        label = QLabel(filename, item_widget)
-        label.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        label.setSizePolicy(QSizePolicy.MinimumExpanding, QSizePolicy.Fixed)
-        layout.addWidget(label)
-
-
-        open_btn = QPushButton("Открыть", item_widget)
-        open_btn.setToolTip("Открыть вложение")
-        open_btn.setFixedSize(60, 24)
-        open_btn.clicked.connect(
-            lambda _, path=file_path: self.text_edit._open_any_link(path)
-        )
-        layout.addWidget(open_btn)
-
-        del_btn = QPushButton("❌", item_widget)
-        del_btn.setToolTip("Удалить вложение")
-        del_btn.setFixedSize(28, 24)
-        del_btn.clicked.connect(
-            lambda _, path=file_path: self.delete_attachment_from_panel(path)
-        )
-        layout.addWidget(del_btn)
-
-        item_widget.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
-        return item_widget
+                layout.addWidget(del_btn)
+                self.attachments_layout.addWidget(item_widget)
+        self.attachments_scroll.setVisible(attachments_found)
 
     def insert_link(self) -> None:
         cursor = self.text_edit.textCursor()
@@ -7915,14 +7621,13 @@ class NotesApp(QMainWindow):
         add_tool_button("", "H1 - Заголовок 1", lambda: self.apply_heading(1))
         add_tool_button("", "H2 - Заголовок 2", lambda: self.apply_heading(2))
         add_tool_button("", "H3 - Заголовок 3", lambda: self.apply_heading(3))
-        add_tool_button("", "Aa - Изменить регистр", self.toggle_case)
-        add_tool_button("", "⌨ - Раскладка + Регистр", self.translate_layout_and_case)
+        add_tool_button("", "Aa - Регистр (буфер/выделение)", self.translate_case_only)
+        add_tool_button("", "⌨ - Раскладка (буфер/выделение)", self.translate_layout_only)
         add_tool_button("", "• - Маркированный  список", self.insert_bullet_list)
         add_tool_button("", "1. - Нумерованный список", self.insert_numbered_list)
         add_tool_button("", "☑ - Чекбокс", self.insert_checkbox)
         add_tool_button("", "📅 - Таблица", self.insert_table)
         add_tool_button("", "🔗 - Ссылка", self.insert_link)
-        add_tool_button("", "❌ - Удалить ссылку", self.remove_link)
         add_tool_button("", "❌ - Удалить ссылку", self.remove_link)
         add_tool_button("", "▁ - Горизонтальная линия", self.insert_horizontal_line)
         add_tool_button("", "+🏷 - Добавить тег", self.add_tag_to_note)
@@ -9310,24 +9015,11 @@ class NotesApp(QMainWindow):
         text: str,
         ms: int = 1200,
         *,
-        detail: str | None = None,
         boundary_widget: QWidget | None = None,
         anchor_widget: QWidget | None = None,
-        timeout_ms: int | None = None,
     ) -> None:
-        if timeout_ms is not None:
-            ms = timeout_ms
-        try:
-            ms = int(ms)
-        except (TypeError, ValueError):
-            ms = 1200
-        label_text = str(text)
-        if detail:
-            label_text = f"{label_text}\n{detail}" if label_text else detail
-        overlay_parent = (
-            boundary_widget if isinstance(boundary_widget, QWidget) else self
-        )
-        lbl = QLabel(label_text, overlay_parent)
+        overlay_parent = boundary_widget or self
+        lbl = QLabel(text, overlay_parent)
         lbl.setObjectName("toast")
         lbl.setAttribute(Qt.WA_TransparentForMouseEvents)
         lbl.setStyleSheet(
@@ -9344,7 +9036,7 @@ class NotesApp(QMainWindow):
         )
         lbl.setWordWrap(False)
         lbl.adjustSize()
-        if isinstance(anchor_widget, QWidget):
+        if anchor_widget is not None:
             anchor_center = anchor_widget.mapTo(
                 overlay_parent, anchor_widget.rect().center()
             )
@@ -9493,11 +9185,8 @@ class NotesApp(QMainWindow):
                     self.text_edit.setTextCursor(cursor)
                     self.text_edit.insertHtml(f'📄 <a href="{file_url}">{filename}</a>')
         try:
-            self.show_toast(
-                "Файлы прикреплены",
-                ms=1400,
-                anchor_widget=getattr(self, "attachments_scroll", None),
-            )
+            self.show_toast("Файлы прикреплены", timeout_ms=1400,
+                            anchor_widget=getattr(self, "attachments_scroll", None))
         except Exception:
             pass
         self.save_note()
@@ -9797,33 +9486,28 @@ class NotesApp(QMainWindow):
     def on_text_changed_autosave(self):
         pass
 
-def load_plugins(app, plugins_folder=None):
-    if isinstance(plugins_folder, bool) or plugins_folder is None:
-        plugins_folder = os.path.join(APPDIR, "Plugins")
-    else:
-        plugins_folder = os.fspath(plugins_folder)
-
-    if not os.path.exists(plugins_folder):
-        os.makedirs(plugins_folder)
-        return
-
-    for filename in os.listdir(plugins_folder):
-        if filename.endswith(".py"):
-            plugin_path = os.path.join(plugins_folder, filename)
-            spec = importlib.util.spec_from_file_location(filename[:-3], plugin_path)
-            if spec is None:
-                continue
-            plugin = importlib.util.module_from_spec(spec)
-            try:
-                spec.loader.exec_module(plugin)
-                if hasattr(plugin, "register_plugin"):
-                    plugin.register_plugin(app)
-            except Exception as e:
-                print(f"Ошибка при загрузке плагина {filename}: {e}")
+    def load_plugins(app, plugins_folder="Plugins"):
+        if not os.path.exists(plugins_folder):
+            os.makedirs(plugins_folder)
+            return
+        for filename in os.listdir(plugins_folder):
+            if filename.endswith(".py"):
+                plugin_path = os.path.join(plugins_folder, filename)
+                spec = importlib.util.spec_from_file_location(filename[:-3], plugin_path)
+                if spec is None:
+                    continue
+                plugin = importlib.util.module_from_spec(spec)
+                try:
+                    spec.loader.exec_module(plugin)
+                    if hasattr(plugin, "register_plugin"):
+                        plugin.register_plugin(app)
+                except Exception as e:
+                    print(f"Ошибка при загрузке плагина {filename}: {e}")
 
 
-def get_app_dir():
-    return APPDIR
+    def get_app_dir():
+        return APPDIR
+
 
 def create_default_config():
     config_path = os.path.join(PASSWORDS_DIR, "config.json")
@@ -10870,7 +10554,6 @@ class RegenerateSaltDialog(tk.Toplevel):
 class PasswordGeneratorApp:
     def __init__(self, master):
         self.master = master
-        self.settings = QSettings(SETTINGS_PATH, QSettings.IniFormat)
         master.title("Генератор паролей")
         master.geometry("800x600")
         self._backup_job = None
@@ -10880,12 +10563,8 @@ class PasswordGeneratorApp:
         self._closing = False
         self.master.protocol("WM_DELETE_WINDOW", self._on_close)
         master.minsize(800, 600)
-        self._size_after_id = None
-        self._last_reported_size: tuple[int, int] | None = None
-        self._restore_window_size()
         master.attributes("-topmost", True)
         master.lift()
-        master.bind("<Configure>", self._on_configure)
         self.idle_timer = None
         self.idle_timeout = 120000
         self.setup_activity_tracking()
@@ -10905,55 +10584,6 @@ class PasswordGeneratorApp:
         self.master.deiconify()
         self.master.after_idle(self._refresh_password_list)
         self.master.after(2000, self.schedule_backup)
-
-    def _restore_window_size(self) -> None:
-        try:
-            stored_w = self.settings.value("ui/password_manager_width", type=int)
-            stored_h = self.settings.value("ui/password_manager_height", type=int)
-        except Exception:
-            stored_w = stored_h = None
-        if isinstance(stored_w, int) and isinstance(stored_h, int):
-            min_w, min_h = self.master.minsize()
-            if isinstance(min_w, int) and min_w > 0:
-                stored_w = max(min_w, stored_w)
-            if isinstance(min_h, int) and min_h > 0:
-                stored_h = max(min_h, stored_h)
-            if stored_w > 0 and stored_h > 0:
-                self.master.geometry(f"{stored_w}x{stored_h}")
-
-    def _on_configure(self, event):
-        if event.widget is not self.master:
-            return
-        if event.width <= 1 or event.height <= 1:
-            return
-        current = (int(event.width), int(event.height))
-        if self._last_reported_size == current:
-            return
-        self._last_reported_size = current
-        self._schedule_window_size_save()
-
-    def _schedule_window_size_save(self) -> None:
-        if self._size_after_id is not None:
-            try:
-                self.master.after_cancel(self._size_after_id)
-            except Exception:
-                pass
-        self._size_after_id = self.master.after(350, self._save_window_size)
-
-    def _save_window_size(self) -> None:
-        if not self.master.winfo_exists():
-            return
-        try:
-            width = int(self.master.winfo_width())
-            height = int(self.master.winfo_height())
-        except Exception:
-            return
-        if width <= 1 or height <= 1:
-            return
-        self.settings.setValue("ui/password_manager_width", width)
-        self.settings.setValue("ui/password_manager_height", height)
-        self.settings.sync()
-        self._size_after_id = None
 
     def _safe_copy_to_clipboard(self, text: str, clear_after_ms: int = 60000) -> bool:
         if not text:
@@ -11064,13 +10694,6 @@ class PasswordGeneratorApp:
                 self.idle_timer = None
         except Exception:
             pass
-        if getattr(self, "_size_after_id", None) is not None:
-            try:
-                self.master.after_cancel(self._size_after_id)
-            except Exception:
-                pass
-            self._size_after_id = None
-        self._save_window_size()
         self.master.destroy()
 
     def schedule_backup(self):
@@ -12001,38 +11624,6 @@ class LauncherWindow(QMainWindow):
             }
             """
         )
-        self._geometry_save_timer = QTimer(self)
-        self._geometry_save_timer.setSingleShot(True)
-        self._geometry_save_timer.setInterval(300)
-        self._geometry_save_timer.timeout.connect(self._save_window_size)
-        self._restore_window_size()
-
-    def _on_notes_destroyed(self, *_):
-        if getattr(self, "notes_window", None) is not None:
-            self.notes_window = None
-
-    def _register_notes_window(self, win: "NotesApp") -> None:
-        self.notes_window = win
-        try:
-            win.window_hidden.connect(
-                self.on_notes_hidden, Qt.ConnectionType.UniqueConnection
-            )
-        except TypeError:
-            try:
-                win.window_hidden.disconnect(self.on_notes_hidden)
-            except (TypeError, RuntimeError):
-                pass
-            win.window_hidden.connect(self.on_notes_hidden)
-        try:
-            win.destroyed.connect(
-                self._on_notes_destroyed, Qt.ConnectionType.UniqueConnection
-            )
-        except TypeError:
-            try:
-                win.destroyed.disconnect(self._on_notes_destroyed)
-            except (TypeError, RuntimeError):
-                pass
-            win.destroyed.connect(self._on_notes_destroyed)
 
     def _start_external(self, title: str, candidates: list[str]) -> None:
         path = self._find_first_existing(candidates)
@@ -12079,9 +11670,6 @@ class LauncherWindow(QMainWindow):
         if getattr(self, "notes_window", None) is not None:
             try:
                 if self.notes_window.isVisible():
-                    self._register_notes_window(self.notes_window)
-                    if self.isVisible():
-                        self.hide()
                     if self.notes_window.isMinimized():
                         self.notes_window.showNormal()
                     self.notes_window.raise_()
@@ -12092,23 +11680,25 @@ class LauncherWindow(QMainWindow):
         for w in QApplication.topLevelWidgets():
             try:
                 if isinstance(w, NotesApp):
-                    self._register_notes_window(w)
+                    self.notes_window = w
                     if self.isVisible():
                         self.hide()
                     if w.isMinimized():
                         w.showNormal()
                     w.raise_()
                     w.activateWindow()
+                    w.destroyed.connect(lambda *_: setattr(self, "notes_window", None))
                     return
             except Exception:
                 pass
         if self.isVisible():
             self.hide()
         win = NotesApp()
-        self._register_notes_window(win)
+        self.notes_window = win
         win.show()
         win.raise_()
         win.activateWindow()
+        win.destroyed.connect(lambda *_: setattr(self, "notes_window", None))
 
     def on_notes_hidden(self):
         self.show()
@@ -12125,15 +11715,11 @@ class LauncherWindow(QMainWindow):
     def launch_desktop_notes(self):
         try:
             if self.notes_widget is not None and self.notes_widget.isVisible():
-                if self.isVisible():
-                    self.hide()
                 self.notes_widget.showNormal()
                 self.notes_widget.raise_()
                 self.notes_widget.activateWindow()
                 return
             self.notes_widget = DesktopNotesWidget()
-            if self.isVisible():
-                self.hide()
             self.notes_widget.destroyed.connect(lambda: setattr(self, "notes_widget", None))
             self.notes_widget.show()
             self.notes_widget.raise_()
@@ -12146,36 +11732,6 @@ class LauncherWindow(QMainWindow):
             except Exception:
                 pass
             QMessageBox.critical(self, "Ошибка", f"Не удалось открыть Заметки:\n{e}")
-
-    def _restore_window_size(self) -> None:
-        try:
-            w = self.settings.value("ui/launcher_width", type=int)
-            h = self.settings.value("ui/launcher_height", type=int)
-        except Exception:
-            w = h = None
-        if isinstance(w, int) and isinstance(h, int) and w > 0 and h > 0:
-            self.resize(max(self.minimumWidth(), w), max(self.minimumHeight(), h))
-
-    def _schedule_window_size_save(self) -> None:
-        if getattr(self, "_geometry_save_timer", None):
-            self._geometry_save_timer.start()
-
-    def _save_window_size(self) -> None:
-        try:
-            size = self.size()
-            self.settings.setValue("ui/launcher_width", int(size.width()))
-            self.settings.setValue("ui/launcher_height", int(size.height()))
-            self.settings.sync()
-        except Exception:
-            pass
-
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        self._schedule_window_size_save()
-
-    def closeEvent(self, event):
-        self._save_window_size()
-        super().closeEvent(event)
 
     def launch_screenshoter(self):
         self._start_external("Скриншотер", ["ScreenshotPN.exe"])
@@ -12241,3 +11797,5 @@ if __name__ == "__main__":
         app.launcher_window = win
         win.show()
     sys.exit(app.exec())
+
+# UPD 18.11.2025
