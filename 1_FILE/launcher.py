@@ -11742,6 +11742,8 @@ class LauncherWindow(QMainWindow):
     def launch_desktop_notes(self):
         try:
             if self.notes_widget is not None and self.notes_widget.isVisible():
+                if self.isVisible():
+                    self.hide()
                 self.notes_widget.showNormal()
                 self.notes_widget.raise_()
                 self.notes_widget.activateWindow()
