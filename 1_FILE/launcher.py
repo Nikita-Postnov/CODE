@@ -183,6 +183,11 @@ FILE_ICON_PATH = os.path.join(DATA_DIR, "file.ico")
 USER_DICT_PATH = os.path.join(DATA_DIR, "user_dictionary.txt")
 NOTES_WIDGET_PATH = os.path.join(DATA_DIR, "desktop_notes.json")
 NOTES_WIDGET_BAK = os.path.join(DATA_DIR, "desktop_notes.json.bak")
+RU_LAYOUT = "ёйцукенгшщзхъфывапролджэячсмитьбю"
+EN_LAYOUT = "`qwertyuiop[]asdfghjkl;'zxcvbnm,."
+RU_TO_EN = str.maketrans(RU_LAYOUT + RU_LAYOUT.upper(), EN_LAYOUT + EN_LAYOUT.upper())
+EN_TO_RU = str.maketrans(EN_LAYOUT + EN_LAYOUT.upper(), RU_LAYOUT + RU_LAYOUT.upper())
+NOTES_WIDGET_BAK = os.path.join(DATA_DIR, "desktop_notes.json.bak")
 RU_REFLEXIVE = ("ся", "сь")
 RU_SUFFIXES_RU = tuple(
     sorted(
@@ -3401,6 +3406,11 @@ class NotesApp(QMainWindow):
         open_launcher_action = QAction("Выбрать приложение…", self)
         open_launcher_action.triggered.connect(self.show_app_launcher)
         menu.addAction(open_launcher_action)
+        translate_clipboard_action = QAction(
+            "Перевести буфер раскладка+регистр", self
+        )
+        translate_clipboard_action.triggered.connect(self.translate_layout_and_case)
+        menu.addAction(translate_clipboard_action)
         exit_action = QAction("Выход", self)
         exit_action.triggered.connect(self.exit_app)
         menu.addAction(restore_action)
@@ -3800,6 +3810,9 @@ class NotesApp(QMainWindow):
         sc_redo_notes = QShortcut(QKeySequence.Redo, self)
         sc_redo_notes.setContext(Qt.ApplicationShortcut)
         sc_redo_notes.activated.connect(self.redo)
+        sc_translate_layout = QShortcut(QKeySequence("Ctrl+Shift+F12"), self)
+        sc_translate_layout.setContext(Qt.ApplicationShortcut)
+        sc_translate_layout.activated.connect(self.translate_layout_and_case)
         self._dock_ratios = [0.22, 0.56, 0.22]
         self._resizing_apply = False
         self._resize_deb = QTimer(self)
@@ -6743,6 +6756,46 @@ class NotesApp(QMainWindow):
             text = text.swapcase()
             cursor.insertText(text)
 
+    def _convert_layout_and_case_text(self, text: str) -> str:
+        ru_count = sum(1 for ch in text if ch.lower() in RU_LAYOUT)
+        en_count = sum(1 for ch in text if ch.lower() in EN_LAYOUT)
+        if ru_count == 0 and en_count == 0:
+            return text.swapcase()
+        table = EN_TO_RU if en_count >= ru_count else RU_TO_EN
+        translated = text.translate(table)
+        return translated.swapcase()
+
+    def translate_layout_and_case(self) -> None:
+        cursor = self.text_edit.textCursor()
+        clipboard = QApplication.clipboard()
+        used_selection = False
+        if self.isVisible() and self.text_edit.hasFocus() and cursor.hasSelection():
+            text = cursor.selectedText()
+            used_selection = True
+        else:
+            text = clipboard.text()
+        if not text:
+            return
+        converted = self._convert_layout_and_case_text(text)
+        if used_selection:
+            cursor.insertText(converted)
+            self.text_edit.setTextCursor(cursor)
+            self.record_state_for_undo()
+        else:
+            clipboard.setText(converted)
+            if self.isVisible():
+                self.show_toast("Текст в буфере переведен и сменен регистр")
+            else:
+                try:
+                    self.tray_icon.showMessage(
+                        "Мои Заметки",
+                        "Текст в буфере переведен и сменен регистр",
+                        QSystemTrayIcon.Information,
+                        3000,
+                    )
+                except Exception:
+                    pass
+
     def apply_heading(self, level: int) -> None:
         cursor = self.text_edit.textCursor()
         if not cursor.hasSelection():
@@ -7863,11 +7916,13 @@ class NotesApp(QMainWindow):
         add_tool_button("", "H2 - Заголовок 2", lambda: self.apply_heading(2))
         add_tool_button("", "H3 - Заголовок 3", lambda: self.apply_heading(3))
         add_tool_button("", "Aa - Изменить регистр", self.toggle_case)
+        add_tool_button("", "⌨ - Раскладка + Регистр", self.translate_layout_and_case)
         add_tool_button("", "• - Маркированный  список", self.insert_bullet_list)
         add_tool_button("", "1. - Нумерованный список", self.insert_numbered_list)
         add_tool_button("", "☑ - Чекбокс", self.insert_checkbox)
         add_tool_button("", "📅 - Таблица", self.insert_table)
         add_tool_button("", "🔗 - Ссылка", self.insert_link)
+        add_tool_button("", "❌ - Удалить ссылку", self.remove_link)
         add_tool_button("", "❌ - Удалить ссылку", self.remove_link)
         add_tool_button("", "▁ - Горизонтальная линия", self.insert_horizontal_line)
         add_tool_button("", "+🏷 - Добавить тег", self.add_tag_to_note)
@@ -12186,4 +12241,3 @@ if __name__ == "__main__":
         app.launcher_window = win
         win.show()
     sys.exit(app.exec())
-
