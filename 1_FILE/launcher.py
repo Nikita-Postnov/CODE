@@ -11741,15 +11741,32 @@ class LauncherWindow(QMainWindow):
 
     def launch_desktop_notes(self):
         try:
+            existing_widget = None
             if self.notes_widget is not None and self.notes_widget.isVisible():
+                existing_widget = self.notes_widget
+            else:
+                self.notes_widget = None
+                for w in QApplication.topLevelWidgets():
+                    try:
+                        if isinstance(w, DesktopNotesWidget):
+                            existing_widget = w
+                            self.notes_widget = w
+                            w.destroyed.connect(lambda: setattr(self, "notes_widget", None))
+                            break
+                    except Exception:
+                        pass
+            if existing_widget is not None:
                 if self.isVisible():
                     self.hide()
-                self.notes_widget.showNormal()
-                self.notes_widget.raise_()
-                self.notes_widget.activateWindow()
+                if existing_widget.isMinimized():
+                    existing_widget.showNormal()
+                existing_widget.raise_()
+                existing_widget.activateWindow()
                 return
             self.notes_widget = DesktopNotesWidget()
             self.notes_widget.destroyed.connect(lambda: setattr(self, "notes_widget", None))
+            if self.isVisible():
+                self.hide()
             self.notes_widget.show()
             self.notes_widget.raise_()
             self.notes_widget.activateWindow()
@@ -11761,7 +11778,7 @@ class LauncherWindow(QMainWindow):
             except Exception:
                 pass
             QMessageBox.critical(self, "Ошибка", f"Не удалось открыть Заметки:\n{e}")
-
+        
     def launch_screenshoter(self):
         self._start_external("Скриншотер", ["ScreenshotPN.exe"])
 
