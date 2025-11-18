@@ -6467,12 +6467,22 @@ class NotesApp(QMainWindow):
         view.setOpenExternalLinks(True)
         view.setOpenLinks(False)
 
+    def _replace_selection_with_text(
+        self, cursor: QTextCursor, new_text: str
+    ) -> None:
+        selection_start = cursor.selectionStart()
+        cursor.insertText(new_text)
+        cursor.setPosition(selection_start)
+        cursor.setPosition(selection_start + len(new_text), QTextCursor.KeepAnchor)
+        self.text_edit.setTextCursor(cursor)
+
     def toggle_case(self) -> None:
         cursor = self.text_edit.textCursor()
         if cursor.hasSelection():
             text = cursor.selectedText()
             text = text.swapcase()
-            cursor.insertText(text)
+            self._replace_selection_with_text(cursor, text)
+            self.record_state_for_undo()
 
     def _convert_layout_text(self, text: str) -> str:
         ru_count = sum(1 for ch in text if ch.lower() in RU_LAYOUT)
@@ -6498,8 +6508,7 @@ class NotesApp(QMainWindow):
             return
         converted = transform(text)
         if used_selection:
-            cursor.insertText(converted)
-            self.text_edit.setTextCursor(cursor)
+            self._replace_selection_with_text(cursor, converted)
             self.record_state_for_undo()
         else:
             clipboard.setText(converted)
@@ -11798,4 +11807,4 @@ if __name__ == "__main__":
         win.show()
     sys.exit(app.exec())
 
-# UPD 28.12.2025     22:01
+# UPD 18.11.2025
