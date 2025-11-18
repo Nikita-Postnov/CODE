@@ -6487,12 +6487,12 @@ class NotesApp(QMainWindow):
 
     def _apply_text_transform(self, transform: Callable[[str], str], message: str) -> None:
         cursor = self.text_edit.textCursor()
-        clipboard = QApplication.clipboard()
         used_selection = False
-        if self.isVisible() and self.text_edit.hasFocus() and cursor.hasSelection():
+        if cursor.hasSelection():
             text = cursor.selectedText()
             used_selection = True
         else:
+            clipboard = QApplication.clipboard()
             text = clipboard.text()
         if not text:
             return
@@ -7621,8 +7621,8 @@ class NotesApp(QMainWindow):
         add_tool_button("", "H1 - Заголовок 1", lambda: self.apply_heading(1))
         add_tool_button("", "H2 - Заголовок 2", lambda: self.apply_heading(2))
         add_tool_button("", "H3 - Заголовок 3", lambda: self.apply_heading(3))
-        add_tool_button("", "Aa - Регистр (буфер/выделение)", self.translate_case_only)
-        add_tool_button("", "⌨ - Раскладка (буфер/выделение)", self.translate_layout_only)
+        add_tool_button("", "Aa - Регистр (выделение)", self.translate_case_only)
+        add_tool_button("", "⌨ - Раскладка (выделение)", self.translate_layout_only)
         add_tool_button("", "• - Маркированный  список", self.insert_bullet_list)
         add_tool_button("", "1. - Нумерованный список", self.insert_numbered_list)
         add_tool_button("", "☑ - Чекбокс", self.insert_checkbox)
