@@ -6,6 +6,7 @@ import string
 import html
 import random
 import difflib
+import telethon
 import requests
 import tkinter as tk
 from tkinter import ttk
@@ -11697,8 +11698,6 @@ class LauncherWindow(QMainWindow):
         if getattr(self, "notes_window", None) is not None:
             try:
                 if self.notes_window.isVisible():
-                    if self.isVisible():
-                        self.hide()
                     if self.notes_window.isMinimized():
                         self.notes_window.showNormal()
                     self.notes_window.raise_()
