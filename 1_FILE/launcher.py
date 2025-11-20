@@ -3335,6 +3335,20 @@ class NumberGeneratorDialog(QDialog):
 
 
 
+class NotesLoaderThread(QThread):
+    finished = Signal(list)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+
+    def run(self) -> None:
+        try:
+            notes = NotesApp.read_notes_snapshot()
+        except Exception:
+            notes = []
+        self.finished.emit(notes)
+
+
 class NotesApp(QMainWindow):
     TRASH_DIR = os.path.join(NOTES_DIR, "Trash")
     window_hidden = Signal()
@@ -3380,6 +3394,14 @@ class NotesApp(QMainWindow):
         self.load_plugins()
         self.init_theme()
         self.load_settings()
+        self._clipboard_watch_enabled = self.settings.value(
+            "layout/clipboard_auto_convert", True, type=bool
+        )
+        self._clipboard_ignore = False
+        self._last_clipboard_text = ""
+        QApplication.clipboard().dataChanged.connect(self._on_clipboard_changed)
+        self._background_loader = None
+        QTimer.singleShot(0, self._start_background_preload)
         self.tray_icon = QSystemTrayIcon(QIcon(TRAY_ICON_PATH), self)
         self.tray_icon.activated.connect(self.on_tray_icon_activated)
         self.tray_icon.setToolTip("Мои Заметки")
@@ -3396,6 +3418,14 @@ class NotesApp(QMainWindow):
         toggle_clipboard_case_action = QAction("Сменить регистр буфера", self)
         toggle_clipboard_case_action.triggered.connect(self.translate_case_only)
         menu.addAction(toggle_clipboard_case_action)
+        toggle_clipboard_layout_action = QAction(
+            "Автоперекладка буфера", self, checkable=True
+        )
+        toggle_clipboard_layout_action.setChecked(self._clipboard_watch_enabled)
+        toggle_clipboard_layout_action.triggered.connect(
+            self._toggle_clipboard_layout_watch
+        )
+        menu.addAction(toggle_clipboard_layout_action)
         exit_action = QAction("Выход", self)
         exit_action.triggered.connect(self.exit_app)
         menu.addAction(restore_action)
@@ -3404,6 +3434,51 @@ class NotesApp(QMainWindow):
         self.reminder_timer = QTimer(self)
         self.reminder_timer.timeout.connect(self.check_reminders)
         self.reminder_timer.start(60000)
+
+    @staticmethod
+    def read_notes_snapshot() -> list[Note]:
+        if not os.path.exists(NOTES_DIR):
+            os.makedirs(NOTES_DIR, exist_ok=True)
+        loaded_notes = []
+        for folder in os.listdir(NOTES_DIR):
+            folder_path = os.path.join(NOTES_DIR, folder)
+            if os.path.isdir(folder_path):
+                file_path = os.path.join(folder_path, "note.json")
+                if os.path.exists(file_path):
+                    with open(file_path, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                    note = Note.from_dict(data)
+                    if "content_txt" in data:
+                        note.content_txt = data["content_txt"]
+                    else:
+                        doc = QTextDocument()
+                        doc.setHtml(note.content)
+                        note.content_txt = doc.toPlainText()
+                    loaded_notes.append(note)
+        unique: dict[str, Note] = {}
+        for note in loaded_notes:
+            unique[note.uuid] = note
+        return list(unique.values())
+
+    def _start_background_preload(self) -> None:
+        if getattr(self, "_background_loader", None) is not None:
+            try:
+                self._background_loader.finished.disconnect()
+            except Exception:
+                pass
+        self._background_loader = NotesLoaderThread(self)
+        self._background_loader.finished.connect(self._apply_preloaded_notes)
+        self._background_loader.finished.connect(
+            lambda *_: getattr(self._background_loader, "deleteLater", lambda: None)()
+        )
+        self._background_loader.start()
+
+    def _apply_preloaded_notes(self, notes: list[Note]) -> None:
+        if not notes:
+            return
+        self.notes = notes
+        self.deduplicate_notes()
+        self.refresh_notes_list()
 
     def _install_dialog_probe():
         class _Probe(QDialog):
@@ -3437,9 +3512,6 @@ class NotesApp(QMainWindow):
         self.update_current_note_content()
         self.pending_save = True
         self._set_unsaved(True)
-        if getattr(self, "autosave_enabled", True):
-            if self.autosave_enabled:
-                self.save_note_quiet(force=True)
         if hasattr(self, "debounce_timer"):
             self.debounce_timer.start()
 
@@ -3871,6 +3943,10 @@ class NotesApp(QMainWindow):
         l, c, r = self._current_dock_widths()
         total = max(1, l + c + r)
         self._dock_ratios = [l/total, c/total, r/total]
+        try:
+            self.settings.setValue("ui/dock_ratios", self._dock_ratios)
+        except Exception:
+            pass
         try:
             self.settings.setValue("ui/dock_ratios", self._dock_ratios)
         except Exception:
@@ -11845,4 +11921,4 @@ if __name__ == "__main__":
         win.show()
     sys.exit(app.exec())
 
-# UPD 18.11.2025
+# UPD 20.11.2025
