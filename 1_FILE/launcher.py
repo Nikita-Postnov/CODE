@@ -6635,8 +6635,49 @@ class NotesApp(QMainWindow):
             self._swap_case_text, "Регистр текста в буфере изменен"
         )
 
+    def _toggle_clipboard_layout_watch(self, enabled: bool) -> None:
+        self._clipboard_watch_enabled = bool(enabled)
+        self.settings.setValue("layout/clipboard_auto_convert", self._clipboard_watch_enabled)
+        if not self._clipboard_watch_enabled:
+            self._last_clipboard_text = ""
+
     def _on_clipboard_changed(self) -> None:
-        pass
+        if not self._clipboard_watch_enabled or self._clipboard_ignore:
+            return
+
+        clipboard = QApplication.clipboard()
+        text = clipboard.text()
+        if not text:
+            self._last_clipboard_text = ""
+            return
+
+        if text == self._last_clipboard_text:
+            return
+
+        converted = self._convert_layout_text(text)
+        self._last_clipboard_text = text
+
+        if converted == text:
+            return
+
+        self._clipboard_ignore = True
+        try:
+            clipboard.setText(converted)
+            self._last_clipboard_text = converted
+            if self.isVisible():
+                self.show_toast("Текст в буфере переведен (раскладка)")
+            elif getattr(self, "tray_icon", None) is not None:
+                try:
+                    self.tray_icon.showMessage(
+                        "Мои Заметки",
+                        "Текст в буфере переведен (раскладка)",
+                        QSystemTrayIcon.Information,
+                        3000,
+                    )
+                except Exception:
+                    pass
+        finally:
+            self._clipboard_ignore = False
 
     def apply_heading(self, level: int) -> None:
         cursor = self.text_edit.textCursor()
