@@ -3862,6 +3862,15 @@ class NotesApp(QMainWindow):
             else:
                 self._dock_ratios = [0.22, 0.56, 0.22]
         except Exception:
+            ratios = self.settings.value("ui/dock_ratios") or [0.22, 0.56, 0.22]
+        try:
+            ratios = [float(r) for r in ratios]
+            total = sum(ratios)
+            if total > 0:
+                self._dock_ratios = [r / total for r in ratios[:3]]
+            else:
+                self._dock_ratios = [0.22, 0.56, 0.22]
+        except Exception:
             self._dock_ratios = [0.22, 0.56, 0.22]
         self._resizing_apply = False
         self._resize_deb = QTimer(self)
@@ -3943,10 +3952,6 @@ class NotesApp(QMainWindow):
         l, c, r = self._current_dock_widths()
         total = max(1, l + c + r)
         self._dock_ratios = [l/total, c/total, r/total]
-        try:
-            self.settings.setValue("ui/dock_ratios", self._dock_ratios)
-        except Exception:
-            pass
         try:
             self.settings.setValue("ui/dock_ratios", self._dock_ratios)
         except Exception:
@@ -6629,6 +6634,9 @@ class NotesApp(QMainWindow):
         self._apply_text_transform(
             self._swap_case_text, "Регистр текста в буфере изменен"
         )
+
+    def _on_clipboard_changed(self) -> None:
+        pass
 
     def apply_heading(self, level: int) -> None:
         cursor = self.text_edit.textCursor()
