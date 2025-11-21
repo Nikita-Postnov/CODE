@@ -6644,22 +6644,17 @@ class NotesApp(QMainWindow):
     def _on_clipboard_changed(self) -> None:
         if not self._clipboard_watch_enabled or self._clipboard_ignore:
             return
-
         clipboard = QApplication.clipboard()
         text = clipboard.text()
         if not text:
             self._last_clipboard_text = ""
             return
-
         if text == self._last_clipboard_text:
             return
-
         converted = self._convert_layout_text(text)
         self._last_clipboard_text = text
-
         if converted == text:
             return
-
         self._clipboard_ignore = True
         try:
             clipboard.setText(converted)
@@ -11970,4 +11965,4 @@ if __name__ == "__main__":
         win.show()
     sys.exit(app.exec())
 
-# UPD 20.11.2025
+# UPD 21.11.2025
