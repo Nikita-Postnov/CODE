@@ -33,6 +33,7 @@ from tkinter import filedialog as tk_filedialog
 from functools import partial
 import pyperclip
 import subprocess
+import importlib
 from PySide6.QtCore import (
     Qt,
     QMimeData,
@@ -138,6 +139,12 @@ from PySide6.QtWidgets import (
     QFrame,
     QSizeGrip,
 )
+
+keyboard = None
+_keyboard_spec = importlib.util.find_spec("keyboard")
+if _keyboard_spec is not None:
+    keyboard = importlib.util.module_from_spec(_keyboard_spec)
+    _keyboard_spec.loader.exec_module(keyboard)
 
 
 class MessageBox:
@@ -3369,6 +3376,7 @@ class NotesApp(QMainWindow):
         self._timer = QTimer(self)
         self._timer.setInterval(1000)
         self._timer.timeout.connect(self._tick_timer)
+        self._global_hotkeys = []
         self.load_plugins_state()
         self.init_ui()
         self._timer_mode = self.settings.value("timer/mode", "countdown")
@@ -3517,6 +3525,7 @@ class NotesApp(QMainWindow):
 
     def exit_app(self) -> None:
         self.tray_icon.hide()
+        self._unregister_global_hotkeys()
         self.close()
         QApplication.instance().quit()
 
@@ -3853,6 +3862,10 @@ class NotesApp(QMainWindow):
         sc_toggle_case = QShortcut(QKeySequence("Ctrl+Alt+F12"), self)
         sc_toggle_case.setContext(Qt.ApplicationShortcut)
         sc_toggle_case.activated.connect(self.translate_case_only)
+        self._register_global_hotkeys()
+        app = QApplication.instance()
+        if app is not None:
+            app.aboutToQuit.connect(self._unregister_global_hotkeys)
         ratios = self.settings.value("ui/dock_ratios") or [0.22, 0.56, 0.22]
         try:
             ratios = [float(r) for r in ratios]
@@ -6634,6 +6647,31 @@ class NotesApp(QMainWindow):
         self._apply_text_transform(
             self._swap_case_text, "Регистр текста в буфере изменен"
         )
+
+    def _register_global_hotkeys(self) -> None:
+        if keyboard is None:
+            return
+        self._unregister_global_hotkeys()
+        try:
+            hk_layout = keyboard.add_hotkey(
+                "ctrl+shift+f12", self.translate_layout_only, suppress=False
+            )
+            hk_case = keyboard.add_hotkey(
+                "ctrl+alt+f12", self.translate_case_only, suppress=False
+            )
+            self._global_hotkeys = [hk_layout, hk_case]
+        except Exception:
+            self._global_hotkeys = []
+
+    def _unregister_global_hotkeys(self) -> None:
+        if keyboard is None:
+            return
+        for hk in getattr(self, "_global_hotkeys", []):
+            try:
+                keyboard.remove_hotkey(hk)
+            except Exception:
+                pass
+        self._global_hotkeys = []
 
     def _toggle_clipboard_layout_watch(self, enabled: bool) -> None:
         self._clipboard_watch_enabled = bool(enabled)
@@ -11965,4 +12003,4 @@ if __name__ == "__main__":
         win.show()
     sys.exit(app.exec())
 
-# UPD 21.11.2025
+# UPD 20.11.2025
