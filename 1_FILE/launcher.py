@@ -1,3 +1,4 @@
+import ctypes
 import os
 import sys
 import json
@@ -179,6 +180,7 @@ else:
     APPDIR = os.path.abspath(os.path.dirname(__file__))
 
 DATA_DIR = os.path.join(APPDIR, "Data")
+STANDBY_CLEANER_PATH = os.path.join(DATA_DIR, "rammap.exe")
 NOTES_DIR = os.path.join(APPDIR, "Notes")
 PASSWORDS_DIR = os.path.join(APPDIR, "Passwords")
 SALT_PATH = os.path.join(DATA_DIR, "salt.bin")
@@ -4621,25 +4623,104 @@ class NotesApp(QMainWindow):
                 item.setSelected(False)
         self.history_list.blockSignals(False)
 
+    def _field_visibility_settings_key(
+        self, field_id: str, note: Note | None = None
+    ) -> str:
+        if note and getattr(note, "uuid", None):
+            return f"ui/fieldVisibility/{note.uuid}/{field_id}"
+        return f"ui/fieldVisibility/{field_id}"
+
+    @staticmethod
+    def _coerce_to_bool(value, default: bool = False) -> bool:
+        if isinstance(value, bool):
+            return value
+        if value is None:
+            return default
+        if isinstance(value, (int, float)):
+            return value != 0
+        text = str(value).strip().lower()
+        if text in {"1", "true", "yes", "on"}:
+            return True
+        if text in {"0", "false", "no", "off"}:
+            return False
+        return default
+
+    def _load_field_visibility_pref(
+        self, field_id: str, default: bool, note: Note | None = None
+    ) -> bool:
+        if not hasattr(self, "settings"):
+            return default
+        key = self._field_visibility_settings_key(field_id, note)
+        if self.settings.contains(key):
+            return self._coerce_to_bool(self.settings.value(key), default)
+        return default
+
+    def _save_field_visibility_pref(
+        self, field_id: str, visible: bool, note: Note | None = None
+    ) -> None:
+        if not hasattr(self, "settings"):
+            return
+        key = self._field_visibility_settings_key(field_id, note)
+        self.settings.setValue(key, int(bool(visible)))
+        self.settings.sync()
+
+    def _clear_field_visibility_pref(
+        self, field_id: str, note: Note | None = None
+    ) -> None:
+        if not hasattr(self, "settings"):
+            return
+        key = self._field_visibility_settings_key(field_id, note)
+        self.settings.remove(key)
+
+
+    def _apply_saved_field_visibility(self, note: Note | None) -> None:
+        if note is None:
+            return
+        note.password_manager_visible = self._load_field_visibility_pref(
+            "password_manager",
+            self._coerce_to_bool(
+                getattr(note, "password_manager_visible", False), False
+            ),
+            note,
+        )
+        note.rdp_1c8_visible = self._load_field_visibility_pref(
+            "rdp_1c8",
+            self._coerce_to_bool(getattr(note, "rdp_1c8_visible", False), False),
+            note,
+        )
+        updated_fields = []
+        for field in list(getattr(note, "custom_fields", [])):
+            fid = field.get("id") or f"cf::{uuid.uuid4().hex}"
+            field["id"] = fid
+            default_visible = self._coerce_to_bool(field.get("visible", True), True)
+            field["visible"] = self._load_field_visibility_pref(
+                f"custom/{fid}", default_visible, note
+            )
+            updated_fields.append(field)
+        note.custom_fields = updated_fields
+
     def load_notes_from_disk(self) -> None:
         self.ensure_notes_directory()
-        loaded_notes = []
+        loaded_notes: list[Note] = []
         for folder in os.listdir(NOTES_DIR):
             folder_path = os.path.join(NOTES_DIR, folder)
-            if os.path.isdir(folder_path):
-                file_path = os.path.join(folder_path, "note.json")
-                if os.path.exists(file_path):
-                    with open(file_path, "r", encoding="utf-8") as f:
-                        data = json.load(f)
-                    note = Note.from_dict(data)
-                    if "content_txt" in data:
-                        note.content_txt = data["content_txt"]
-                    else:
-                        doc = QTextDocument()
-                        doc.setHtml(note.content)
-                        note.content_txt = doc.toPlainText()
-                    loaded_notes.append(note)
-        unique = {}
+            if not os.path.isdir(folder_path):
+                continue
+            file_path = os.path.join(folder_path, "note.json")
+            if not os.path.exists(file_path):
+                continue
+            with open(file_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            note = Note.from_dict(data)
+            if "content_txt" in data:
+                note.content_txt = data["content_txt"]
+            else:
+                doc = QTextDocument()
+                doc.setHtml(note.content)
+                note.content_txt = doc.toPlainText()
+            self._apply_saved_field_visibility(note)
+            loaded_notes.append(note)
+        unique: dict[str, Note] = {}
         for note in loaded_notes:
             unique[note.uuid] = note
         self.notes = list(unique.values())
@@ -4848,6 +4929,45 @@ class NotesApp(QMainWindow):
             with open(file_path, "w", encoding="utf-8") as f:
                 f.write(text)
             self.show_toast("TXT сохранён")
+
+    def clear_standby_list(self):
+        rammap_path = os.path.join(DATA_DIR, "rammap.exe")
+        if not os.path.isfile(rammap_path):
+            QMessageBox.critical(
+                self,
+                "Очистка Standby List",
+                "rammap.exe не найден в папке Data.\n"
+                "Положи rammap.exe в Data и попробуй снова.",
+            )
+            return
+        try:
+            params = "-Et"
+            rc = ctypes.windll.shell32.ShellExecuteW(
+                None,
+                "runas",
+                rammap_path,
+                params,
+                None,
+                1
+            )
+            if rc <= 32:
+                QMessageBox.warning(
+                    self,
+                    "Очистка Standby List",
+                    f"Не удалось выполнить RamMap.exe (код {rc}).",
+                )
+                return
+            QMessageBox.information(
+                self,
+                "Очистка Standby List",
+                "Standby List успешно очищен.",
+            )
+        except Exception as e:
+            QMessageBox.critical(
+                self,
+                "Ошибка",
+                f"Не удалось очистить Standby List:\n{e}",
+            )
 
     def export_current_note_docx(self) -> None:
         if not self.current_note:
@@ -6656,6 +6776,27 @@ class NotesApp(QMainWindow):
             self._swap_case_text, "Регистр текста в буфере изменен"
         )
 
+    def switch_keyboard_layout(self) -> None:
+        cursor = self.text_edit.textCursor()
+        if not cursor.hasSelection():
+            return
+
+        text = cursor.selectedText()
+        if not text:
+            return
+
+        converted = self._convert_layout_text(text)
+        if not converted or converted == text:
+            return
+
+        self._replace_selection_with_text(cursor, converted)
+        self.record_state_for_undo()
+
+        try:
+            self.show_toast("Раскладка выделения изменена")
+        except Exception:
+            pass
+
     def _apply_selection_transform(
         self, transform: Callable[[str], str], message: str
     ) -> None:
@@ -8325,6 +8466,9 @@ class NotesApp(QMainWindow):
         act.triggered.connect(self.load_plugins)
         plugins_menu.addAction(act)
         tools_menu = menu_bar.addMenu("Инструменты")
+        act_clear_standby = QAction("Очистить Standby List (RAM)", self)
+        act_clear_standby.triggered.connect(self.clear_standby_list)
+        tools_menu.addAction(act_clear_standby)
         act_rng = QAction("🎲 Генератор чисел", self)
         act_rng.triggered.connect(self.open_number_generator)
         tools_menu.addAction(act_rng)
