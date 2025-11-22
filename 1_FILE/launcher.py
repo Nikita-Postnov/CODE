@@ -6679,16 +6679,23 @@ class NotesApp(QMainWindow):
             self._swap_case_text, "Регистр выделения изменен"
         )
 
+    def _invoke_in_main_thread(self, func: Callable[[], None]) -> None:
+        QTimer.singleShot(0, func)
+
     def _register_global_hotkeys(self) -> None:
         if keyboard is None:
             return
         self._unregister_global_hotkeys()
         try:
             hk_layout = keyboard.add_hotkey(
-                "ctrl+shift+f12", self.translate_layout_only, suppress=False
+                "ctrl+shift+f12",
+                lambda: self._invoke_in_main_thread(self.translate_layout_only),
+                suppress=False,
             )
             hk_case = keyboard.add_hotkey(
-                "ctrl+alt+f12", self.translate_case_only, suppress=False
+                "ctrl+alt+f12",
+                lambda: self._invoke_in_main_thread(self.translate_case_only),
+                suppress=False,
             )
             self._global_hotkeys = [hk_layout, hk_case]
         except Exception:
@@ -12034,4 +12041,4 @@ if __name__ == "__main__":
         win.show()
     sys.exit(app.exec())
 
-# UPD 20.11.2025
+# UPD 22.11.2025
