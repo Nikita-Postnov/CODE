@@ -3859,9 +3859,17 @@ class NotesApp(QMainWindow):
         sc_translate_layout = QShortcut(QKeySequence("Ctrl+Shift+F12"), self)
         sc_translate_layout.setContext(Qt.ApplicationShortcut)
         sc_translate_layout.activated.connect(self.translate_layout_only)
+        sc_translate_layout_selection = QShortcut(QKeySequence("Ctrl+Shift+L"), self)
+        sc_translate_layout_selection.setContext(Qt.ApplicationShortcut)
+        sc_translate_layout_selection.activated.connect(
+            self.translate_layout_selection
+        )
         sc_toggle_case = QShortcut(QKeySequence("Ctrl+Alt+F12"), self)
         sc_toggle_case.setContext(Qt.ApplicationShortcut)
         sc_toggle_case.activated.connect(self.translate_case_only)
+        sc_toggle_case_selection = QShortcut(QKeySequence("Ctrl+Alt+L"), self)
+        sc_toggle_case_selection.setContext(Qt.ApplicationShortcut)
+        sc_toggle_case_selection.activated.connect(self.translate_case_selection)
         self._register_global_hotkeys()
         app = QApplication.instance()
         if app is not None:
@@ -6646,6 +6654,29 @@ class NotesApp(QMainWindow):
     def translate_case_only(self) -> None:
         self._apply_text_transform(
             self._swap_case_text, "Регистр текста в буфере изменен"
+        )
+
+    def _apply_selection_transform(
+        self, transform: Callable[[str], str], message: str
+    ) -> None:
+        cursor = self.text_edit.textCursor()
+        if not cursor.hasSelection():
+            return
+        text = cursor.selectedText()
+        converted = transform(text)
+        self._replace_selection_with_text(cursor, converted)
+        self.record_state_for_undo()
+        if self.isVisible():
+            self.show_toast(message)
+
+    def translate_layout_selection(self) -> None:
+        self._apply_selection_transform(
+            self._convert_layout_text, "Раскладка выделения изменена"
+        )
+
+    def translate_case_selection(self) -> None:
+        self._apply_selection_transform(
+            self._swap_case_text, "Регистр выделения изменен"
         )
 
     def _register_global_hotkeys(self) -> None:
