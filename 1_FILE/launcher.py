@@ -4672,7 +4672,6 @@ class NotesApp(QMainWindow):
         key = self._field_visibility_settings_key(field_id, note)
         self.settings.remove(key)
 
-
     def _apply_saved_field_visibility(self, note: Note | None) -> None:
         if note is None:
             return
