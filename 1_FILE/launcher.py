@@ -3421,23 +3421,9 @@ class NotesApp(QMainWindow):
         restore_action.triggered.connect(self.show)
         open_launcher_action = QAction("Выбрать приложение…", self)
         open_launcher_action.triggered.connect(self.show_app_launcher)
-        menu.addAction(open_launcher_action)
-        translate_layout_action = QAction("Перевести буфер (раскладка)", self)
-        translate_layout_action.triggered.connect(self.translate_layout_only)
-        menu.addAction(translate_layout_action)
-        toggle_clipboard_case_action = QAction("Сменить регистр буфера", self)
-        toggle_clipboard_case_action.triggered.connect(self.translate_case_only)
-        menu.addAction(toggle_clipboard_case_action)
-        toggle_clipboard_layout_action = QAction(
-            "Автоперекладка буфера", self, checkable=True
-        )
-        toggle_clipboard_layout_action.setChecked(self._clipboard_watch_enabled)
-        toggle_clipboard_layout_action.triggered.connect(
-            self._toggle_clipboard_layout_watch
-        )
-        menu.addAction(toggle_clipboard_layout_action)
         exit_action = QAction("Выход", self)
         exit_action.triggered.connect(self.exit_app)
+        menu.addAction(open_launcher_action)
         menu.addAction(restore_action)
         menu.addAction(exit_action)
         self.tray_icon.setContextMenu(menu)
@@ -3808,11 +3794,6 @@ class NotesApp(QMainWindow):
         )
         self.addDockWidget(Qt.TopDockWidgetArea, self.dock_toolbar)
         self.resizeDocks(
-            [self.dock_notes_list, self.dock_editor, self.dock_history],
-            [280, 800, 240],
-            Qt.Horizontal
-        )
-        self.resizeDocks(
             [self.dock_toolbar, self.dock_editor],
             [120, 1000],
             Qt.Vertical
@@ -3920,11 +3901,6 @@ class NotesApp(QMainWindow):
     def _apply_dock_proportions(self):
         left_width = 360
         right_width = max(600, self.width() - left_width)
-        self.resizeDocks(
-            [self.dock_notes_list, self.dock_editor],
-            [left_width, right_width],
-            Qt.Horizontal
-        )
         self.resizeDocks(
             [self.dock_notes_list, self.dock_history, self.dock_buttons],
             [1, 1, 1],
@@ -4039,11 +4015,6 @@ class NotesApp(QMainWindow):
                 center -= shift
                 extra -= shift
                 right -= extra
-            self.resizeDocks(
-                [self.dock_notes_list, self.dock_editor, self.dock_history],
-                [max(1,left), max(1,center), max(1,right)],
-                Qt.Horizontal
-            )
         finally:
             QTimer.singleShot(0, self._capture_dock_ratios)
             self._resizing_apply = False
@@ -6858,37 +6829,7 @@ class NotesApp(QMainWindow):
             self._last_clipboard_text = ""
 
     def _on_clipboard_changed(self) -> None:
-        if not self._clipboard_watch_enabled or self._clipboard_ignore:
-            return
-        clipboard = QApplication.clipboard()
-        text = clipboard.text()
-        if not text:
-            self._last_clipboard_text = ""
-            return
-        if text == self._last_clipboard_text:
-            return
-        converted = self._convert_layout_text(text)
-        self._last_clipboard_text = text
-        if converted == text:
-            return
-        self._clipboard_ignore = True
-        try:
-            clipboard.setText(converted)
-            self._last_clipboard_text = converted
-            if self.isVisible():
-                self.show_toast("Текст в буфере переведен (раскладка)")
-            elif getattr(self, "tray_icon", None) is not None:
-                try:
-                    self.tray_icon.showMessage(
-                        "Мои Заметки",
-                        "Текст в буфере переведен (раскладка)",
-                        QSystemTrayIcon.Information,
-                        3000,
-                    )
-                except Exception:
-                    pass
-        finally:
-            self._clipboard_ignore = False
+        return
 
     def apply_heading(self, level: int) -> None:
         cursor = self.text_edit.textCursor()
@@ -9729,9 +9670,7 @@ class NotesApp(QMainWindow):
             for action in actions_to_remove:
                 plugins_menu.removeAction(action)
 
-    def load_plugins(self):
-        import importlib
-
+    def load_plugins(self):     
         importlib.invalidate_caches()
         self.clear_plugin_menu_actions()
         for module in getattr(self, "active_plugins", {}).values():
@@ -9742,6 +9681,14 @@ class NotesApp(QMainWindow):
                 print(
                     f"Ошибка при деинициализации плагина {getattr(module, '__name__', '')}: {e}"
                 )
+                log_path = os.path.join(DATA_DIR, "plugin_errors.log")
+                try:
+                    with open(log_path, "a", encoding="utf-8") as f:
+                        f.write(f"\n[{datetime.now().isoformat(sep=' ', timespec='seconds')}] ")
+                        f.write(f"Ошибка при загрузке плагина {fname}: {e}\n")
+                        traceback.print_exc(file=f)
+                except Exception:
+                    pass
         plugins_folder = os.path.join(APPDIR, "Plugins")
         plugins_state_path = os.path.join(DATA_DIR, "plugins_state.json")
         if os.path.exists(plugins_state_path):
@@ -9756,21 +9703,16 @@ class NotesApp(QMainWindow):
             if fname.endswith(".py"):
                 plugin_name = fname[:-3]
                 plugin_path = os.path.join(plugins_folder, fname)
-                try:
-                    spec = importlib.util.spec_from_file_location(
-                        plugin_name, plugin_path
-                    )
-                    module = importlib.util.module_from_spec(spec)
-                    spec.loader.exec_module(module)
-                    self.active_plugins[plugin_name] = module
-                    if plugins_state.get(plugin_name, False):
-                        if hasattr(module, "on_enable"):
-                            module.on_enable(parent=self)
+                spec = importlib.util.spec_from_file_location(plugin_name, plugin_path)
+                module = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(module)
+                self.active_plugins[plugin_name] = module
+                if plugins_state.get(plugin_name, False):
+                    if hasattr(module, "on_enable"):
+                        module.on_enable(parent=self)
                     else:
                         if hasattr(module, "on_disable"):
                             module.on_disable(parent=self)
-                except Exception as e:
-                    print(f"Ошибка при загрузке плагина {fname}:", e)
 
     def detect_plugins(self):
         plugins = []
@@ -9852,25 +9794,6 @@ class NotesApp(QMainWindow):
                 pass
     def on_text_changed_autosave(self):
         pass
-
-    def load_plugins(app, plugins_folder="Plugins"):
-        if not os.path.exists(plugins_folder):
-            os.makedirs(plugins_folder)
-            return
-        for filename in os.listdir(plugins_folder):
-            if filename.endswith(".py"):
-                plugin_path = os.path.join(plugins_folder, filename)
-                spec = importlib.util.spec_from_file_location(filename[:-3], plugin_path)
-                if spec is None:
-                    continue
-                plugin = importlib.util.module_from_spec(spec)
-                try:
-                    spec.loader.exec_module(plugin)
-                    if hasattr(plugin, "register_plugin"):
-                        plugin.register_plugin(app)
-                except Exception as e:
-                    print(f"Ошибка при загрузке плагина {filename}: {e}")
-
 
     def get_app_dir():
         return APPDIR
@@ -11991,6 +11914,22 @@ class LauncherWindow(QMainWindow):
             }
             """
         )
+        self._load_geometry()
+
+    def _load_geometry(self) -> None:
+        try:
+            geom = self.settings.value("launcher/geometry")
+            if geom:
+                self.restoreGeometry(geom)
+        except Exception:
+            pass
+
+    def _save_geometry(self) -> None:
+        try:
+            self.settings.setValue("launcher/geometry", self.saveGeometry())
+            self.settings.sync()
+        except Exception:
+            pass
 
     def _start_external(self, title: str, candidates: list[str]) -> None:
         path = self._find_first_existing(candidates)
@@ -12066,6 +12005,18 @@ class LauncherWindow(QMainWindow):
         win.raise_()
         win.activateWindow()
         win.destroyed.connect(lambda *_: setattr(self, "notes_window", None))
+
+    def moveEvent(self, event):
+        self._save_geometry()
+        super().moveEvent(event)
+
+    def resizeEvent(self, event):
+        self._save_geometry()
+        super().resizeEvent(event)
+
+    def closeEvent(self, event):
+        self._save_geometry()
+        super().closeEvent(event)
 
     def on_notes_hidden(self):
         self.show()
@@ -12184,4 +12135,4 @@ if __name__ == "__main__":
         win.show()
     sys.exit(app.exec())
 
-# UPD 22.11.2025
+# UPD 23.11.2025
