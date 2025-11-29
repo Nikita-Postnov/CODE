@@ -3531,29 +3531,38 @@ class NotesApp(QMainWindow):
         self.reminder_timer.start(60000)
 
     @staticmethod
+    def _html_to_plain_text(content: str) -> str:
+        doc = QTextDocument()
+        doc.setHtml(content or "")
+        return doc.toPlainText()
+
+    @staticmethod
+    def _load_note_from_path(file_path: str) -> Note:
+        with open(file_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        note = Note.from_dict(data)
+        note.content_txt = data.get("content_txt") or NotesApp._html_to_plain_text(
+            note.content
+        )
+        return note
+
+    @staticmethod
     def read_notes_snapshot() -> list[Note]:
         if not os.path.exists(NOTES_DIR):
             os.makedirs(NOTES_DIR, exist_ok=True)
-        loaded_notes = []
-        for folder in os.listdir(NOTES_DIR):
-            folder_path = os.path.join(NOTES_DIR, folder)
-            if os.path.isdir(folder_path):
-                file_path = os.path.join(folder_path, "note.json")
-                if os.path.exists(file_path):
-                    with open(file_path, "r", encoding="utf-8") as f:
-                        data = json.load(f)
-                    note = Note.from_dict(data)
-                    if "content_txt" in data:
-                        note.content_txt = data["content_txt"]
-                    else:
-                        doc = QTextDocument()
-                        doc.setHtml(note.content)
-                        note.content_txt = doc.toPlainText()
-                    loaded_notes.append(note)
-        unique: dict[str, Note] = {}
-        for note in loaded_notes:
-            unique[note.uuid] = note
-        return list(unique.values())
+        notes_by_id: dict[str, Note] = {}
+        for entry in os.scandir(NOTES_DIR):
+            if not entry.is_dir():
+                continue
+            file_path = os.path.join(entry.path, "note.json")
+            if not os.path.exists(file_path):
+                continue
+            try:
+                note = NotesApp._load_note_from_path(file_path)
+            except Exception:
+                continue
+            notes_by_id[note.uuid] = note
+        return list(notes_by_id.values())
 
     def _start_background_preload(self) -> None:
         if getattr(self, "_background_loader", None) is not None:
@@ -4869,34 +4878,22 @@ class NotesApp(QMainWindow):
 
     def load_notes_from_disk(self) -> None:
         self.ensure_notes_directory()
-        loaded_notes: list[Note] = []
         broken_files: list[tuple[str, str]] = []
-        for folder in os.listdir(NOTES_DIR):
-            folder_path = os.path.join(NOTES_DIR, folder)
-            if not os.path.isdir(folder_path):
+        notes_by_id: dict[str, Note] = {}
+        for entry in os.scandir(NOTES_DIR):
+            if not entry.is_dir():
                 continue
-            file_path = os.path.join(folder_path, "note.json")
+            file_path = os.path.join(entry.path, "note.json")
             if not os.path.exists(file_path):
                 continue
             try:
-                with open(file_path, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                note = Note.from_dict(data)
-                if "content_txt" in data:
-                    note.content_txt = data["content_txt"]
-                else:
-                    doc = QTextDocument()
-                    doc.setHtml(note.content)
-                    note.content_txt = doc.toPlainText()
+                note = NotesApp._load_note_from_path(file_path)
                 self._apply_saved_field_visibility(note)
-                loaded_notes.append(note)
             except Exception as e:
                 broken_files.append((file_path, repr(e)))
                 continue
-        unique: dict[str, Note] = {}
-        for note in loaded_notes:
-            unique[note.uuid] = note
-        self.notes = list(unique.values())
+            notes_by_id[note.uuid] = note
+        self.notes = list(notes_by_id.values())
         self.deduplicate_notes()
         if broken_files:
             try:
@@ -8157,8 +8154,8 @@ class NotesApp(QMainWindow):
         toggle_fav_button.setFixedSize(32, 32)
         toggle_fav_button.clicked.connect(self.toggle_favorite)
         flow_layout.addWidget(toggle_fav_button)
-        add_tool_button("", "🗑 - Корзина", self.show_trash)
         add_tool_button("", "🎲 - Генератор чисел", self.open_number_generator)
+        add_tool_button("", "🗑 - Корзина", self.show_trash)
         add_tool_button("", "📒 - Заметки", self.show_all_notes)
         self.refresh_button = add_tool_button(
             "", "🔄 - Обновить", self.on_refresh_clicked
