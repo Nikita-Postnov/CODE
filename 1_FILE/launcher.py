@@ -507,7 +507,8 @@ class DesktopNotesWidget(QWidget):
         self._buttons_widget = QWidget(self)
         self._buttons_widget.setLayout(btn_row)
         root.addWidget(self._buttons_widget)
-        self.setStyleSheet("""
+        self.setStyleSheet(
+            """
             QWidget {
                 background-color: rgba(30, 30, 30, 252);
                 border-radius: 12px;
@@ -540,7 +541,8 @@ class DesktopNotesWidget(QWidget):
             }
             QToolButton#dnw_close:hover { background-color: rgba(255, 255, 255, 0.18); }
             QToolButton#dnw_close:pressed { background-color: rgba(255, 255, 255, 0.28); }
-        """)
+        """
+        )
         grip_row = QHBoxLayout()
         grip_row.setContentsMargins(0, 0, 0, 0)
         grip_row.addStretch(1)
@@ -551,7 +553,9 @@ class DesktopNotesWidget(QWidget):
         self._grip_widget.setLayout(grip_row)
         root.addWidget(self._grip_widget)
         self._grip_top_right = QSizeGrip(self)
-        self._grip_top_right.setToolTip("Потяните за верхний правый угол, чтобы изменить размер")
+        self._grip_top_right.setToolTip(
+            "Потяните за верхний правый угол, чтобы изменить размер"
+        )
         self._grip_top_right.setFixedSize(16, 16)
         self._grip_top_right.raise_()
         self.notes_list.itemDoubleClicked.connect(self._on_item_activated)
@@ -582,12 +586,23 @@ class DesktopNotesWidget(QWidget):
             QTimer.singleShot(0, self._apply_dock_ratios)
         super().changeEvent(e)
 
-
     def _calc_needed_height(self) -> int:
         root: QVBoxLayout = self.layout()
-        header_h   = self.header_widget.sizeHint().height() if hasattr(self, "header_widget") else 0
-        buttons_h  = self._buttons_widget.sizeHint().height() if hasattr(self, "_buttons_widget") else 0
-        grip_h     = self._grip_widget.sizeHint().height() if hasattr(self, "_grip_widget") else 0
+        header_h = (
+            self.header_widget.sizeHint().height()
+            if hasattr(self, "header_widget")
+            else 0
+        )
+        buttons_h = (
+            self._buttons_widget.sizeHint().height()
+            if hasattr(self, "_buttons_widget")
+            else 0
+        )
+        grip_h = (
+            self._grip_widget.sizeHint().height()
+            if hasattr(self, "_grip_widget")
+            else 0
+        )
         count = self.notes_list.count()
         if count > 0:
             row_h = max(1, self.notes_list.sizeHintForRow(0))
@@ -596,10 +611,12 @@ class DesktopNotesWidget(QWidget):
         list_h = row_h * max(1, count) + 2 * self.notes_list.frameWidth()
         m = root.contentsMargins()
         margins = m.top() + m.bottom()
-        spacings = root.spacing() * 3 
+        spacings = root.spacing() * 3
         total = margins + header_h + list_h + buttons_h + grip_h + spacings
         try:
-            avail_h = (self.screen().availableGeometry().height() if self.screen() else 1000) - 20
+            avail_h = (
+                self.screen().availableGeometry().height() if self.screen() else 1000
+            ) - 20
             total = min(total, max(200, avail_h))
         except Exception:
             pass
@@ -615,10 +632,14 @@ class DesktopNotesWidget(QWidget):
         m = getattr(self, "_RESIZE_MARGIN", 8)
         r = self.rect()
         edge = 0
-        if pos.x() <= r.left() + m:  edge |= 1
-        if pos.x() >= r.right() - m: edge |= 2
-        if pos.y() <= r.top() + m:   edge |= 4
-        if pos.y() >= r.bottom() - m:edge |= 8
+        if pos.x() <= r.left() + m:
+            edge |= 1
+        if pos.x() >= r.right() - m:
+            edge |= 2
+        if pos.y() <= r.top() + m:
+            edge |= 4
+        if pos.y() >= r.bottom() - m:
+            edge |= 8
         return edge
 
     def _set_cursor_for_edge(self, edge: int) -> None:
@@ -648,6 +669,7 @@ class DesktopNotesWidget(QWidget):
 
         def _now_iso():
             return datetime.datetime.now().isoformat(timespec="seconds")
+
         notes: list[dict] = []
         if isinstance(data, list) and all(isinstance(x, dict) for x in data):
             for x in data:
@@ -657,14 +679,23 @@ class DesktopNotesWidget(QWidget):
                 nid = x.get("id") or str(uuid.uuid4())
                 created = x.get("created") or _now_iso()
                 updated = x.get("updated") or created
-                notes.append({"id": nid, "text": txt, "created": created, "updated": updated})
+                notes.append(
+                    {"id": nid, "text": txt, "created": created, "updated": updated}
+                )
             return notes
         if isinstance(data, list) and all(isinstance(x, str) for x in data):
             for s in data:
                 txt = (s or "").strip()
                 if txt:
                     ts = _now_iso()
-                    notes.append({"id": str(uuid.uuid4()), "text": txt, "created": ts, "updated": ts})
+                    notes.append(
+                        {
+                            "id": str(uuid.uuid4()),
+                            "text": txt,
+                            "created": ts,
+                            "updated": ts,
+                        }
+                    )
             return notes
         if isinstance(data, dict) and "notes" in data:
             return self._read_json_any_from_list_like(data.get("notes"))
@@ -677,7 +708,7 @@ class DesktopNotesWidget(QWidget):
                     notes.append({"id": nid, "text": txt, "created": ts, "updated": ts})
             return notes
         return []
-    
+
     def _is_drag_source(self, obj, ev) -> bool:
         try:
             if getattr(obj, "property") and obj.property("drag_handle") is True:
@@ -790,7 +821,8 @@ class DesktopNotesWidget(QWidget):
             if s.contains("x") and s.contains("y"):
                 self.move(int(s.value("x", type=int)), int(s.value("y", type=int)))
             if s.contains("w") and s.contains("h"):
-                w = int(s.value("w", type=int)); h = int(s.value("h", type=int))
+                w = int(s.value("w", type=int))
+                h = int(s.value("h", type=int))
                 if w > 100 and h > 100:
                     self.resize(w, h)
             s.endGroup()
@@ -801,8 +833,10 @@ class DesktopNotesWidget(QWidget):
         try:
             s = QSettings(SETTINGS_PATH, QSettings.IniFormat)
             s.beginGroup("DesktopNotesWidget")
-            s.setValue("x", self.x()); s.setValue("y", self.y())
-            s.setValue("w", self.width()); s.setValue("h", self.height())
+            s.setValue("x", self.x())
+            s.setValue("y", self.y())
+            s.setValue("w", self.width())
+            s.setValue("h", self.height())
             s.endGroup()
         except Exception:
             pass
@@ -813,15 +847,26 @@ class DesktopNotesWidget(QWidget):
             for item in value:
                 if isinstance(item, str):
                     ts = datetime.datetime.now().isoformat(timespec="seconds")
-                    out.append({"id": str(uuid.uuid4()), "text": item.strip(), "created": ts, "updated": ts})
+                    out.append(
+                        {
+                            "id": str(uuid.uuid4()),
+                            "text": item.strip(),
+                            "created": ts,
+                            "updated": ts,
+                        }
+                    )
                 elif isinstance(item, dict):
                     txt = (item.get("text") or "").strip()
                     if not txt:
                         continue
                     nid = item.get("id") or str(uuid.uuid4())
-                    created = item.get("created") or datetime.datetime.now().isoformat(timespec="seconds")
+                    created = item.get("created") or datetime.datetime.now().isoformat(
+                        timespec="seconds"
+                    )
                     updated = item.get("updated") or created
-                    out.append({"id": nid, "text": txt, "created": created, "updated": updated})
+                    out.append(
+                        {"id": nid, "text": txt, "created": created, "updated": updated}
+                    )
             return out
         return []
 
@@ -845,14 +890,16 @@ class DesktopNotesWidget(QWidget):
                     title = (data.get("title") or folder).strip()
                     created = (data.get("timestamp") or "").strip()
                     nid = (data.get("uuid") or str(uuid.uuid4())).strip()
-                    items.append({
-                        "id": nid,
-                        "text": title,
-                        "created": created,
-                        "updated": created or "",
-                        "source": "app",
-                        "path": file_path,
-                    })
+                    items.append(
+                        {
+                            "id": nid,
+                            "text": title,
+                            "created": created,
+                            "updated": created or "",
+                            "source": "app",
+                            "path": file_path,
+                        }
+                    )
                 except Exception as e:
                     print("scan app notes error:", e)
         finally:
@@ -942,7 +989,9 @@ class DesktopNotesWidget(QWidget):
             self.open_app_note_in_app(item)
             return
         cur_text = item.text().lstrip("📌 ").strip()
-        text, ok = QInputDialog.getMultiLineText(self, "Редактировать заметку", "Текст:", cur_text)
+        text, ok = QInputDialog.getMultiLineText(
+            self, "Редактировать заметку", "Текст:", cur_text
+        )
         if ok:
             item.setText("📌 " + (text or "").strip())
             self.save_notes()
@@ -954,7 +1003,11 @@ class DesktopNotesWidget(QWidget):
         it = self.notes_list.item(row)
         src = it.data(Qt.UserRole + 2) or "widget"
         if src == "app":
-            QMessageBox.information(self, "Удаление запрещено", "Удаление системных заметок из виджета отключено.")
+            QMessageBox.information(
+                self,
+                "Удаление запрещено",
+                "Удаление системных заметок из виджета отключено.",
+            )
             return
         self.notes_list.takeItem(row)
         self.save_notes()
@@ -999,7 +1052,9 @@ class DesktopNotesWidget(QWidget):
                 if not note_obj:
                     continue
                 if (target_uuid and getattr(note_obj, "uuid", None) == target_uuid) or (
-                    not target_uuid and title_text and getattr(note_obj, "title", "") == title_text
+                    not target_uuid
+                    and title_text
+                    and getattr(note_obj, "title", "") == title_text
                 ):
                     matched_item = it
                     break
@@ -1009,10 +1064,15 @@ class DesktopNotesWidget(QWidget):
                 notes_win.raise_()
                 notes_win.activateWindow()
             else:
-                QMessageBox.information(self, "Заметка не найдена",
-                                        "Не удалось найти заметку в приложении. Список был обновлён.")
+                QMessageBox.information(
+                    self,
+                    "Заметка не найдена",
+                    "Не удалось найти заметку в приложении. Список был обновлён.",
+                )
         except Exception as e:
-            QMessageBox.warning(self, "Ошибка", f"Не удалось открыть заметку в приложении: {e}")
+            QMessageBox.warning(
+                self, "Ошибка", f"Не удалось открыть заметку в приложении: {e}"
+            )
 
     def open_notes_app(self):
         app = QApplication.instance()
@@ -1026,26 +1086,38 @@ class DesktopNotesWidget(QWidget):
                 win.raise_()
                 win.activateWindow()
         except Exception as e:
-            QMessageBox.warning(self, "Ошибка", f"Не удалось открыть приложение 'Заметки': {e}")
+            QMessageBox.warning(
+                self, "Ошибка", f"Не удалось открыть приложение 'Заметки': {e}"
+            )
 
     def show_context_menu(self, pos):
         item = self.notes_list.itemAt(pos)
         menu = QMenu(self)
         if item is not None and (item.data(Qt.UserRole + 2) or "widget") == "app":
-            menu.addAction("Открыть в «Заметках»", lambda: self.open_app_note_in_app(item))
-            menu.addAction("Открыть папку заметки", lambda: self.open_app_note_folder(item))
+            menu.addAction(
+                "Открыть в «Заметках»", lambda: self.open_app_note_in_app(item)
+            )
+            menu.addAction(
+                "Открыть папку заметки", lambda: self.open_app_note_folder(item)
+            )
             menu.addSeparator()
             menu.addAction("Обновить", self.reload_notes)
         else:
             menu.addAction("Удалить", self.delete_selected)
             menu.addSeparator()
             menu.addAction("Обновить", self.reload_notes)
-            menu.addAction("Открыть файл хранилища", lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(NOTES_WIDGET_PATH)))
+            menu.addAction(
+                "Открыть файл хранилища",
+                lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(NOTES_WIDGET_PATH)),
+            )
             menu.addAction("Очистить всё", self.clear_all)
         menu.exec(self.notes_list.mapToGlobal(pos))
 
     def clear_all(self):
-        if QMessageBox.question(self, "Подтверждение", "Удалить все виджет-заметки?") == QMessageBox.Yes:
+        if (
+            QMessageBox.question(self, "Подтверждение", "Удалить все виджет-заметки?")
+            == QMessageBox.Yes
+        ):
             for i in reversed(range(self.notes_list.count())):
                 it = self.notes_list.item(i)
                 if (it.data(Qt.UserRole + 2) or "widget") == "widget":
@@ -1071,8 +1143,9 @@ class SpellCheckHighlighter(QSyntaxHighlighter):
         self.err_fmt.setUnderlineStyle(QTextCharFormat.SpellCheckUnderline)
         try:
             from spellchecker import SpellChecker as _SpellChecker
+
             try:
-                spell = _SpellChecker(language='en')
+                spell = _SpellChecker(language="en")
             except Exception:
                 spell = _SpellChecker(language=None)
             try:
@@ -1122,17 +1195,19 @@ class SpellCheckHighlighter(QSyntaxHighlighter):
             pass
         self._checked_cache[key] = True
         return True
-    
+
     def set_online_enabled(self, enabled: bool) -> None:
         self.online_enabled = bool(enabled)
         self._checked_cache.clear()
-        self.rehighlight()    
+        self.rehighlight()
 
     def _is_known(self, w: str) -> bool:
         if not w:
             return False
         lw = self.normalize_e(w.strip().lower())
-        if lw in getattr(self, "user_words", set()) or lw in getattr(self, "local_ignored", set()):
+        if lw in getattr(self, "user_words", set()) or lw in getattr(
+            self, "local_ignored", set()
+        ):
             return True
         if not self.spell_checker:
             return True
@@ -1204,7 +1279,9 @@ class SpellCheckHighlighter(QSyntaxHighlighter):
         self.rehighlight()
 
     def set_local_ignored(self, words: list[str] | set[str]) -> None:
-        self.local_ignored = {self.normalize_e(w.strip().lower()) for w in words if w.strip()}
+        self.local_ignored = {
+            self.normalize_e(w.strip().lower()) for w in words if w.strip()
+        }
         self.rehighlight()
 
     def _reload_user_dictionary(self, path: str) -> None:
@@ -1226,7 +1303,9 @@ class SpellCheckHighlighter(QSyntaxHighlighter):
         matches = list(re.finditer(r"[A-Za-zА-Яа-яЁё']+", text))
         if not matches:
             return
-        words = [self.normalize_e(m.group().lower()) for m in matches if len(m.group()) >= 3]
+        words = [
+            self.normalize_e(m.group().lower()) for m in matches if len(m.group()) >= 3
+        ]
         misspelled = self.spell_checker.unknown(words)
         misspelled -= getattr(self, "user_words", set())
         misspelled -= getattr(self, "local_ignored", set())
@@ -1244,6 +1323,7 @@ class SpellCheckHighlighter(QSyntaxHighlighter):
             word_norm = self.normalize_e(match.group().lower())
             if word_norm in misspelled:
                 self.setFormat(match.start(), match.end() - match.start(), self.err_fmt)
+
 
 def create_dropdown_combo(*items, parent=None):
     combo = QComboBox(parent)
@@ -2695,8 +2775,12 @@ class CustomTextEdit(QTextEdit):
         menu.addAction(undo_action)
         redo_action = QAction("Redo", self)
         redo_action.setShortcut("Ctrl+Y")
-        undo_action.triggered.connect(lambda: self.window().undo() if hasattr(self.window(), "undo") else None)
-        redo_action.triggered.connect(lambda: self.window().redo() if hasattr(self.window(), "redo") else None)
+        undo_action.triggered.connect(
+            lambda: self.window().undo() if hasattr(self.window(), "undo") else None
+        )
+        redo_action.triggered.connect(
+            lambda: self.window().redo() if hasattr(self.window(), "redo") else None
+        )
         menu.addAction(redo_action)
         menu.addSeparator()
         cut_action = QAction("Cut", self)
@@ -3183,6 +3267,7 @@ class Note:
         self.rdp_1c8_visible = False
         self.rdp_1c8_removed = False
         self.ignored_words = ignored_words or []
+        self.content_txt: str = ""
 
     def to_dict(self) -> dict:
         return {
@@ -3230,6 +3315,7 @@ class Note:
         note.rdp_1c8_visible = bool(data.get("rdp_1c8_visible", False))
         note.rdp_1c8_removed = bool(data.get("rdp_1c8_removed", False))
         note.custom_fields = list(data.get("custom_fields", []))
+        note.content_txt = data.get("content_txt", "")
         return note
 
 
@@ -3241,18 +3327,27 @@ class NumberGeneratorDialog(QDialog):
         self.resize(420, 260)
 
         form = QFormLayout()
-        self.start_spin = QSpinBox(); self.start_spin.setRange(-10**9, 10**9); self.start_spin.setValue(1)
-        self.end_spin   = QSpinBox(); self.end_spin.setRange(-10**9, 10**9);  self.end_spin.setValue(100)
-        self.count_spin = QSpinBox(); self.count_spin.setRange(1, 10**6);     self.count_spin.setValue(10)
+        self.start_spin = QSpinBox()
+        self.start_spin.setRange(-(10**9), 10**9)
+        self.start_spin.setValue(1)
+        self.end_spin = QSpinBox()
+        self.end_spin.setRange(-(10**9), 10**9)
+        self.end_spin.setValue(100)
+        self.count_spin = QSpinBox()
+        self.count_spin.setRange(1, 10**6)
+        self.count_spin.setValue(10)
 
-        self.base_combo = QComboBox(); self.base_combo.addItems(["10", "16", "2"])
-        self.unique_cb  = QCheckBox("Только уникальные")
-        self.sort_cb    = QCheckBox("Сортировать")
-        self.desc_cb    = QCheckBox("По убыванию"); self.desc_cb.setEnabled(False)
+        self.base_combo = QComboBox()
+        self.base_combo.addItems(["10", "16", "2"])
+        self.unique_cb = QCheckBox("Только уникальные")
+        self.sort_cb = QCheckBox("Сортировать")
+        self.desc_cb = QCheckBox("По убыванию")
+        self.desc_cb.setEnabled(False)
         self.sort_cb.toggled.connect(lambda v: self.desc_cb.setEnabled(v))
 
         self.leading_zeros_cb = QCheckBox("Выровнять нулями (для 10/16/2)")
-        self.sep_edit = QLineEdit(", "); self.sep_edit.setPlaceholderText("разделитель (по умолчанию: запятая+пробел)")
+        self.sep_edit = QLineEdit(", ")
+        self.sep_edit.setPlaceholderText("разделитель (по умолчанию: запятая+пробел)")
 
         form.addRow("Начало:", self.start_spin)
         form.addRow("Конец:", self.end_spin)
@@ -3264,12 +3359,15 @@ class NumberGeneratorDialog(QDialog):
         form.addRow(self.leading_zeros_cb)
         form.addRow("Разделитель:", self.sep_edit)
 
-        self.preview = QPlainTextEdit(); self.preview.setReadOnly(True); self.preview.setPlaceholderText("Предпросмотр…")
+        self.preview = QPlainTextEdit()
+        self.preview.setReadOnly(True)
+        self.preview.setPlaceholderText("Предпросмотр…")
 
         btns = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         self.btn_generate = QPushButton("Сгенерировать")
         btns.addButton(self.btn_generate, QDialogButtonBox.ActionRole)
-        self.btn_copy = QPushButton("Копировать"); self.btn_copy.setEnabled(False)
+        self.btn_copy = QPushButton("Копировать")
+        self.btn_copy.setEnabled(False)
         btns.addButton(self.btn_copy, QDialogButtonBox.ActionRole)
 
         self.btn_generate.clicked.connect(self._on_generate)
@@ -3289,9 +3387,11 @@ class NumberGeneratorDialog(QDialog):
         if base == 10:
             s = str(n)
         elif base == 16:
-            s = format(n if n >= 0 else (1<<64)+n, "x")  # простой хак для отрицательных
+            s = format(
+                n if n >= 0 else (1 << 64) + n, "x"
+            )  # простой хак для отрицательных
         else:  # base == 2
-            s = format(n if n >= 0 else (1<<64)+n, "b")
+            s = format(n if n >= 0 else (1 << 64) + n, "b")
         if self.leading_zeros_cb.isChecked() and width > 0:
             s = s.zfill(width)
         return s
@@ -3337,11 +3437,10 @@ class NumberGeneratorDialog(QDialog):
         text = self.preview.toPlainText()
         if text:
             QApplication.clipboard().setText(text)
-    
+
     def result_text(self) -> str:
         # отдаём готовый текст
         return self.preview.toPlainText()
-
 
 
 class NotesLoaderThread(QThread):
@@ -3486,13 +3585,16 @@ class NotesApp(QMainWindow):
                 except Exception:
                     pass
                 super().showEvent(e)
+
         old_showEvent = QDialog.showEvent
+
         def patched(self, e):
             try:
                 print(f"\n[Dialog] {type(self).__name__} shown")
             except Exception:
                 pass
             return old_showEvent(self, e)
+
         QDialog.showEvent = patched
 
     _install_dialog_probe()
@@ -3502,7 +3604,10 @@ class NotesApp(QMainWindow):
             return
         if getattr(self, "_is_switching_note", False):
             return
-        if getattr(self, "_edit_session_note_uuid", None) and self._edit_session_note_uuid != self.current_note.uuid:
+        if (
+            getattr(self, "_edit_session_note_uuid", None)
+            and self._edit_session_note_uuid != self.current_note.uuid
+        ):
             return
         self._edit_session_note_uuid = self.current_note.uuid
         self.update_current_note_content()
@@ -3528,7 +3633,7 @@ class NotesApp(QMainWindow):
             log_path = os.path.join(DATA_DIR, "last_run.log")
             os.makedirs(DATA_DIR, exist_ok=True)
             with open(log_path, "a", encoding="utf-8") as f:
-                print("="*60, file=f)
+                print("=" * 60, file=f)
                 print("START", datetime.datetime.now().isoformat(), file=f)
                 print("APPDIR:", APPDIR, file=f)
                 print("CWD   :", os.getcwd(), file=f)
@@ -3595,7 +3700,9 @@ class NotesApp(QMainWindow):
         self.history_widget.setLayout(hist_layout)
         self.history_widget.setMinimumWidth(200)
         self.history_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        self.text_edit = CustomTextEdit(parent=self, paste_image_callback=self.insert_image_from_clipboard)
+        self.text_edit = CustomTextEdit(
+            parent=self, paste_image_callback=self.insert_image_from_clipboard
+        )
         self.autosave_delay_ms = 1000
         self.autosave_timer = QTimer(self)
         self.autosave_timer.setSingleShot(True)
@@ -3605,7 +3712,9 @@ class NotesApp(QMainWindow):
         self.text_edit.setUndoRedoEnabled(False)
         self.spell_highlighter = SpellCheckHighlighter(self.text_edit.document())
         self.spell_highlighter = SpellCheckHighlighter(self.text_edit.document())
-        self.spell_online_enabled = self.settings.value("spellcheck/online_enabled", False, type=bool)
+        self.spell_online_enabled = self.settings.value(
+            "spellcheck/online_enabled", False, type=bool
+        )
         self.spell_highlighter.set_online_enabled(self.spell_online_enabled)
         self._save_debouncer = QTimer(self)
         self._save_debouncer.setSingleShot(True)
@@ -3618,7 +3727,9 @@ class NotesApp(QMainWindow):
         self.attachments_scroll.setWidgetResizable(True)
         self.attachments_scroll.setWidget(self.attachments_panel)
         self.attachments_scroll.setVisible(False)
-        self.attachments_scroll.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
+        self.attachments_scroll.setSizePolicy(
+            QSizePolicy.Expanding, QSizePolicy.Minimum
+        )
         self._save_debouncer.timeout.connect(self.update_current_note_content)
         self.text_edit.textChanged.connect(self._save_debouncer.start)
         self.text_edit.cursorPositionChanged.connect(self.update_font_controls)
@@ -3794,9 +3905,7 @@ class NotesApp(QMainWindow):
         )
         self.addDockWidget(Qt.TopDockWidgetArea, self.dock_toolbar)
         self.resizeDocks(
-            [self.dock_toolbar, self.dock_editor],
-            [120, 1000],
-            Qt.Vertical
+            [self.dock_toolbar, self.dock_editor], [120, 1000], Qt.Vertical
         )
         for dock in (
             self.dock_notes_list,
@@ -3844,9 +3953,7 @@ class NotesApp(QMainWindow):
         sc_translate_layout.activated.connect(self.translate_layout_only)
         sc_translate_layout_selection = QShortcut(QKeySequence("Ctrl+Shift+L"), self)
         sc_translate_layout_selection.setContext(Qt.ApplicationShortcut)
-        sc_translate_layout_selection.activated.connect(
-            self.translate_layout_selection
-        )
+        sc_translate_layout_selection.activated.connect(self.translate_layout_selection)
         sc_toggle_case = QShortcut(QKeySequence("Ctrl+Alt+F12"), self)
         sc_toggle_case.setContext(Qt.ApplicationShortcut)
         sc_toggle_case.activated.connect(self.translate_case_only)
@@ -3878,6 +3985,7 @@ class NotesApp(QMainWindow):
             self._dock_ratios = [0.22, 0.56, 0.22]
         self._resizing_apply = False
         self._resize_deb = QTimer(self)
+        QTimer.singleShot(0, self._apply_dock_proportions)
 
     def copy_password_manager_to_clipboard(self) -> None:
         text = self.password_manager_field.text().strip()
@@ -3899,14 +4007,66 @@ class NotesApp(QMainWindow):
         self.autosave_timer.start(self.autosave_delay_ms)
 
     def _apply_dock_proportions(self):
-        left_width = 360
-        right_width = max(600, self.width() - left_width)
-        self.resizeDocks(
-            [self.dock_notes_list, self.dock_history, self.dock_buttons],
-            [1, 1, 1],
-            Qt.Vertical
-        )
-        self._apply_dock_proportions()
+        if not all(
+            hasattr(self, name)
+            for name in ("dock_notes_list", "dock_history", "dock_buttons", "dock_editor")
+        ):
+            return
+        try:
+            total_h = max(
+                1,
+                self.dock_notes_list.height()
+                + self.dock_history.height()
+                + self.dock_buttons.height(),
+            )
+            lst = self.notes_list
+            count = lst.count()
+            if count > 0:
+                row_h = lst.sizeHintForRow(0)
+                if row_h <= 0:
+                    row_h = lst.fontMetrics().height() + 6
+            else:
+                row_h = lst.fontMetrics().height() + 6
+            frame = lst.frameWidth() * 2
+            extra = 0
+            list_h_needed = row_h * max(1, count) + frame + extra
+            btn_widget = self.dock_buttons.widget()
+            btn_h_hint = btn_widget.sizeHint().height() if btn_widget else 80
+            btn_h_min = 60
+            btn_h = max(btn_h_min, min(btn_h_hint, int(total_h * 0.25)))
+            hist_h_min = 120
+            hist_h = total_h - list_h_needed - btn_h
+            if hist_h < hist_h_min:
+                deficit = hist_h_min - hist_h
+                min_visible_rows = max(1, min( max(3, count), count ))
+                list_h_min = row_h * min_visible_rows + frame + extra
+                shrink_from_list = min(deficit, max(0, list_h_needed - list_h_min))
+                list_h_needed -= shrink_from_list
+                deficit -= shrink_from_list
+                if deficit > 0:
+                    btn_h = max(btn_h_min, btn_h - deficit)
+                hist_h = hist_h_min
+            self.resizeDocks(
+                [self.dock_notes_list, self.dock_history, self.dock_buttons],
+                [list_h_needed, max(hist_h_min, hist_h), max(btn_h_min, btn_h)],
+                Qt.Vertical,
+            )
+            total_w = max(1, self.width())
+            min_left = 260
+            pref_left = 360
+            min_editor = 500
+            if total_w <= min_left + min_editor:
+                left_width = max(min_left, int(total_w * 0.3))
+            else:
+                left_width = min(pref_left, total_w - min_editor)
+            right_width = max(min_editor, total_w - left_width)
+            self.resizeDocks(
+                [self.dock_notes_list, self.dock_editor],
+                [left_width, right_width],
+                Qt.Horizontal,
+            )
+        except Exception:
+            pass
 
     def show_number_generator(self):
         try:
@@ -3927,7 +4087,7 @@ class NotesApp(QMainWindow):
             QMessageBox.warning(self, "Генератор чисел", f"Ошибка: {e}")
 
     def _apply_vertical_defaults(self):
-        min_h = 36 
+        min_h = 36
         h = self.settings.value("ui/dock_toolbar_height", min_h, type=int)
         try:
             h = int(h)
@@ -3938,7 +4098,7 @@ class NotesApp(QMainWindow):
         self.resizeDocks(
             [self.dock_toolbar, self.dock_editor],
             [h, max(300, self.height() - h)],
-            Qt.Vertical
+            Qt.Vertical,
         )
 
     def _current_dock_widths(self):
@@ -3950,7 +4110,7 @@ class NotesApp(QMainWindow):
     def _capture_dock_ratios(self):
         l, c, r = self._current_dock_widths()
         total = max(1, l + c + r)
-        self._dock_ratios = [l/total, c/total, r/total]
+        self._dock_ratios = [l / total, c / total, r / total]
         try:
             self.settings.setValue("ui/dock_ratios", self._dock_ratios)
         except Exception:
@@ -3973,57 +4133,74 @@ class NotesApp(QMainWindow):
             self._resize_deb.timeout.connect(self._apply_dock_ratios)
         self._resize_deb.start()
 
-    def _apply_dock_ratios(self):
-        if self._resizing_apply:
+    def _apply_dock_ratios(self) -> None:
+        if self._ignore_dock_resize:
             return
-        self._resizing_apply = True
+        if not getattr(self, "dock_notes_list", None) or not getattr(
+            self, "dock_editor", None
+        ):
+            return
+        self._ignore_dock_resize = True
         try:
-            total = max(1, self.width())
-            min_left = 180
-            min_center = 400
-            min_right = 180
-            rl, rc, rr = self._dock_ratios
-            left  = int(total * rl)
-            center= int(total * rc)
-            right = int(total * rr)
-            if center < min_center:
-                delta = min_center - center
-                take = min(delta, max(0, left - min_left))
-                left -= take
-                delta -= take
-                right = max(min_right, right - delta)
-                center = min_center
-            if left < min_left:
-                need = min_left - left
-                if center - need >= min_center:
-                    center -= need
-                else:
-                    right = max(min_right, right - (need - (center - min_center)))
-                    center = min_center
-                left = min_left
-            if right < min_right:
-                need = min_right - right
-                if center - need >= min_center:
-                    center -= need
-                else:
-                    left = max(min_left, left - (need - (center - min_center)))
-                    center = min_center
-                right = min_right
-            extra = (left + center + right) - total
-            if extra != 0:
-                shift = min(extra, center - min_center) if extra > 0 else -min(-extra, total)
-                center -= shift
-                extra -= shift
-                right -= extra
+            notes_dock = self.dock_notes_list
+            editor_dock = self.dock_editor
+            lst = self.notes_list
+            total_width = notes_dock.width() + editor_dock.width()
+            if total_width <= 0:
+                total_width = max(self.width(), 800)
+            fm = QFontMetrics(lst.font())
+            icon_extra = lst.iconSize().width() + 8
+            vbar = lst.verticalScrollBar()
+            scroll_w = vbar.sizeHint().width() if vbar is not None else 0
+            base_padding = scroll_w + 24
+            max_text_width = 0
+            count = lst.count()
+            for i in range(count):
+                item = lst.item(i)
+                if not item:
+                    continue
+                text = item.text() or ""
+                w = fm.horizontalAdvance(text)
+                if not item.icon().isNull():
+                    w += icon_extra
+                w += base_padding
+                if w > max_text_width:
+                    max_text_width = w
+            if max_text_width <= 0:
+                max_text_width = 220
+            left_min = max(notes_dock.minimumWidth(), max_text_width)
+            editor_min = max(editor_dock.minimumWidth(), 500)
+            max_left_allowed = max(notes_dock.minimumWidth(), total_width - editor_min)
+            left_width = min(left_min, max_left_allowed)
+            editor_width = total_width - left_width
+            if editor_width < editor_min:
+                editor_width = editor_min
+                left_width = max(
+                    total_width - editor_width,
+                    notes_dock.minimumWidth(),
+                )
+            if left_width < notes_dock.minimumWidth():
+                left_width = notes_dock.minimumWidth()
+                editor_width = max(total_width - left_width, editor_min)
+            self.resizeDocks(
+                [notes_dock, editor_dock],
+                [left_width, editor_width],
+                Qt.Horizontal,
+            )
+            left, center, right = self._current_dock_widths()
+            total = float(left + center + right)
+            if total > 0:
+                self._dock_ratios = (left / total, center / total, right / total)
         finally:
-            QTimer.singleShot(0, self._capture_dock_ratios)
-            self._resizing_apply = False
+            self._ignore_dock_resize = False
 
     def stop_stopwatch(self):
         self.stopwatch_running = False
         self.stopwatch_timer.stop()
 
-    def _set_html_preserve_view(self, html: str, preferred_pos: int | None = None) -> None:
+    def _set_html_preserve_view(
+        self, html: str, preferred_pos: int | None = None
+    ) -> None:
         cur_before = self.text_edit.textCursor()
         block_num = cur_before.blockNumber()
         col_in_block = cur_before.positionInBlock()
@@ -4134,20 +4311,32 @@ class NotesApp(QMainWindow):
         value_edit.setPlaceholderText(label)
         remove_btn = QPushButton("✖")
         remove_btn.setFixedSize(24, 24)
-        up_btn = QToolButton();  up_btn.setText("▲");  up_btn.setFixedSize(24, 24)
-        down_btn = QToolButton(); down_btn.setText("▼"); down_btn.setFixedSize(24, 24)
+        up_btn = QToolButton()
+        up_btn.setText("▲")
+        up_btn.setFixedSize(24, 24)
+        down_btn = QToolButton()
+        down_btn.setText("▼")
+        down_btn.setFixedSize(24, 24)
         up_btn.clicked.connect(lambda _, w=row: self._move_pinned(w, -1))
         down_btn.clicked.connect(lambda _, w=row: self._move_pinned(w, +1))
         copy_btn = QPushButton("Копировать")
         copy_btn.setFixedHeight(24)
         copy_btn.setEnabled(bool(value))
         copy_btn.clicked.connect(
-            lambda _, e=value_edit, b=copy_btn: self.copy_custom_field_to_clipboard(e, b)
+            lambda _, e=value_edit, b=copy_btn: self.copy_custom_field_to_clipboard(
+                e, b
+            )
         )
         value_edit.textChanged.connect(lambda _: self._schedule_autosave())
         value_edit.textChanged.connect(lambda t, b=copy_btn: b.setEnabled(bool(t)))
-        value_edit.textChanged.connect(lambda _: self.update_current_note_custom_fields())
-        value_edit.textChanged.connect(lambda _: self.save_note_quiet(force=True) if self.autosave_enabled else None)
+        value_edit.textChanged.connect(
+            lambda _: self.update_current_note_custom_fields()
+        )
+        value_edit.textChanged.connect(
+            lambda _: (
+                self.save_note_quiet(force=True) if self.autosave_enabled else None
+            )
+        )
         layout.addWidget(up_btn)
         layout.addWidget(down_btn)
         layout.addWidget(label_edit)
@@ -4186,8 +4375,12 @@ class NotesApp(QMainWindow):
         action.blockSignals(False)
         row.setVisible(visible)
         self._update_eye_action(action, visible, label)
-        action.toggled.connect(lambda checked, w=widget: self.on_toggle_custom_field(w, checked))
-        label_edit.textChanged.connect(lambda text, w=widget: self.on_custom_field_label_changed(w, text))
+        action.toggled.connect(
+            lambda checked, w=widget: self.on_toggle_custom_field(w, checked)
+        )
+        label_edit.textChanged.connect(
+            lambda text, w=widget: self.on_custom_field_label_changed(w, text)
+        )
         remove_btn.clicked.connect(lambda _, w=widget: self.remove_custom_field(w))
         self.visibility_toolbar.addAction(action)
         self.custom_fields_widgets.append(widget)
@@ -4393,7 +4586,8 @@ class NotesApp(QMainWindow):
         else:
             self.text_edit.blockSignals(True)
             self._set_html_preserve_view(
-            self.current_note.history[self.current_note.history_index])
+                self.current_note.history[self.current_note.history_index]
+            )
             self.text_edit.blockSignals(False)
         self.update_history_list()
         self.update_history_list_selection()
@@ -4568,7 +4762,9 @@ class NotesApp(QMainWindow):
         if self.current_note.history_index > 0:
             self.current_note.history_index -= 1
             self.text_edit.blockSignals(True)
-            self._set_html_preserve_view(self.current_note.history[self.current_note.history_index])
+            self._set_html_preserve_view(
+                self.current_note.history[self.current_note.history_index]
+            )
             self.text_edit.blockSignals(False)
             self.update_history_list_selection()
 
@@ -4578,7 +4774,9 @@ class NotesApp(QMainWindow):
         if self.current_note.history_index < len(self.current_note.history) - 1:
             self.current_note.history_index += 1
             self.text_edit.blockSignals(True)
-            self._set_html_preserve_view(self.current_note.history[self.current_note.history_index])
+            self._set_html_preserve_view(
+                self.current_note.history[self.current_note.history_index]
+            )
             self.text_edit.blockSignals(False)
             self.update_history_list_selection()
 
@@ -4672,6 +4870,7 @@ class NotesApp(QMainWindow):
     def load_notes_from_disk(self) -> None:
         self.ensure_notes_directory()
         loaded_notes: list[Note] = []
+        broken_files: list[tuple[str, str]] = []
         for folder in os.listdir(NOTES_DIR):
             folder_path = os.path.join(NOTES_DIR, folder)
             if not os.path.isdir(folder_path):
@@ -4679,22 +4878,54 @@ class NotesApp(QMainWindow):
             file_path = os.path.join(folder_path, "note.json")
             if not os.path.exists(file_path):
                 continue
-            with open(file_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            note = Note.from_dict(data)
-            if "content_txt" in data:
-                note.content_txt = data["content_txt"]
-            else:
-                doc = QTextDocument()
-                doc.setHtml(note.content)
-                note.content_txt = doc.toPlainText()
-            self._apply_saved_field_visibility(note)
-            loaded_notes.append(note)
+            try:
+                with open(file_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                note = Note.from_dict(data)
+                if "content_txt" in data:
+                    note.content_txt = data["content_txt"]
+                else:
+                    doc = QTextDocument()
+                    doc.setHtml(note.content)
+                    note.content_txt = doc.toPlainText()
+                self._apply_saved_field_visibility(note)
+                loaded_notes.append(note)
+            except Exception as e:
+                broken_files.append((file_path, repr(e)))
+                continue
         unique: dict[str, Note] = {}
         for note in loaded_notes:
             unique[note.uuid] = note
         self.notes = list(unique.values())
         self.deduplicate_notes()
+        if broken_files:
+            try:
+                os.makedirs(DATA_DIR, exist_ok=True)
+                log_path = os.path.join(DATA_DIR, "notes_read_errors.log")
+                with open(log_path, "a", encoding="utf-8") as log:
+                    from datetime import datetime
+                    log.write(
+                        f"\n[{datetime.now().isoformat(sep=' ', timespec='seconds')}] "
+                        f"Ошибки при загрузке заметок:\n"
+                    )
+                    for path, err in broken_files:
+                        log.write(f"  {path}: {err}\n")
+            except Exception:
+                pass
+            try:
+                from PySide6.QtWidgets import QMessageBox
+                QMessageBox.warning(
+                    self,
+                    "Ошибки при загрузке заметок",
+                    (
+                        "Некоторые заметки не удалось загрузить "
+                        f"({len(broken_files)} шт.).\n\n"
+                        "Подробности записаны в файл:\n"
+                        f"{os.path.join(DATA_DIR, 'notes_read_errors.log')}"
+                    ),
+                )
+            except Exception:
+                pass
 
     def save_note_to_file(self, note: Note) -> None:
         note_dir = os.path.join(
@@ -4771,8 +5002,11 @@ class NotesApp(QMainWindow):
             h = 36
         else:
             h = max(36, min(h, 300))
-        self.resizeDocks([self.dock_toolbar, self.dock_editor],
-                        [h, max(300, self.height() - h)], Qt.Vertical)
+        self.resizeDocks(
+            [self.dock_toolbar, self.dock_editor],
+            [h, max(300, self.height() - h)],
+            Qt.Vertical,
+        )
         self.dock_toolbar.setMinimumHeight(36)
         geometry = self.settings.value("geometry")
         if geometry:
@@ -4798,8 +5032,7 @@ class NotesApp(QMainWindow):
         if not n:
             return None
         return os.path.join(
-            NOTES_DIR,
-            NotesApp.safe_folder_name(n.title, n.uuid, n.timestamp)
+            NOTES_DIR, NotesApp.safe_folder_name(n.title, n.uuid, n.timestamp)
         )
 
     def save_settings(self) -> None:
@@ -4807,7 +5040,10 @@ class NotesApp(QMainWindow):
         self.settings.setValue("ui/dock_toolbar_height", self.dock_toolbar.height())
         self.settings.setValue("windowState", self.saveState())
         self.settings.setValue("ui/dock_ratios", self._dock_ratios)
-        self.settings.setValue("lastNoteText", "" if getattr(self, "current_note", None) else self.text_edit.toHtml(),)
+        self.settings.setValue(
+            "lastNoteText",
+            "" if getattr(self, "current_note", None) else self.text_edit.toHtml(),
+        )
         self.settings.sync()
 
     def confirm_delete_note(self, note: Note) -> None:
@@ -4913,12 +5149,7 @@ class NotesApp(QMainWindow):
         try:
             params = "-Et"
             rc = ctypes.windll.shell32.ShellExecuteW(
-                None,
-                "runas",
-                rammap_path,
-                params,
-                None,
-                1
+                None, "runas", rammap_path, params, None, 1
             )
             if rc <= 32:
                 QMessageBox.warning(
@@ -5686,7 +5917,9 @@ class NotesApp(QMainWindow):
             self.text_edit.setReadOnly(True)
             self.text_edit.hide()
             self._detach_attachments_watcher()
-            self.tags_label.setText(f"Теги: {', '.join(self.current_note.tags) if (self.current_note and self.current_note.tags) else 'нет'}")
+            self.tags_label.setText(
+                f"Теги: {', '.join(self.current_note.tags) if (self.current_note and self.current_note.tags) else 'нет'}"
+            )
             self.current_note = None
             if hasattr(self, "spell_highlighter"):
                 self.spell_highlighter.set_local_ignored([])
@@ -5714,7 +5947,9 @@ class NotesApp(QMainWindow):
                 self.current_note.content = html
                 self.save_note_to_file(self.current_note)
             self.current_note = note
-            self.tags_label.setText(f"Теги: {', '.join(note.tags) if note and note.tags else 'нет'}")
+            self.tags_label.setText(
+                f"Теги: {', '.join(note.tags) if note and note.tags else 'нет'}"
+            )
             if hasattr(self, "settings"):
                 self.settings.setValue("lastNoteText", "")
             if hasattr(self, "spell_highlighter"):
@@ -5767,7 +6002,9 @@ class NotesApp(QMainWindow):
             self.update_history_list_selection()
             self.show_note_with_attachments(note)
 
-            self.tags_label.setText(f"Теги: {', '.join(note.tags) if note.tags else 'нет'}")
+            self.tags_label.setText(
+                f"Теги: {', '.join(note.tags) if note.tags else 'нет'}"
+            )
             self.password_manager_field.setText(note.password_manager)
             self.rdp_1c8_field.setText(note.rdp_1c8)
 
@@ -6102,7 +6339,6 @@ class NotesApp(QMainWindow):
                     self.attachments_watcher.addPath(note_dir)
             self.attachments_scroll.setVisible(attachments_found)
         self.tags_label.setText(f"Теги: {', '.join(note.tags) if note.tags else 'нет'}")
-
 
     def _refresh_attachments(self, *_) -> None:
         if not self.current_note:
@@ -6549,7 +6785,9 @@ class NotesApp(QMainWindow):
         if not self.notes:
             return
         last_uuid = self.settings.value("lastNoteUuid", "")
-        picked = next((n for n in self.notes if n.uuid == last_uuid), None) or self.notes[0]
+        picked = (
+            next((n for n in self.notes if n.uuid == last_uuid), None) or self.notes[0]
+        )
         self.show_note_with_attachments(picked)
         items = self.notes_list.findItems(picked.title, Qt.MatchExactly)
         if items:
@@ -6678,9 +6916,7 @@ class NotesApp(QMainWindow):
         view.setOpenExternalLinks(True)
         view.setOpenLinks(False)
 
-    def _replace_selection_with_text(
-        self, cursor: QTextCursor, new_text: str
-    ) -> None:
+    def _replace_selection_with_text(self, cursor: QTextCursor, new_text: str) -> None:
         selection_start = cursor.selectionStart()
         cursor.insertText(new_text)
         cursor.setPosition(selection_start)
@@ -6706,7 +6942,9 @@ class NotesApp(QMainWindow):
     def _swap_case_text(self, text: str) -> str:
         return text.swapcase()
 
-    def _apply_text_transform(self, transform: Callable[[str], str], message: str) -> None:
+    def _apply_text_transform(
+        self, transform: Callable[[str], str], message: str
+    ) -> None:
         cursor = self.text_edit.textCursor()
         used_selection = False
         if cursor.hasSelection():
@@ -6824,7 +7062,9 @@ class NotesApp(QMainWindow):
 
     def _toggle_clipboard_layout_watch(self, enabled: bool) -> None:
         self._clipboard_watch_enabled = bool(enabled)
-        self.settings.setValue("layout/clipboard_auto_convert", self._clipboard_watch_enabled)
+        self.settings.setValue(
+            "layout/clipboard_auto_convert", self._clipboard_watch_enabled
+        )
         if not self._clipboard_watch_enabled:
             self._last_clipboard_text = ""
 
@@ -7124,14 +7364,17 @@ class NotesApp(QMainWindow):
         query = self.search_field.text().strip().lower()
         if not query:
             return self.notes
-        filtered = []
+        filtered: list[Note] = []
         for note in self.notes:
+            content_plain = getattr(note, "content_txt", "") or ""
             if self.current_note and note.uuid == self.current_note.uuid:
                 content_plain = self.text_edit.toPlainText()
-            else:
+                note.content_txt = content_plain
+            elif not content_plain:
                 doc = QTextDocument()
                 doc.setHtml(note.content)
                 content_plain = doc.toPlainText()
+                note.content_txt = content_plain
             reminder_raw = str(note.reminder or "").lower()
             reminder_human = ""
             if note.reminder:
@@ -7198,6 +7441,22 @@ class NotesApp(QMainWindow):
                     if n:
                         self.select_note(n)
                     break
+        QTimer.singleShot(0, self._apply_dock_proportions)
+        self._adjust_notes_list_height()
+
+    def _adjust_notes_list_height(self) -> None:
+        if self.notes_list.count() == 0:
+            self.notes_list.setMinimumHeight(60)
+            self.notes_list.setMaximumHeight(60)
+            return
+        row_h = self.notes_list.sizeHintForRow(0)
+        rows = self.notes_list.count()
+        frame = self.notes_list.frameWidth() * 2
+        margins = self.notes_list.contentsMargins()
+        extra = frame + margins.top() + margins.bottom()
+        total_h = row_h * rows + extra
+        self.notes_list.setMinimumHeight(total_h)
+        self.notes_list.setMaximumHeight(total_h)
 
     def get_contrast_favorite_color(self) -> QColor:
         bg = self.notes_list.palette().color(self.notes_list.backgroundRole())
@@ -7398,7 +7657,9 @@ class NotesApp(QMainWindow):
                 self.show_toast("Теги добавлены", "Добавлены теги: " + ", ".join(added))
                 self.tags_label.setText(f"Теги: {', '.join(self.current_note.tags)}")
             else:
-                self.show_toast(self, "Нет новых тегов", "Все введённые теги уже есть у заметки.")
+                self.show_toast(
+                    self, "Нет новых тегов", "Все введённые теги уже есть у заметки."
+                )
 
     def manage_tags_dialog(self) -> None:
         dialog = QDialog(self)
@@ -8176,7 +8437,6 @@ class NotesApp(QMainWindow):
         num = gen.generate()
         QMessageBox.information(self, "Случайное число", f"Результат: {num}")
 
-
     def show_reminder_dialog(self, note):
         time_str = ""
         if note.reminder:
@@ -8536,11 +8796,13 @@ class NotesApp(QMainWindow):
             0 if self.settings.value("theme", "dark") == "light" else 1
         )
         layout.addRow("Тема:", theme_combo)
-               
+
         online_spell_cb = QCheckBox()
         curr_online = self.settings.value("spellcheck/online_enabled", True, type=bool)
         online_spell_cb.setChecked(curr_online)
-        online_spell_cb.setToolTip("Если выключено — подчёркивание строится только по локальному словарю.")
+        online_spell_cb.setToolTip(
+            "Если выключено — подчёркивание строится только по локальному словарю."
+        )
         layout.addRow("Онлайн-проверка грамматики:", online_spell_cb)
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         buttons.accepted.connect(dialog.accept)
@@ -8551,7 +8813,9 @@ class NotesApp(QMainWindow):
             new_theme = "light" if theme_combo.currentIndex() == 0 else "dark"
             self.settings.setValue("theme", new_theme)
             self.spell_online_enabled = online_spell_cb.isChecked()
-            self.settings.setValue("spellcheck/online_enabled", self.spell_online_enabled)
+            self.settings.setValue(
+                "spellcheck/online_enabled", self.spell_online_enabled
+            )
             if hasattr(self, "spell_highlighter"):
                 self.spell_highlighter.set_online_enabled(self.spell_online_enabled)
             else:
@@ -8930,6 +9194,7 @@ class NotesApp(QMainWindow):
             self.refresh_notes_list()
             return
 
+
         def _matches(note):
             matches_tag = tag in [t.lower() for t in note.tags] if tag else True
             if not text:
@@ -8937,15 +9202,16 @@ class NotesApp(QMainWindow):
             if mode == "Заголовок":
                 matches_search = text in note.title.lower()
             elif mode == "Напоминание":
-                matches_search = (
-                    bool(note.reminder) and text in str(note.reminder).lower()
-                )
+                matches_search = bool(note.reminder) and text in str(note.reminder).lower()
             else:
-                doc = QTextDocument()
-                doc.setHtml(note.content)
-                matches_search = text in doc.toPlainText().lower()
+                content_plain = getattr(note, "content_txt", "") or ""
+                if not content_plain:
+                    doc = QTextDocument()
+                    doc.setHtml(note.content)
+                    content_plain = doc.toPlainText()
+                    note.content_txt = content_plain
+                matches_search = text in content_plain.lower()
             return matches_tag and matches_search
-
         filtered = [n for n in self.notes if _matches(n)]
         fav_color = self.get_contrast_favorite_color()
         current_uuid = self.current_note.uuid if self.current_note else None
@@ -9414,8 +9680,11 @@ class NotesApp(QMainWindow):
             return
         if not getattr(self, "current_note", None):
             return
-        if getattr(self, "_edit_session_note_uuid", None) and \
-        self.current_note and self.current_note.uuid != self._edit_session_note_uuid:
+        if (
+            getattr(self, "_edit_session_note_uuid", None)
+            and self.current_note
+            and self.current_note.uuid != self._edit_session_note_uuid
+        ):
             return
         self.current_note.content = self.text_edit.toHtml()
         self.current_note.password_manager = self.password_manager_field.text()
@@ -9493,8 +9762,11 @@ class NotesApp(QMainWindow):
                     self.text_edit.setTextCursor(cursor)
                     self.text_edit.insertHtml(f'📄 <a href="{file_url}">{filename}</a>')
         try:
-            self.show_toast("Файлы прикреплены", timeout_ms=1400,
-                            anchor_widget=getattr(self, "attachments_scroll", None))
+            self.show_toast(
+                "Файлы прикреплены",
+                timeout_ms=1400,
+                anchor_widget=getattr(self, "attachments_scroll", None),
+            )
         except Exception:
             pass
         self.save_note()
@@ -9670,7 +9942,7 @@ class NotesApp(QMainWindow):
             for action in actions_to_remove:
                 plugins_menu.removeAction(action)
 
-    def load_plugins(self):     
+    def load_plugins(self):
         importlib.invalidate_caches()
         self.clear_plugin_menu_actions()
         for module in getattr(self, "active_plugins", {}).values():
@@ -9684,7 +9956,9 @@ class NotesApp(QMainWindow):
                 log_path = os.path.join(DATA_DIR, "plugin_errors.log")
                 try:
                     with open(log_path, "a", encoding="utf-8") as f:
-                        f.write(f"\n[{datetime.now().isoformat(sep=' ', timespec='seconds')}] ")
+                        f.write(
+                            f"\n[{datetime.now().isoformat(sep=' ', timespec='seconds')}] "
+                        )
                         f.write(f"Ошибка при загрузке плагина {fname}: {e}\n")
                         traceback.print_exc(file=f)
                 except Exception:
@@ -9739,8 +10013,6 @@ class NotesApp(QMainWindow):
     def update_current_note_content(self):
         if not hasattr(self, "current_note") or self.current_note is None:
             return
-        if not hasattr(self, "current_note") or self.current_note is None:
-            return
         html = self.text_edit.toHtml()
         html = self._persist_dropdown_values_in_html(html)
         self.current_note.content = html
@@ -9775,7 +10047,6 @@ class NotesApp(QMainWindow):
         self.save_settings()
         super().resizeEvent(event)
 
-
     def moveEvent(self, event):
         self.save_settings()
         super().moveEvent(event)
@@ -9792,11 +10063,13 @@ class NotesApp(QMainWindow):
                 self.text_edit.textChanged.disconnect(self.on_text_changed_autosave)
             except TypeError:
                 pass
+
     def on_text_changed_autosave(self):
         pass
 
-    def get_app_dir():
-        return APPDIR
+
+def get_app_dir():
+    return APPDIR
 
 
 def create_default_config():
@@ -9909,6 +10182,7 @@ class PasswordGenerator:
         ):
             score += 10
         return min(100, score)
+
 
 class NumberGenerator:
     def __init__(self, start: int = 0, end: int = 100):
@@ -12042,7 +12316,9 @@ class LauncherWindow(QMainWindow):
                         if isinstance(w, DesktopNotesWidget):
                             existing_widget = w
                             self.notes_widget = w
-                            w.destroyed.connect(lambda: setattr(self, "notes_widget", None))
+                            w.destroyed.connect(
+                                lambda: setattr(self, "notes_widget", None)
+                            )
                             break
                     except Exception:
                         pass
@@ -12055,7 +12331,9 @@ class LauncherWindow(QMainWindow):
                 existing_widget.activateWindow()
                 return
             self.notes_widget = DesktopNotesWidget()
-            self.notes_widget.destroyed.connect(lambda: setattr(self, "notes_widget", None))
+            self.notes_widget.destroyed.connect(
+                lambda: setattr(self, "notes_widget", None)
+            )
             if self.isVisible():
                 self.hide()
             self.notes_widget.show()
@@ -12063,13 +12341,17 @@ class LauncherWindow(QMainWindow):
             self.notes_widget.activateWindow()
         except Exception as e:
             try:
-                with open(os.path.join(DATA_DIR, "last_run.log"), "a", encoding="utf-8") as f:
+                with open(
+                    os.path.join(DATA_DIR, "last_run.log"), "a", encoding="utf-8"
+                ) as f:
                     f.write(f"DesktopNotesWidget error: {e}\n")
-                    import traceback; traceback.print_exc(file=f)
+                    import traceback
+
+                    traceback.print_exc(file=f)
             except Exception:
                 pass
             QMessageBox.critical(self, "Ошибка", f"Не удалось открыть Заметки:\n{e}")
-        
+
     def launch_screenshoter(self):
         self._start_external("Скриншотер", ["ScreenshotPN.exe"])
 
@@ -12135,4 +12417,4 @@ if __name__ == "__main__":
         win.show()
     sys.exit(app.exec())
 
-# UPD 23.11.2025
+# UPD 29.11.2025
