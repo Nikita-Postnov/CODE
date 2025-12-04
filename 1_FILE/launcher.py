@@ -2603,27 +2603,37 @@ class CustomTextEdit(QTextEdit):
                         local_path = raw_path
                 else:
                     local_path = s
+
                 local_path = self._sanitize_windows_path(local_path)
 
                 def try_open(p: str) -> bool:
+                    # Защита от открытия самого NotesPM как вложения
+                    exe_path = os.path.abspath(sys.argv[0])
+                    abs_p = os.path.abspath(p)
+                    try:
+                        same = os.path.samefile(abs_p, exe_path)
+                    except Exception:
+                        same = (abs_p == exe_path)
+
+                    if same:
+                        QMessageBox.information(
+                            self,
+                            "Открытие вложения",
+                            "Нельзя открыть само приложение NotesPM как вложение.",
+                        )
+                        return False
+
                     if sys.platform.startswith("win"):
                         try:
                             os.startfile(p)
                             return True
                         except Exception:
                             pass
-                        try:
-                            from PySide6.QtCore import QProcess
-
-                            return QProcess.startDetached(
-                                "cmd", ["/c", "start", "", f'"{p}"']
-                            )
-                        except Exception:
-                            pass
                     return QDesktopServices.openUrl(QUrl.fromLocalFile(p))
 
                 if os.path.exists(local_path):
                     return try_open(local_path)
+
                 lower = local_path.replace("/", os.sep).replace("\\", os.sep).lower()
                 sep_notes = f"{os.sep}notes{os.sep}"
                 if sep_notes in lower:
@@ -2633,6 +2643,7 @@ class CustomTextEdit(QTextEdit):
                     candidate = os.path.join(NOTES_DIR, suffix)
                     if os.path.exists(candidate):
                         return try_open(candidate)
+
                 mw = self.window()
                 if hasattr(mw, "current_note") and mw.current_note:
                     folder = NotesApp.safe_folder_name(
@@ -2645,12 +2656,15 @@ class CustomTextEdit(QTextEdit):
                     )
                     if os.path.exists(candidate):
                         return try_open(candidate)
+
                 return try_open(local_path)
+
             if not url.scheme():
                 url = QUrl.fromUserInput("https://" + s)
             return QDesktopServices.openUrl(url)
         except Exception:
             return False
+
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
         pos = event.position().toPoint()
@@ -2898,7 +2912,6 @@ class CustomTextEdit(QTextEdit):
             return out
 
         spell_candidates = _clean(morph_candidates + spell_candidates)
-
         user_candidates = _clean(user_candidates)
         spell_candidates = _clean(spell_candidates)
         doc_candidates = _clean(doc_candidates)
@@ -2910,6 +2923,7 @@ class CustomTextEdit(QTextEdit):
         menu.addAction(copy_plain_action)
         menu.addAction(copy_rich_action)
         menu.addSeparator()
+        clean_word = m.group(0)
         ignore_action = QAction("Ignore the word in the current note", self)
         ignore_action.triggered.connect(
             lambda checked=False, w=raw_word: self.ignore_in_this_note(w)
@@ -2931,7 +2945,6 @@ class CustomTextEdit(QTextEdit):
         else:
             a = user_menu.addAction("— There are no options —")
             a.setEnabled(False)
-
         spell_menu = replace_menu.addMenu("Spelling options")
         if spell_candidates:
             for s in spell_candidates:
@@ -3948,7 +3961,7 @@ class NotesApp(QMainWindow):
         self.notes_list.itemClicked.connect(self.load_note)
         self.current_note = None
         self._update_editor_visibility()
-        sc_show_launcher = QShortcut(QKeySequence("Ctrl+Alt+L"), self)
+        sc_show_launcher = QShortcut(QKeySequence("Ctrl+Alt+N"), self)
         sc_show_launcher.setContext(Qt.ApplicationShortcut)
         sc_show_launcher.activated.connect(self.show_app_launcher)
         sc_undo_notes = QShortcut(QKeySequence.Undo, self)
@@ -5943,7 +5956,6 @@ class NotesApp(QMainWindow):
                 html = self._persist_dropdown_values_in_html(html)
                 self.current_note.content = html
                 self.save_note_to_file(self.current_note)
-            self.current_note = note
             self.tags_label.setText(
                 f"Теги: {', '.join(note.tags) if note and note.tags else 'нет'}"
             )
@@ -5998,7 +6010,9 @@ class NotesApp(QMainWindow):
             self.update_history_list()
             self.update_history_list_selection()
             self.show_note_with_attachments(note)
-
+            cursor = self.text_edit.textCursor()
+            cursor.clearSelection()
+            self.text_edit.setTextCursor(cursor)
             self.tags_label.setText(
                 f"Теги: {', '.join(note.tags) if note.tags else 'нет'}"
             )
@@ -8652,9 +8666,11 @@ class NotesApp(QMainWindow):
     def add_menu_bar(self):
         menu_bar = self.menuBar()
         apps_menu = menu_bar.addMenu("Приложения")
-        act_switch = QAction("Выбрать приложение…  (Ctrl+Alt+L)", self)
+        act_switch = QAction("Выбрать приложение…  (Ctrl+Alt+N)", self)
         act_switch.triggered.connect(self.show_app_launcher)
         apps_menu.addAction(act_switch)
+        apps_menu.addAction(act_switch)
+        self.addAction(act_switch)
         plugins_menu = menu_bar.addMenu("Плагины")
         act = QAction("Управление плагинами", self)
         act.triggered.connect(self.manage_plugins_dialog)
@@ -8870,10 +8886,34 @@ class NotesApp(QMainWindow):
                         timeout_ms=3000,
                         anchor_widget=getattr(self, "timer_btn", None),
                     )
+
+                    dlg = QMessageBox(self)
+                    dlg.setWindowTitle("Таймер")
+                    dlg.setText("⏱ Время вышло!")
+                    dlg.setIcon(QMessageBox.Icon.Information)
+                    dlg.setStandardButtons(QMessageBox.StandardButton.Ok)
+                    dlg.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
+                    dlg.setModal(True)
+                    dlg.adjustSize()
+
+                    win_handle = self.windowHandle()
+                    screen = (
+                        win_handle.screen()
+                        if win_handle is not None
+                        else QApplication.primaryScreen()
+                    )
+                    if screen is not None:
+                        geo = screen.availableGeometry()
+                        frame_geo = dlg.frameGeometry()
+                        frame_geo.moveCenter(geo.center())
+                        dlg.move(frame_geo.topLeft())
+
+                    dlg.exec()
                 except Exception:
                     pass
         else:
             self._timer_left += 1
+
         self._update_timer_ui()
 
     def _set_timer_duration_dialog(self) -> None:
@@ -9586,9 +9626,11 @@ class NotesApp(QMainWindow):
         text: str,
         ms: int = 1200,
         *,
+        timeout_ms: int | None = None,
         boundary_widget: QWidget | None = None,
         anchor_widget: QWidget | None = None,
     ) -> None:
+        duration = timeout_ms if timeout_ms is not None else ms
         overlay_parent = boundary_widget or self
         lbl = QLabel(text, overlay_parent)
         lbl.setObjectName("toast")
@@ -9603,10 +9645,11 @@ class NotesApp(QMainWindow):
                 padding: 4px 8px;
                 font-size: 12px;
             }
-        """
+            """
         )
         lbl.setWordWrap(False)
         lbl.adjustSize()
+
         if anchor_widget is not None:
             anchor_center = anchor_widget.mapTo(
                 overlay_parent, anchor_widget.rect().center()
@@ -9626,14 +9669,17 @@ class NotesApp(QMainWindow):
         self._live_toasts.append(lbl)
 
         def _close():
+            if lbl not in self._live_toasts:
+                return
             try:
                 lbl.close()
+            except RuntimeError:
+                pass
             finally:
                 if lbl in self._live_toasts:
                     self._live_toasts.remove(lbl)
                 lbl.deleteLater()
-
-        QTimer.singleShot(ms, _close)
+        QTimer.singleShot(duration, _close)
 
     def exit_note(self):
         self.load_note(None)
@@ -12414,4 +12460,4 @@ if __name__ == "__main__":
         win.show()
     sys.exit(app.exec())
 
-# UPD 29.11.2025
+# UPD 04.12.2025
