@@ -3484,6 +3484,7 @@ class NotesApp(QMainWindow):
         self.attachments_watcher = QFileSystemWatcher(self)
         self.attachments_watcher.directoryChanged.connect(self._refresh_attachments)
         self.attachments_watcher.fileChanged.connect(self._refresh_attachments)
+        self._attachments_snapshot: dict[str, set[str]] = {}
         self.init_all_components()
         self.load_plugins()
         self.init_theme()
@@ -6196,6 +6197,29 @@ class NotesApp(QMainWindow):
             global_pos = self.text_edit.viewport().mapToGlobal(cr.bottomLeft())
         menu.exec(global_pos)
 
+    def _list_attachment_files(self, note: Note | None) -> list[tuple[str, str]]:
+        if not note:
+            return []
+        note_dir = os.path.join(
+            NOTES_DIR, NotesApp.safe_folder_name(note.title, note.uuid, note.timestamp)
+        )
+        if not os.path.isdir(note_dir):
+            return []
+        ignored_files = {"note.json", ".DS_Store", "Thumbs.db"}
+        ignored_prefixes = ("~$", ".~")
+        ignored_suffixes = ("~", ".tmp", ".temp")
+        attachments: list[tuple[str, str]] = []
+        for filename in os.listdir(note_dir):
+            if (
+                filename in ignored_files
+                or filename.startswith(ignored_prefixes)
+                or filename.endswith(ignored_suffixes)
+                or (filename.startswith("backup(") and filename.endswith(".json"))
+            ):
+                continue
+            attachments.append((filename, os.path.join(note_dir, filename)))
+        return attachments
+
     def show_note_with_attachments(self, note: Note | None) -> None:
         self.current_note = note
         self.settings.setValue("lastNoteUuid", note.uuid)
@@ -6246,79 +6270,61 @@ class NotesApp(QMainWindow):
                 if widget:
                     widget.setParent(None)
                     widget.deleteLater()
-            note_dir = os.path.join(
-                NOTES_DIR,
-                NotesApp.safe_folder_name(note.title, note.uuid, note.timestamp),
-            )
+            attachments = self._list_attachment_files(note)
+            self._attachments_snapshot[note.uuid] = {name for name, _ in attachments}
             attachments_found = False
-            if os.path.isdir(note_dir):
-                ignored_files = {"note.json", ".DS_Store", "Thumbs.db"}
-                ignored_prefixes = ("~$", ".~")
-                ignored_suffixes = ("~", ".tmp", ".temp")
-                for filename in os.listdir(note_dir):
-                    if (
-                        filename in ignored_files
-                        or filename.startswith(ignored_prefixes)
-                        or filename.endswith(ignored_suffixes)
-                        or (
-                            filename.startswith("backup(")
-                            and filename.endswith(".json")
+            for filename, file_path in attachments:
+                attachments_found = True
+                item_widget = QWidget()
+                layout = QHBoxLayout(item_widget)
+                if filename.lower().endswith(tuple(IMAGE_EXTENSIONS)):
+                    pixmap = QPixmap(file_path)
+                    icon_label = QLabel()
+                    icon_label.setPixmap(
+                        pixmap.scaled(
+                            48, 48, Qt.KeepAspectRatio, Qt.SmoothTransformation
                         )
-                    ):
-                        continue
-                    attachments_found = True
-                    file_path = os.path.join(note_dir, filename)
-                    item_widget = QWidget()
-                    layout = QHBoxLayout(item_widget)
-                    if filename.lower().endswith(tuple(IMAGE_EXTENSIONS)):
-                        pixmap = QPixmap(file_path)
-                        icon_label = QLabel()
+                    )
+                    layout.addWidget(icon_label)
+                else:
+                    icon_label = QLabel()
+                    if os.path.exists(FILE_ICON_PATH):
                         icon_label.setPixmap(
-                            pixmap.scaled(
+                            QPixmap(FILE_ICON_PATH).scaled(
                                 48, 48, Qt.KeepAspectRatio, Qt.SmoothTransformation
                             )
                         )
-                        layout.addWidget(icon_label)
                     else:
-                        icon_label = QLabel()
-                        if os.path.exists(FILE_ICON_PATH):
-                            icon_label.setPixmap(
-                                QPixmap(FILE_ICON_PATH).scaled(
-                                    48, 48, Qt.KeepAspectRatio, Qt.SmoothTransformation
-                                )
-                            )
-                        else:
-                            icon_label.setPixmap(
-                                self.style()
-                                .standardIcon(QStyle.SP_FileIcon)
-                                .pixmap(32, 32)
-                            )
-                        layout.addWidget(icon_label)
-                    label = QLabel(filename)
-                    label.setTextInteractionFlags(Qt.TextSelectableByMouse)
-                    layout.addWidget(label)
-                    open_btn = QPushButton("Открыть")
-                    open_btn.setToolTip("Открыть вложение")
-                    open_btn.setFixedSize(60, 24)
-                    open_btn.clicked.connect(
-                        lambda _, path=file_path: self.text_edit._open_any_link(path)
-                    )
-                    layout.addWidget(open_btn)
-                    del_btn = QPushButton("❌")
-                    del_btn.setToolTip("Удалить вложение")
-                    del_btn.setFixedSize(28, 24)
-                    del_btn.clicked.connect(
-                        lambda _, path=file_path: self.delete_attachment_from_panel(
-                            path
+                        icon_label.setPixmap(
+                            self.style().standardIcon(QStyle.SP_FileIcon).pixmap(32, 32)
                         )
-                    )
-                    layout.addWidget(del_btn)
-                    item_widget.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Maximum)
-                    if self.attachments_layout.count() > 0:
-                        self.attachments_layout.addWidget(QLabel(" - "))
-                    self.attachments_layout.addWidget(item_widget)
-                if note_dir not in self.attachments_watcher.directories():
-                    self.attachments_watcher.addPath(note_dir)
+                    layout.addWidget(icon_label)
+                label = QLabel(filename)
+                label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+                layout.addWidget(label)
+                open_btn = QPushButton("Открыть")
+                open_btn.setToolTip("Открыть вложение")
+                open_btn.setFixedSize(60, 24)
+                open_btn.clicked.connect(
+                    lambda _, path=file_path: self.text_edit._open_any_link(path)
+                )
+                layout.addWidget(open_btn)
+                del_btn = QPushButton("❌")
+                del_btn.setToolTip("Удалить вложение")
+                del_btn.setFixedSize(28, 24)
+                del_btn.clicked.connect(
+                    lambda _, path=file_path: self.delete_attachment_from_panel(path)
+                )
+                layout.addWidget(del_btn)
+                item_widget.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Maximum)
+                if self.attachments_layout.count() > 0:
+                    self.attachments_layout.addWidget(QLabel(" - "))
+                self.attachments_layout.addWidget(item_widget)
+            note_dir = os.path.join(
+                NOTES_DIR, NotesApp.safe_folder_name(note.title, note.uuid, note.timestamp)
+            )
+            if note_dir not in self.attachments_watcher.directories():
+                self.attachments_watcher.addPath(note_dir)
             self.attachments_scroll.setVisible(attachments_found)
         self.tags_label.setText(f"Теги: {', '.join(note.tags) if note.tags else 'нет'}")
 
@@ -6337,7 +6343,11 @@ class NotesApp(QMainWindow):
                 or basename.endswith(ignored_suffixes)
             ):
                 return
-        self._rebuild_attachments_panel(self.current_note)
+        attachments = self._list_attachment_files(self.current_note)
+        filenames = {name for name, _ in attachments}
+        if filenames == self._attachments_snapshot.get(self.current_note.uuid, set()):
+            return
+        self._rebuild_attachments_panel(self.current_note, attachments)
 
     def delete_attachment_from_panel(self, file_path: str) -> None:
         reply = QMessageBox.question(
@@ -7731,7 +7741,11 @@ class NotesApp(QMainWindow):
         else:
             self.show_notes_by_tag(selected_tag)
 
-    def _rebuild_attachments_panel(self, note: Note | None) -> None:
+    def _rebuild_attachments_panel(
+        self,
+        note: Note | None,
+        attachments: list[tuple[str, str]] | None = None,
+    ) -> None:
         if hasattr(self, "attachments_layout"):
             for i in reversed(range(self.attachments_layout.count())):
                 w = self.attachments_layout.itemAt(i).widget()
@@ -7741,64 +7755,49 @@ class NotesApp(QMainWindow):
         if not note:
             self.attachments_scroll.setVisible(False)
             return
-        note_dir = os.path.join(
-            NOTES_DIR, NotesApp.safe_folder_name(note.title, note.uuid, note.timestamp)
-        )
+        attachments = attachments or self._list_attachment_files(note)
+        self._attachments_snapshot[note.uuid] = {name for name, _ in attachments}
         attachments_found = False
-        if os.path.isdir(note_dir):
-            ignored_files = {"note.json", ".DS_Store", "Thumbs.db"}
-            ignored_prefixes = ("~$", ".~")
-            ignored_suffixes = ("~", ".tmp", ".temp")
-            for filename in os.listdir(note_dir):
-                if (
-                    filename in ignored_files
-                    or filename.startswith(ignored_prefixes)
-                    or filename.endswith(ignored_suffixes)
-                    or (filename.startswith("backup(") and filename.endswith(".json"))
-                ):
-                    continue
-                attachments_found = True
-                file_path = os.path.join(note_dir, filename)
-                item_widget = QWidget()
-                layout = QHBoxLayout(item_widget)
-                icon_label = QLabel()
-                if filename.lower().endswith(tuple(IMAGE_EXTENSIONS)):
-                    pixmap = QPixmap(file_path)
+        for filename, file_path in attachments:
+            attachments_found = True
+            item_widget = QWidget()
+            layout = QHBoxLayout(item_widget)
+            icon_label = QLabel()
+            if filename.lower().endswith(tuple(IMAGE_EXTENSIONS)):
+                pixmap = QPixmap(file_path)
+                icon_label.setPixmap(
+                    pixmap.scaled(48, 48, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                )
+            else:
+                if os.path.exists(FILE_ICON_PATH):
                     icon_label.setPixmap(
-                        pixmap.scaled(
+                        QPixmap(FILE_ICON_PATH).scaled(
                             48, 48, Qt.KeepAspectRatio, Qt.SmoothTransformation
                         )
                     )
                 else:
-                    if os.path.exists(FILE_ICON_PATH):
-                        icon_label.setPixmap(
-                            QPixmap(FILE_ICON_PATH).scaled(
-                                48, 48, Qt.KeepAspectRatio, Qt.SmoothTransformation
-                            )
-                        )
-                    else:
-                        icon_label.setPixmap(
-                            self.style().standardIcon(QStyle.SP_FileIcon).pixmap(32, 32)
-                        )
-                layout.addWidget(icon_label)
-                label = QLabel(filename)
-                label.setTextInteractionFlags(Qt.TextSelectableByMouse)
-                layout.addWidget(label)
-                open_btn = QPushButton("Открыть")
-                open_btn.setToolTip("Открыть вложение")
-                open_btn.setFixedSize(60, 24)
-                open_btn.clicked.connect(
-                    lambda _, path=file_path: self.text_edit._open_any_link(path)
-                )
-                layout.addWidget(open_btn)
-                del_btn = QPushButton("❌")
-                del_btn.setToolTip("Удалить вложение")
-                del_btn.setFixedSize(28, 24)
-                del_btn.clicked.connect(
-                    lambda _, path=file_path: self.delete_attachment_from_panel(path)
-                )
-                layout.addWidget(del_btn)
-                self.attachments_layout.addWidget(item_widget)
+                    icon_label.setPixmap(
+                        self.style().standardIcon(QStyle.SP_FileIcon).pixmap(32, 32)
+                    )
+            layout.addWidget(icon_label)
+            label = QLabel(filename)
+            label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+            layout.addWidget(label)
+            open_btn = QPushButton("Открыть")
+            open_btn.setToolTip("Открыть вложение")
+            open_btn.setFixedSize(60, 24)
+            open_btn.clicked.connect(
+                lambda _, path=file_path: self.text_edit._open_any_link(path)
+            )
+            layout.addWidget(open_btn)
+            del_btn = QPushButton("❌")
+            del_btn.setToolTip("Удалить вложение")
+            del_btn.setFixedSize(28, 24)
+            del_btn.clicked.connect(
+                lambda _, path=file_path: self.delete_attachment_from_panel(path)
+            )
+            layout.addWidget(del_btn)
+            self.attachments_layout.addWidget(item_widget)
         self.attachments_scroll.setVisible(attachments_found)
 
     def insert_link(self) -> None:
