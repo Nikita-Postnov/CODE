@@ -2573,17 +2573,6 @@ class CustomTextEdit(QTextEdit):
         else:
             super().dropEvent(event)
 
-    def _sanitize_windows_path(self, p: str) -> str:
-        if not p:
-            return p
-        p = p.strip().strip('"')
-        bad = "\ufeff\u200b\u200c\u200d\u200e\u200f\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069"
-        p = p.translate({ord(ch): None for ch in bad})
-        p = p.replace("/", os.sep)
-        parts = [re.sub(r"[ \.]+$", "", part) for part in p.split(os.sep)]
-        p = os.sep.join(parts)
-        return os.path.normpath(p)
-
     def _open_any_link(self, link: str) -> bool:
         try:
             s = html_lib.unescape((link or "").strip())
@@ -2603,26 +2592,30 @@ class CustomTextEdit(QTextEdit):
                         local_path = raw_path
                 else:
                     local_path = s
-
                 local_path = self._sanitize_windows_path(local_path)
 
                 def try_open(p: str) -> bool:
-                    # Защита от открытия самого NotesPM как вложения
                     exe_path = os.path.abspath(sys.argv[0])
                     abs_p = os.path.abspath(p)
+                    exe_dir = os.path.dirname(exe_path)
+                    ext = os.path.splitext(abs_p)[1].lower()
                     try:
                         same = os.path.samefile(abs_p, exe_path)
                     except Exception:
                         same = (abs_p == exe_path)
-
-                    if same:
+                    executable_like_exts = (".exe", ".bat", ".cmd", ".lnk", ".py", ".pyw")
+                    is_executable_like = ext in executable_like_exts
+                    if same or (abs_p.startswith(exe_dir + os.sep) and is_executable_like):
                         QMessageBox.information(
                             self,
                             "Открытие вложения",
-                            "Нельзя открыть само приложение NotesPM как вложение.",
+                            (
+                                "Запуск исполняемых файлов из вложений заблокирован,\n"
+                                "чтобы не открывать само приложение NotesPM или "
+                                "связанные исполняемые файлы."
+                            ),
                         )
                         return False
-
                     if sys.platform.startswith("win"):
                         try:
                             os.startfile(p)
@@ -2630,20 +2623,15 @@ class CustomTextEdit(QTextEdit):
                         except Exception:
                             pass
                     return QDesktopServices.openUrl(QUrl.fromLocalFile(p))
-
                 if os.path.exists(local_path):
                     return try_open(local_path)
-
                 lower = local_path.replace("/", os.sep).replace("\\", os.sep).lower()
                 sep_notes = f"{os.sep}notes{os.sep}"
                 if sep_notes in lower:
-                    suffix = local_path[
-                        len(lower) - len(lower.split(sep_notes, 1)[1]) :
-                    ]
+                    suffix = lower.split(sep_notes, 1)[1]
                     candidate = os.path.join(NOTES_DIR, suffix)
                     if os.path.exists(candidate):
                         return try_open(candidate)
-
                 mw = self.window()
                 if hasattr(mw, "current_note") and mw.current_note:
                     folder = NotesApp.safe_folder_name(
@@ -2656,15 +2644,12 @@ class CustomTextEdit(QTextEdit):
                     )
                     if os.path.exists(candidate):
                         return try_open(candidate)
-
                 return try_open(local_path)
-
             if not url.scheme():
                 url = QUrl.fromUserInput("https://" + s)
             return QDesktopServices.openUrl(url)
         except Exception:
             return False
-
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
         pos = event.position().toPoint()
@@ -3338,7 +3323,6 @@ class NumberGeneratorDialog(QDialog):
         self.setWindowTitle("Генератор чисел")
         self.setModal(True)
         self.resize(420, 260)
-
         form = QFormLayout()
         self.start_spin = QSpinBox()
         self.start_spin.setRange(-(10**9), 10**9)
@@ -3349,7 +3333,6 @@ class NumberGeneratorDialog(QDialog):
         self.count_spin = QSpinBox()
         self.count_spin.setRange(1, 10**6)
         self.count_spin.setValue(10)
-
         self.base_combo = QComboBox()
         self.base_combo.addItems(["10", "16", "2"])
         self.unique_cb = QCheckBox("Только уникальные")
@@ -3357,11 +3340,9 @@ class NumberGeneratorDialog(QDialog):
         self.desc_cb = QCheckBox("По убыванию")
         self.desc_cb.setEnabled(False)
         self.sort_cb.toggled.connect(lambda v: self.desc_cb.setEnabled(v))
-
         self.leading_zeros_cb = QCheckBox("Выровнять нулями (для 10/16/2)")
         self.sep_edit = QLineEdit(", ")
         self.sep_edit.setPlaceholderText("разделитель (по умолчанию: запятая+пробел)")
-
         form.addRow("Начало:", self.start_spin)
         form.addRow("Конец:", self.end_spin)
         form.addRow("Сколько:", self.count_spin)
@@ -3371,29 +3352,23 @@ class NumberGeneratorDialog(QDialog):
         form.addRow(self.desc_cb)
         form.addRow(self.leading_zeros_cb)
         form.addRow("Разделитель:", self.sep_edit)
-
         self.preview = QPlainTextEdit()
         self.preview.setReadOnly(True)
         self.preview.setPlaceholderText("Предпросмотр…")
-
         btns = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         self.btn_generate = QPushButton("Сгенерировать")
         btns.addButton(self.btn_generate, QDialogButtonBox.ActionRole)
         self.btn_copy = QPushButton("Копировать")
         self.btn_copy.setEnabled(False)
         btns.addButton(self.btn_copy, QDialogButtonBox.ActionRole)
-
         self.btn_generate.clicked.connect(self._on_generate)
         self.btn_copy.clicked.connect(self._on_copy)
         btns.accepted.connect(self.accept)
         btns.rejected.connect(self.reject)
-
         root = QVBoxLayout(self)
         root.addLayout(form)
         root.addWidget(self.preview, 1)
         root.addWidget(btns)
-
-        # первоначальная генерация
         self._on_generate()
 
     def _format_num(self, n: int, base: int, width: int) -> str:
@@ -3402,8 +3377,8 @@ class NumberGeneratorDialog(QDialog):
         elif base == 16:
             s = format(
                 n if n >= 0 else (1 << 64) + n, "x"
-            )  # простой хак для отрицательных
-        else:  # base == 2
+            )
+        else:
             s = format(n if n >= 0 else (1 << 64) + n, "b")
         if self.leading_zeros_cb.isChecked() and width > 0:
             s = s.zfill(width)
@@ -3418,8 +3393,6 @@ class NumberGeneratorDialog(QDialog):
         base = int(self.base_combo.currentText())
         sep = self.sep_edit.text() if self.sep_edit.text() != "" else ", "
         pool_size = b - a + 1
-
-        # подберём ширину для нулей
         width = 0
         if self.leading_zeros_cb.isChecked():
             if base == 10:
@@ -3452,7 +3425,6 @@ class NumberGeneratorDialog(QDialog):
             QApplication.clipboard().setText(text)
 
     def result_text(self) -> str:
-        # отдаём готовый текст
         return self.preview.toPlainText()
 
 
@@ -4096,12 +4068,10 @@ class NotesApp(QMainWindow):
             if dlg.exec() == QDialog.Accepted:
                 text = dlg.result_text()
                 if text and hasattr(self, "text_edit"):
-                    # вставляем в позицию курсора
                     cur = self.text_edit.textCursor()
                     cur.insertText(text)
                     self.text_edit.setTextCursor(cur)
                     self._set_unsaved(True)
-                    # автосейв, если включён
                     if getattr(self, "autosave_enabled", True):
                         if self.autosave_enabled:
                             self.save_note_quiet(force=True)
@@ -7247,25 +7217,20 @@ class NotesApp(QMainWindow):
             )
             if not ok:
                 return
-
             base = (name or "").strip()
             if not base:
                 base = default_base
-
             base = re.sub(r"[^a-zA-Zа-яА-Я0-9 _\-\.\(\)]", "_", base).strip(" ._")
             if not base:
                 base = default_base
-
             filename = base if base.lower().endswith(".png") else base + ".png"
             filepath = os.path.join(note_dir, filename)
-
             if os.path.exists(filepath):
                 stem, ext = os.path.splitext(filename)
                 i = 1
                 while os.path.exists(os.path.join(note_dir, f"{stem}_{i}{ext}")):
                     i += 1
                 filepath = os.path.join(note_dir, f"{stem}_{i}{ext}")
-
             try:
                 img.save(filepath, "PNG")
             except Exception as e:
@@ -7273,7 +7238,6 @@ class NotesApp(QMainWindow):
                     self, "Ошибка", f"Не удалось сохранить рисунок:\n{e}"
                 )
                 return
-
             self._insert_image_at_cursor(filepath, width=400)
             self.save_note()
             self._rebuild_attachments_panel(self.current_note)
@@ -7296,27 +7260,14 @@ class NotesApp(QMainWindow):
         filename = f"clipboard_{uuid.uuid4().hex}.png"
         filepath = os.path.join(note_dir, filename)
         try:
-            image.save(filepath)
+            if not image.save(filepath):
+                raise RuntimeError("QImage.save вернул False")
         except Exception as e:
             QMessageBox.critical(
                 self, "Ошибка", f"Не удалось сохранить изображение: {e}"
             )
             return
-        pixmap = QPixmap(filepath)
-        if not pixmap.isNull():
-            buffer = QBuffer()
-            buffer.open(QIODevice.WriteOnly)
-            pixmap.save(buffer, "PNG")
-            base64_data = base64.b64encode(buffer.data()).decode("utf-8")
-            html_img = (
-                f'<img src="Data:image/png;base64,{base64_data}" width="200"><br>'
-            )
-            cursor = self.text_edit.textCursor()
-            cursor.movePosition(QTextCursor.End)
-            self.text_edit.setTextCursor(cursor)
-            self.text_edit.insertHtml(html_img)
-            self.record_state_for_undo()
-
+        self._insert_image_at_cursor(filepath, width=200)
         self.save_note()
 
     def insert_audio_link(self, filepath: str) -> None:
@@ -8280,30 +8231,7 @@ class NotesApp(QMainWindow):
         self.timer_btn.customContextMenuRequested.connect(self._timer_context_menu)
         flow_layout.addWidget(self.timer_btn)
         self._update_timer_ui()
-        self.stopwatch_time = 0
-        self.stopwatch_running = False
-        self.stopwatch_timer = QTimer(self)
-        self.stopwatch_timer.setInterval(1000)
-        self.stopwatch_timer.timeout.connect(self._update_stopwatch)
-        if not hasattr(self, "lbl_stopwatch"):
-            self.lbl_stopwatch = QLabel("00:00:00", self)
-        self.btn_sw_start = QPushButton("▶️")
-        self.btn_sw_stop = QPushButton("⏸️")
-        self.btn_sw_reset = QPushButton("⏹️")
-        self.btn_sw_start.clicked.connect(self.start_stopwatch)
-        self.btn_sw_stop.clicked.connect(self.stop_stopwatch)
-        self.btn_sw_reset.clicked.connect(self.reset_stopwatch)
-        sw_layout = QHBoxLayout()
-        sw_layout.setContentsMargins(0, 0, 0, 0)
-        sw_layout.setSpacing(4)
-        sw_layout.addWidget(self.lbl_stopwatch)
-        sw_layout.addWidget(self.btn_sw_start)
-        sw_layout.addWidget(self.btn_sw_stop)
-        sw_layout.addWidget(self.btn_sw_reset)
-        sw_widget = QWidget()
-        sw_widget.setLayout(sw_layout)
-        flow_layout.addWidget(sw_widget)
-
+        
     def _timer_context_menu(self, pos):
         menu = QMenu(self)
         act_reset = menu.addAction("Сброс")
@@ -8444,7 +8372,7 @@ class NotesApp(QMainWindow):
         dock.setVisible(was_visible)
 
     def show_random_number(self):
-        gen = NumberGenerator(1, 1000)  # диапазон можно изменить
+        gen = NumberGenerator(1, 1000)
         num = gen.generate()
         QMessageBox.information(self, "Случайное число", f"Результат: {num}")
 
@@ -12460,4 +12388,4 @@ if __name__ == "__main__":
         win.show()
     sys.exit(app.exec())
 
-# UPD 04.12.2025
+# UPD 25.12.2025
