@@ -5917,15 +5917,18 @@ class NotesApp(QMainWindow):
     def select_note(self, note: Note | None) -> None:
         if note is None:
             return
-        if getattr(self, "current_note", None) and self.current_note.uuid == note.uuid:
+        previous_note = getattr(self, "current_note", None)
+        if previous_note and previous_note.uuid == note.uuid:
             return
         self._suspend_edit_signals()
         try:
-            if getattr(self, "current_note", None):
+            if previous_note:
                 html = self.text_edit.toHtml()
                 html = self._persist_dropdown_values_in_html(html)
-                self.current_note.content = html
-                self.save_note_to_file(self.current_note)
+                previous_note.content = html
+                self.save_note_to_file(previous_note)
+
+            self.current_note = note
             self.tags_label.setText(
                 f"Теги: {', '.join(note.tags) if note and note.tags else 'нет'}"
             )
@@ -5970,13 +5973,11 @@ class NotesApp(QMainWindow):
             for field in fields_data:
                 self.add_custom_field(field)
             self.add_field_btn.setEnabled(True)
-
             if hasattr(self, "settings"):
                 self.settings.setValue("lastNoteUUID", note.uuid)
-
-            if not getattr(note, "history", None):
-                note.history = [note.content]
-                note.history_index = 0
+            if not getattr(self.current_note, "history", None):
+                self.current_note.history = [self.current_note.content]
+                self.current_note.history_index = 0
             self.update_history_list()
             self.update_history_list_selection()
             self.show_note_with_attachments(note)
@@ -6321,9 +6322,21 @@ class NotesApp(QMainWindow):
             self.attachments_scroll.setVisible(attachments_found)
         self.tags_label.setText(f"Теги: {', '.join(note.tags) if note.tags else 'нет'}")
 
-    def _refresh_attachments(self, *_) -> None:
+    def _refresh_attachments(self, *args) -> None:
         if not self.current_note:
             return
+        if args:
+            changed_path = (args[0] or "").lower()
+            ignored_files = {"note.json", "desktop.ini", "thumbs.db"}
+            ignored_prefixes = ("~$", ".~")
+            ignored_suffixes = ("~", ".tmp", ".temp", ".bak")
+            basename = os.path.basename(changed_path)
+            if (
+                basename in ignored_files
+                or basename.startswith(ignored_prefixes)
+                or basename.endswith(ignored_suffixes)
+            ):
+                return
         self._rebuild_attachments_panel(self.current_note)
 
     def delete_attachment_from_panel(self, file_path: str) -> None:
@@ -12388,4 +12401,4 @@ if __name__ == "__main__":
         win.show()
     sys.exit(app.exec())
 
-# UPD 25.12.2025
+# UPD 05.12.2025
