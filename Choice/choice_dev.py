@@ -5,6 +5,7 @@ from pathlib import Path
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QListWidgetItem
 from typing import Optional
+from portable_paths import convert_settings_paths
 import ast
 import json
 import os
@@ -50,9 +51,13 @@ APP_TITLE = "Choice"
 CONFIG_FILENAME = "launcher_config.json"
 
 def app_folder() -> Path:
+    base = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
     if getattr(sys, "frozen", False):
-        return Path(sys.executable).resolve().parent
-    return Path(__file__).resolve().parent
+        return base
+    for folder in (base, base.parent):
+        if (folder / "launcher_config.json").is_file() or (folder / "Runtime").is_dir() or (folder / "Choice.exe").is_file():
+            return folder
+    return base
 
 def config_file() -> Path:
     return app_folder() / CONFIG_FILENAME
@@ -155,17 +160,21 @@ class Settings:
 
     @staticmethod
     def load(path: Path) -> "Settings":
-        if not path.exists():
-            return Settings()
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-            s = Settings()
-            for k, v in data.items():
-                if hasattr(s, k):
-                    setattr(s, k, v)
-            return s
-        except Exception:
-            return Settings()
+        backup = path.with_suffix(path.suffix + ".bak")
+        for source in (path, backup):
+            try:
+                data = json.loads(source.read_text(encoding="utf-8"))
+                if not isinstance(data, dict):
+                    continue
+                data = convert_settings_paths(data, app_folder(), encode=False)
+                s = Settings()
+                for k, v in data.items():
+                    if hasattr(s, k):
+                        setattr(s, k, v)
+                return s
+            except (OSError, ValueError, TypeError):
+                continue
+        return Settings()
 
     def save(self, path: Path) -> None:
         data = {
@@ -190,19 +199,31 @@ class Settings:
             "window_geometry_b64": self.window_geometry_b64,
             "splitter_state_b64": self.splitter_state_b64,
         }
-        path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        data = convert_settings_paths(data, app_folder(), encode=True)
+        temporary = path.with_suffix(path.suffix + ".tmp")
+        backup = path.with_suffix(path.suffix + ".bak")
+        temporary.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        if path.is_file():
+            try:
+                json.loads(path.read_text(encoding="utf-8"))
+                shutil.copy2(path, backup)
+            except (OSError, ValueError, TypeError):
+                pass
+        os.replace(temporary, path)
 
 class FriendlyLauncher(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.settings = Settings.load(config_file())
+        self._restoring_initial_state = True
         self.processes: dict[int, QProcess] = {}
         self.proc_start_time: dict[int, float] = {}
         self.proc_info: dict[int, dict] = {}
         self.proc_counter: int = 0
         self.all_scripts: list[Path] = []
         self.setWindowTitle(APP_TITLE)
-        self.setMinimumSize(QSize(1100, 700))
+        self.setMinimumSize(QSize(900, 610))
+        self.resize(QSize(1250, 760))
         self._create_actions()
         self._create_toolbar()
         self._create_main_ui()
@@ -216,14 +237,10 @@ class FriendlyLauncher(QMainWindow):
         self._restore_previous()
         self._update_script_preview()
         self._restore_window_state()
+        self.scripts_list.clearSelection()
+        self.scripts_list.setCurrentRow(-1)
+        self._restoring_initial_state = False
         self._run_autostart_scripts()
-
-    def _is_window_effectively_visible(self) -> bool:
-        if not self.isVisible():
-            return False
-        if self.isMinimized():
-            return False
-        return True
 
     def _sync_tray_menu(self) -> None:
         visible = self._is_window_effectively_visible()
@@ -614,7 +631,7 @@ class FriendlyLauncher(QMainWindow):
         self.search_field.setClearButtonEnabled(True)
         self.search_field.textChanged.connect(self._apply_filters)
         self.search_field.returnPressed.connect(self._run_first_visible_script)
-        self.search_field.setMinimumWidth(220)
+        self.search_field.setMinimumWidth(0)
         self.search_field.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         search_block.addLayout(fav_row)
         search_block.addWidget(self.search_field)
@@ -770,7 +787,7 @@ class FriendlyLauncher(QMainWindow):
 
         self.stdin_field = QLineEdit()
         self.stdin_field.setPlaceholderText("Ввод для запущенного процесса (Enter — отправить)")
-        self.stdin_field.setMinimumWidth(520)
+        self.stdin_field.setMinimumWidth(0)
         self.stdin_field.returnPressed.connect(self._send_stdin_to_selected)
 
         bottom_layout.addWidget(buttons_row, 0, 0, 1, 1)
@@ -918,7 +935,7 @@ class FriendlyLauncher(QMainWindow):
         finally:
             self.scripts_list.blockSignals(False)
 
-        if current:
+        if current and not self._restoring_initial_state:
             self._highlight_script_in_list(current)
 
         QTimer.singleShot(300, self._save_settings)
@@ -1090,7 +1107,6 @@ class FriendlyLauncher(QMainWindow):
         item.setData(Qt.UserRole, rid)
         item.setToolTip(script)
         self.running_list.insertItem(0, item)
-        self.running_list.setCurrentItem(item)
         self._renumber_running_items()
 
         p.start(py, ["-u", script] + list(args))
@@ -1486,12 +1502,6 @@ class FriendlyLauncher(QMainWindow):
             "py": py,
         })
         self.settings.recent_runs = self.settings.recent_runs[:30]
-        if not p.waitForStarted(3000):
-            err = p.errorString()
-            self._append_error(f"! Не удалось запустить процесс #{rid}. QProcess: {err}")
-            QMessageBox.critical(self, "Ошибка", f"Не удалось запустить процесс #{rid}.\n\nПричина: {err}")
-            self._remove_run_item(rid)
-            return
         try:
             pid = int(p.processId())
         except Exception:
@@ -1730,8 +1740,9 @@ class FriendlyLauncher(QMainWindow):
         self.settings.env_text = self.env_editor.toPlainText()
         try:
             self.settings.save(config_file())
-        except Exception:
-            pass
+        except Exception as exc:
+            self._append_error(f"! Не удалось сохранить настройки: {type(exc).__name__}: {exc}")
+            self.statusBar().showMessage("Ошибка сохранения настроек Choice", 8000)
 
     def _open_config_file(self) -> None:
         p = config_file()
@@ -2215,7 +2226,8 @@ class FriendlyLauncher(QMainWindow):
         last = (self.settings.last_script_path or "").strip()
         if last:
             self._set_current_script(last)
-            self._highlight_script_in_list(last)
+            if not self._restoring_initial_state:
+                self._highlight_script_in_list(last)
         self._refresh_recent_list()
 
     def _run_system_checks(self) -> None:
