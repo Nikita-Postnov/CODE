@@ -7,6 +7,7 @@ from portable_paths import (
     convert_settings_paths,
     decode_path,
     encode_path,
+    locate_portable_python,
 )
 
 
@@ -47,6 +48,25 @@ class PortablePathsTests(unittest.TestCase):
     def test_rejects_portable_directory_traversal(self):
         path = f"{PORTABLE_ROOT}/../outside.txt"
         self.assertEqual(decode_path(path, self.root), path)
+
+    def test_locates_python_when_saved_path_no_longer_exists(self):
+        stale = str(self.base / "OLD" / "Launcher" / "Runtime" / "python.exe")
+        self.assertEqual(locate_portable_python(self.root, stale), str(self.python))
+
+    def test_falls_back_to_pythonw_when_python_exe_is_missing(self):
+        self.python.unlink()
+        alternative = self.root / "Runtime" / "pythonw.exe"
+        alternative.touch()
+        self.assertEqual(locate_portable_python(self.root, str(self.python)), str(alternative))
+
+    def test_preserves_explicit_existing_python(self):
+        outside = self.base / "external_python.exe"
+        outside.touch()
+        self.assertEqual(locate_portable_python(self.root, str(outside)), str(outside))
+
+    def test_reports_missing_runtime_without_inventing_an_executable(self):
+        self.python.unlink()
+        self.assertEqual(locate_portable_python(self.root, ""), "")
 
     def test_settings_round_trip(self):
         original = {
