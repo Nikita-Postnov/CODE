@@ -949,8 +949,10 @@ class FriendlyLauncher(QMainWindow):
 
     def _remove_home_card(self, script: str) -> None:
         cards = normalize_home_cards(self.settings.home_cards)
+        removing = str(Path(script).resolve(strict=False)).casefold()
         self.settings.home_cards = [
-            entry for entry in cards if entry["path"] != script
+            entry for entry in cards
+            if str(Path(entry["path"]).resolve(strict=False)).casefold() != removing
         ]
         self._refresh_home_cards()
         self._save_settings()
