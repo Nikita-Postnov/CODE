@@ -61,6 +61,29 @@ def decode_path(value: str, root: Path) -> str:
     return value
 
 
+
+def locate_portable_python(root: Path, configured: str = "") -> str:
+    configured = str(configured or "").strip().strip('"')
+    if configured and Path(configured).is_file():
+        return configured
+    root = Path(root)
+    for suffix in (
+        ("Runtime", "python.exe"),
+        ("Runtime", "pythonw.exe"),
+        ("Runtime", "Python", "python.exe"),
+        ("Runtime", "Python", "pythonw.exe"),
+        ("Runtime", "python", "python.exe"),
+        ("Runtime", "python", "pythonw.exe"),
+        ("python.exe",),
+        ("pythonw.exe",),
+    ):
+        candidate = root.joinpath(*suffix)
+        if candidate.is_file():
+            return str(candidate)
+    return configured
+
+
+
 def convert_settings_paths(data: dict[str, Any], root: Path, *, encode: bool) -> dict[str, Any]:
     convert = encode_path if encode else decode_path
     result = dict(data)
