@@ -6,6 +6,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QListWidgetItem
 from typing import Optional
 from portable_paths import convert_settings_paths, locate_portable_python
+from manual_cards import ManualCardsHome, normalize_home_cards
 import ast
 import json
 import os
@@ -150,6 +151,7 @@ class Settings:
     scan_subfolders: bool = False
     clear_output_on_start: bool = True
     favorites: list[str] | None = None
+    home_cards: list[dict[str, str]] | None = None
     autoscroll_output: bool = True
     show_errors_tab: bool = True
     per_script_workdir: dict[str, str] | None = None
@@ -191,6 +193,7 @@ class Settings:
             "scan_subfolders": self.scan_subfolders,
             "clear_output_on_start": self.clear_output_on_start,
             "favorites": self.favorites or [],
+            "home_cards": normalize_home_cards(self.home_cards),
             "autoscroll_output": self.autoscroll_output,
             "show_errors_tab": self.show_errors_tab,
             "per_script_workdir": self.per_script_workdir or {},
@@ -294,6 +297,7 @@ class FriendlyLauncher(QMainWindow):
         self._restore_previous()
         self._update_script_preview()
         self._restore_window_state()
+        self._refresh_home_cards()
         self.scripts_list.clearSelection()
         self.scripts_list.setCurrentRow(-1)
         self._restoring_initial_state = False
@@ -480,6 +484,7 @@ class FriendlyLauncher(QMainWindow):
                 break
         if removed:
             self._renumber_running_items()
+        self._refresh_home_cards()
 
     def _renumber_running_items(self) -> None:
         for i in range(self.running_list.count()):
@@ -636,9 +641,24 @@ class FriendlyLauncher(QMainWindow):
         central = QWidget(self)
         self.setCentralWidget(central)
         main_layout = QVBoxLayout(central)
-        splitter = QSplitter(Qt.Horizontal, self)
+        main_layout.setContentsMargins(4, 4, 4, 4)
+        self.main_pages = QTabWidget(self)
+        main_layout.addWidget(self.main_pages, 1)
+
+        self.cards_home = ManualCardsHome(self.main_pages)
+        self.cards_home.addRequested.connect(self._add_home_card)
+        self.cards_home.launchRequested.connect(self._launch_home_card)
+        self.cards_home.removeRequested.connect(self._remove_home_card)
+        self.main_pages.addTab(self.cards_home, "Главная")
+
+        manage_page = QWidget(self.main_pages)
+        manage_layout = QVBoxLayout(manage_page)
+        manage_layout.setContentsMargins(0, 0, 0, 0)
+        self.main_pages.addTab(manage_page, "Программы и процессы")
+
+        splitter = QSplitter(Qt.Horizontal, manage_page)
         self.splitter = splitter
-        main_layout.addWidget(splitter, 1)
+        manage_layout.addWidget(splitter, 1)
         left_panel = QWidget(self)
         left_layout = QVBoxLayout(left_panel)
         left_layout.setContentsMargins(8, 8, 8, 8)
@@ -883,6 +903,77 @@ class FriendlyLauncher(QMainWindow):
         splitter.setSizes([300, 400, 550])
         splitter.setChildrenCollapsible(False)
         splitter.setHandleWidth(7)
+
+    def _refresh_home_cards(self) -> None:
+        if not hasattr(self, "cards_home"):
+            return
+        active = {
+            str(info.get("script") or "")
+            for rid, info in self.proc_info.items()
+            if self.processes.get(rid) is not None
+            and self.processes[rid].state() != QProcess.NotRunning
+        }
+        self.cards_home.set_cards(
+            self.settings.home_cards,
+            running=active,
+            icons=self.settings.per_script_icon or {},
+        )
+
+    def _pin_home_card(self, script: str) -> None:
+        path = Path(script).resolve(strict=False)
+        if not path.is_file() or path.suffix.casefold() not in (".py", ".pyw"):
+            QMessageBox.warning(self, "Карточка", "Выбери существующий файл Python (.py или .pyw).")
+            return
+        cards = normalize_home_cards(self.settings.home_cards)
+        if any(entry["path"].casefold() == str(path).casefold() for entry in cards):
+            self.main_pages.setCurrentWidget(self.cards_home)
+            self.statusBar().showMessage("Карточка уже есть на главной", 3000)
+            return
+        cards.append({"path": str(path), "name": path.stem})
+        self.settings.home_cards = cards
+        self._refresh_home_cards()
+        self._save_settings()
+        self.main_pages.setCurrentWidget(self.cards_home)
+        self.statusBar().showMessage(f"Карточка добавлена: {path.stem}", 3000)
+
+    def _add_home_card(self) -> None:
+        root = Path(self.folder_field.text().strip() or app_folder())
+        if not root.is_dir():
+            root = app_folder()
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Добавить приложение на главную", str(root),
+            "Python-приложения (*.py *.pyw)",
+        )
+        if path:
+            self._pin_home_card(path)
+
+    def _remove_home_card(self, script: str) -> None:
+        cards = normalize_home_cards(self.settings.home_cards)
+        removing = str(Path(script).resolve(strict=False)).casefold()
+        self.settings.home_cards = [
+            entry for entry in cards
+            if str(Path(entry["path"]).resolve(strict=False)).casefold() != removing
+        ]
+        self._refresh_home_cards()
+        self._save_settings()
+        self.statusBar().showMessage("Карточка убрана. Сам файл не удалён.", 3500)
+
+    def _launch_home_card(self, script: str) -> None:
+        if not any(
+            entry["path"] == script for entry in normalize_home_cards(self.settings.home_cards)
+        ):
+            return
+        if not Path(script).is_file():
+            QMessageBox.warning(self, "Карточка", f"Файл не найден:\n{script}")
+            self._refresh_home_cards()
+            return
+        self._set_current_script(script)
+        self.args_field.setText((self.settings.per_script_args or {}).get(script, ""))
+        self.workdir_field.setText(
+            (self.settings.per_script_workdir or {}).get(script) or str(Path(script).parent)
+        )
+        self.run_script()
+        self._refresh_home_cards()
 
     def _run_first_visible_script(self) -> None:
         if self.scripts_list.count() <= 0:
@@ -1201,6 +1292,7 @@ class FriendlyLauncher(QMainWindow):
             pid = 0
         self._update_run_item_title(rid, pid)
         self._update_stop_enabled()
+        self._refresh_home_cards()
 
     def _run_autostart_scripts(self) -> None:
         scripts = [s for s in (self.settings.autostart_scripts or []) if (s or "").strip()]
@@ -1279,6 +1371,7 @@ class FriendlyLauncher(QMainWindow):
         menu = QMenu(self)
 
         a_run = menu.addAction("Запустить")
+        a_pin = menu.addAction("Добавить карточку на главную")
         a_copy_path = menu.addAction("Копировать путь")
         a_open_folder = menu.addAction("Открыть папку")
         menu.addSeparator()
@@ -1302,6 +1395,10 @@ class FriendlyLauncher(QMainWindow):
         if act == a_run:
             self._set_current_script(script)
             self.run_script()
+            return
+
+        if act == a_pin:
+            self._pin_home_card(script)
             return
 
         if act == a_toggle_autostart:
@@ -1606,6 +1703,7 @@ class FriendlyLauncher(QMainWindow):
             pid = 0
         self._update_run_item_title(rid, pid)
         self._update_stop_enabled()
+        self._refresh_home_cards()
         self.statusBar().showMessage("Процесс запущен", 3000)
         self._save_settings()
         self._refresh_recent_list()
