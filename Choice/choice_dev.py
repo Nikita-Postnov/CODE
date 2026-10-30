@@ -39,6 +39,7 @@ from PySide6.QtWidgets import (
     QSplitter,
     QTabWidget,
     QToolBar,
+    QToolButton,
     QStatusBar,
     QMessageBox,
     QSizePolicy,
@@ -222,6 +223,56 @@ class FriendlyLauncher(QMainWindow):
         self.proc_counter: int = 0
         self.all_scripts: list[Path] = []
         self.setWindowTitle(APP_TITLE)
+        self.setStyleSheet("""
+            QPushButton, QToolButton {
+                border: 1px solid #9CA7B7;
+                border-radius: 5px;
+                padding: 5px 9px;
+                background-color: #F3F6FA;
+                color: #1E293B;
+            }
+            QPushButton:hover, QToolButton:hover {
+                background-color: #E5EDFA;
+                border-color: #607B9E;
+            }
+            QPushButton:pressed, QToolButton:pressed {
+                background-color: #CFDDEE;
+            }
+            QPushButton:checked {
+                background-color: #E5EDFA;
+                border-color: #607B9E;
+            }
+            QPushButton:disabled {
+                color: #718096;
+                background-color: #E9ECF1;
+            }
+            QLineEdit, QPlainTextEdit {
+                color: #1B2430;
+                background-color: #FFFFFF;
+                border: 1px solid #AAB4C3;
+                border-radius: 4px;
+                padding: 4px;
+                selection-background-color: #B9D3F5;
+                selection-color: #1B2430;
+            }
+            QLineEdit:focus, QPlainTextEdit:focus {
+                border-color: #2C67C7;
+            }
+            QListWidget {
+                border: 1px solid #AAB4C3;
+                border-radius: 4px;
+                padding: 3px;
+            }
+            QListWidget::item {
+                padding: 4px 6px;
+            }
+            QSplitter::handle {
+                background-color: #C9D2DE;
+            }
+            QSplitter::handle:hover {
+                background-color: #7A96B8;
+            }
+        """)
         self.setMinimumSize(QSize(900, 610))
         self.resize(QSize(1250, 760))
         self._create_actions()
@@ -554,16 +605,26 @@ class FriendlyLauncher(QMainWindow):
         tb.addSeparator()
         tb.addAction(self.action_rescan)
         tb.addSeparator()
-        tb.addAction(self.action_check_env)
-        tb.addSeparator()
-        tb.addAction(self.action_open_in_editor)
-        tb.addAction(self.action_check_requirements)
-        tb.addSeparator()
-        tb.addAction(self.action_open_folder)
-        tb.addAction(self.action_open_config)
-        tb.addAction(self.action_configure_editor)
-        tb.addAction(self.action_clear_output)
-        tb.addAction(self.action_save_log)
+
+        tools_menu = QMenu("Инструменты", self)
+        for action in (
+            self.action_check_env,
+            self.action_check_requirements,
+            self.action_open_in_editor,
+            self.action_open_folder,
+            self.action_configure_editor,
+            self.action_open_config,
+            self.action_clear_output,
+            self.action_save_log,
+        ):
+            tools_menu.addAction(action)
+
+        self.tools_button = QToolButton(self)
+        self.tools_button.setText("Инструменты")
+        self.tools_button.setPopupMode(QToolButton.InstantPopup)
+        self.tools_button.setMenu(tools_menu)
+        self.tools_button.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        tb.addWidget(self.tools_button)
 
     def _create_main_ui(self) -> None:
         central = QWidget(self)
@@ -646,13 +707,10 @@ class FriendlyLauncher(QMainWindow):
         list_buttons_layout = QHBoxLayout(list_buttons)
         pick_btn = QPushButton("Выбрать файл")
         pick_btn.clicked.connect(self._pick_script_file)
-        refresh_btn = QPushButton("Обновить")
-        refresh_btn.clicked.connect(self._refresh_script_list)
         self.star_button = QPushButton("☆")
         self.star_button.setToolTip("Отметить/снять избранное")
         self.star_button.clicked.connect(self._toggle_favorite)
         list_buttons_layout.addWidget(pick_btn)
-        list_buttons_layout.addWidget(refresh_btn)
         list_buttons_layout.addStretch(1)
         list_buttons_layout.addWidget(self.star_button)
         selection_layout.addWidget(list_buttons)
@@ -694,7 +752,20 @@ class FriendlyLauncher(QMainWindow):
         self.env_editor.setPlainText(self.settings.env_text or "")
         self.env_editor.textChanged.connect(lambda: self._env_save_debounce.start(500))
         env_layout.addWidget(self.env_editor)
+        self.advanced_button = QPushButton("Дополнительно: переменные окружения  ▾")
+        self.advanced_button.setCheckable(True)
+        self.advanced_button.setChecked(False)
+        self.advanced_button.setToolTip("Показать или скрыть дополнительные параметры запуска")
+        self.advanced_button.toggled.connect(env_group.setVisible)
+        self.advanced_button.toggled.connect(
+            lambda expanded: self.advanced_button.setText(
+                "Дополнительно: переменные окружения  ▴" if expanded
+                else "Дополнительно: переменные окружения  ▾"
+            )
+        )
+        run_layout.addRow(self.advanced_button)
         run_layout.addRow(env_group)
+        env_group.setVisible(False)
         middle_layout.addWidget(run_box)
         self.script_info_label = QLabel()
         self.script_info_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
@@ -803,7 +874,9 @@ class FriendlyLauncher(QMainWindow):
         splitter.setStretchFactor(0, 1)
         splitter.setStretchFactor(1, 1)
         splitter.setStretchFactor(2, 3)
-        splitter.setSizes([320, 320, 760])
+        splitter.setSizes([300, 400, 550])
+        splitter.setChildrenCollapsible(False)
+        splitter.setHandleWidth(7)
 
     def _run_first_visible_script(self) -> None:
         if self.scripts_list.count() <= 0:
