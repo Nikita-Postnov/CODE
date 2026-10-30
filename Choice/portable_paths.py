@@ -106,6 +106,17 @@ def convert_settings_paths(data: dict[str, Any], root: Path, *, encode: bool) ->
             convert(value, root) if field in VALUE_PATH_FIELDS and isinstance(value, str) else value
             for key, value in mapping.items()
         }
+    cards = result.get("home_cards")
+    if isinstance(cards, list):
+        result["home_cards"] = [
+            {
+                **card,
+                "path": convert(card["path"], root),
+            }
+            if isinstance(card, dict) and isinstance(card.get("path"), str)
+            else card
+            for card in cards
+        ]
     entries = result.get("recent_runs")
     if isinstance(entries, list):
         result["recent_runs"] = [
