@@ -38,7 +38,7 @@ def encode_path(value: str, root: Path) -> str:
 
 def decode_path(value: str, root: Path) -> str:
     value = str(value or "")
-    root = root.resolve(strict=False)
+    root = Path(root).absolute()
     if value == PORTABLE_ROOT:
         return str(root)
     if value.startswith(PORTABLE_PREFIX):
