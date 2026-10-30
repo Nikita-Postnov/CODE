@@ -7,9 +7,9 @@ bring_widget_to_front, exit_app, translate_case_only, translate_layout_only)
 
 from PySide6.QtCore import QTimer, Qt
 from PySide6.QtGui import QAction, QIcon
-from PySide6.QtWidgets import QLabel, QMenu, QSystemTrayIcon, QWidget
+from PySide6.QtWidgets import QApplication, QLabel, QMenu, QStyle, QSystemTrayIcon, QWidget
 
-from ..config import TRAY_ICON_PATH, qt_path
+from ..config import ICON_PATH, TRAY_ICON_PATH, qt_path
 from ..utils import get_keyboard_module
 
 
@@ -25,7 +25,18 @@ class TrayMixin:
             self._tray_inited = True
             return
         try:
-            self.tray_icon = QSystemTrayIcon(QIcon(qt_path(TRAY_ICON_PATH)), self)
+            icon = QIcon(qt_path(TRAY_ICON_PATH))
+            if icon.isNull():
+                icon = QIcon(qt_path(ICON_PATH))
+            if icon.isNull():
+                app = QApplication.instance()
+                if app is not None:
+                    icon = app.windowIcon()
+                    if icon.isNull():
+                        icon = app.style().standardIcon(QStyle.SP_FileIcon)
+            self.tray_icon = QSystemTrayIcon(self)
+            if not icon.isNull():
+                self.tray_icon.setIcon(icon)
             self.tray_icon.activated.connect(self.on_tray_icon_activated)
             self.tray_icon.setToolTip("Мои Заметки")
             menu = QMenu()
@@ -39,7 +50,8 @@ class TrayMixin:
             # setContextMenu не забирает меню во владение: без ссылки его может
             # удалить сборщик мусора, и правый клик по значку перестанет работать.
             self._tray_menu = menu
-            self.tray_icon.setVisible(True)
+            if not self.tray_icon.icon().isNull():
+                self.tray_icon.setVisible(True)
         finally:
             self._tray_inited = True
 
