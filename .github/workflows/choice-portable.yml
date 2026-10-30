@@ -1,0 +1,34 @@
+name: Choice portable regression
+
+on:
+  push:
+    branches:
+      - improve/choice-portable-ui-20261030
+    paths:
+      - "Choice/choice_dev.py"
+      - "Choice/portable_paths.py"
+      - "Choice/test_portable_paths.py"
+      - ".github/workflows/choice-portable.yml"
+  pull_request:
+    paths:
+      - "Choice/choice_dev.py"
+      - "Choice/portable_paths.py"
+      - "Choice/test_portable_paths.py"
+      - ".github/workflows/choice-portable.yml"
+
+jobs:
+  portable:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: \${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Compile Choice source files
+        run: python -m compileall -q Choice/choice_dev.py Choice/portable_paths.py
+      - name: Test portable paths
+        run: python -m unittest discover -s Choice -p "test_portable_paths.py" -v
