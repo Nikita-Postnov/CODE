@@ -122,8 +122,11 @@ class ManualCardsTests(unittest.TestCase):
         ]
         home.resize(930, 650)
         home.set_cards(cards)
+        home.show()
+        QApplication.processEvents()
         wide = home._columns
         home.resize(420, 650)
+        QApplication.processEvents()
         narrow = home._columns
         self.assertGreater(wide, narrow)
         self.assertEqual(narrow, 1)
