@@ -5,7 +5,7 @@ from pathlib import Path
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QListWidgetItem
 from typing import Optional
-from portable_paths import convert_settings_paths
+from portable_paths import convert_settings_paths, locate_portable_python
 import ast
 import json
 import os
@@ -73,9 +73,12 @@ def split_command_line(s: str) -> list[str]:
     return shlex.split(s, posix=not running_on_windows())
 
 def detect_system_python() -> str:
-    if sys.executable:
+    portable = locate_portable_python(app_folder())
+    if portable:
+        return portable
+    if sys.executable and Path(sys.executable).is_file() and not getattr(sys, "frozen", False):
         return sys.executable
-    return "python.exe" if running_on_windows() else "python"
+    return str(app_folder() / "Runtime" / "python.exe") if running_on_windows() else "python3"
 
 def find_python_icon() -> Optional[str]:
     candidates = []
@@ -216,6 +219,9 @@ class FriendlyLauncher(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.settings = Settings.load(config_file())
+        self.settings.python_executable = locate_portable_python(
+            app_folder(), self.settings.python_executable
+        ) or detect_system_python()
         self._restoring_initial_state = True
         self.processes: dict[int, QProcess] = {}
         self.proc_start_time: dict[int, float] = {}
@@ -1125,9 +1131,9 @@ class FriendlyLauncher(QMainWindow):
             self._append_error(f"! Autostart: файл не найден: {script}")
             return
 
-        py = (self.python_field.text() or "").strip()
+        py = self._resolve_python_for_launch()
         if not py:
-            self._append_error("! Autostart: не указан интерпретатор Python.")
+            self._append_error("! Автозапуск: встроенный Python не найден в папке Runtime.")
             return
 
         if self._is_same_script_running(script):
@@ -1455,15 +1461,34 @@ class FriendlyLauncher(QMainWindow):
 
         return " ".join(shlex.quote(p) for p in parts)
 
+    def _resolve_python_for_launch(self) -> str:
+        configured = (self.python_field.text() or "").strip()
+        if configured.lower() in ("python", "python.exe", "pythonw", "pythonw.exe"):
+            if shutil.which(configured):
+                return configured
+        resolved = locate_portable_python(app_folder(), configured)
+        if resolved and Path(resolved).is_file():
+            if resolved != configured:
+                self.python_field.setText(resolved)
+                self._append_output(f"> Python: найден встроенный интерпретатор {resolved}")
+            return resolved
+        return ""
+
     def _validate_before_run(self) -> tuple[bool, str]:
-        py = (self.python_field.text() or "").strip()
+        py = self._resolve_python_for_launch()
         script = (self._current_script_path() or "").strip()
         if not script:
             return False, "Не выбран скрипт для запуска."
         if not Path(script).exists():
             return False, f"Скрипт не найден: {script}"
         if not py:
-            return False, "Не указан интерпретатор Python."
+            configured = (self.python_field.text() or "").strip()
+            return False, (
+                "Интерпретатор Python не найден."
+                + (f"\nСохранённый путь: {configured}" if configured else "")
+                + f"\n\nПроверьте, что в папке {app_folder() / 'Runtime'}"
+                  " находится python.exe или pythonw.exe."
+            )
         if py.lower() in ("python", "python.exe"):
             if not shutil.which(py):
                 return False, f"Python не найден в PATH: {py}"
