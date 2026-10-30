@@ -6,7 +6,7 @@ bring_widget_to_front, exit_app, translate_case_only, translate_layout_only)
 """
 
 from PySide6.QtCore import QTimer, Qt
-from PySide6.QtGui import QAction, QIcon
+from PySide6.QtGui import QAction, QIcon, QPixmap, QPainter, QColor, QPen, QImage
 from PySide6.QtWidgets import QApplication, QLabel, QMenu, QStyle, QSystemTrayIcon, QWidget
 
 from ..config import ICON_PATH, TRAY_ICON_PATH, qt_path
@@ -25,15 +25,42 @@ class TrayMixin:
             self._tray_inited = True
             return
         try:
-            icon = QIcon(qt_path(TRAY_ICON_PATH))
+            icon = QIcon()
+            for source in (TRAY_ICON_PATH, ICON_PATH):
+                if not source.is_file():
+                    continue
+                candidate = QIcon(qt_path(source))
+                if not candidate.isNull() and not candidate.pixmap(32, 32).isNull():
+                    icon = candidate
+                    break
+                try:
+                    from PIL import Image
+                    from io import BytesIO
+                    with Image.open(source) as image:
+                        image.seek(0)
+                        image = image.convert("RGBA")
+                        image.thumbnail((64, 64))
+                        raw = image.tobytes("raw", "RGBA")
+                        qt_image = QImage(raw, image.width, image.height,
+                                          image.width * 4, QImage.Format_RGBA8888).copy()
+                        icon = QIcon(QPixmap.fromImage(qt_image))
+                    if not icon.isNull():
+                        break
+                except (ImportError, OSError, ValueError):
+                    pass
             if icon.isNull():
-                icon = QIcon(qt_path(ICON_PATH))
-            if icon.isNull():
-                app = QApplication.instance()
-                if app is not None:
-                    icon = app.windowIcon()
-                    if icon.isNull():
-                        icon = app.style().standardIcon(QStyle.SP_FileIcon)
+                pixmap = QPixmap(32, 32)
+                pixmap.fill(Qt.transparent)
+                painter = QPainter(pixmap)
+                painter.setRenderHint(QPainter.Antialiasing)
+                painter.setPen(QPen(QColor("#2C67C7"), 2))
+                painter.setBrush(QColor("#FFFFFF"))
+                painter.drawRoundedRect(4, 2, 24, 28, 3, 3)
+                painter.drawLine(9, 12, 23, 12)
+                painter.drawLine(9, 17, 23, 17)
+                painter.drawLine(9, 22, 19, 22)
+                painter.end()
+                icon = QIcon(pixmap)
             self.tray_icon = QSystemTrayIcon(self)
             if not icon.isNull():
                 self.tray_icon.setIcon(icon)
