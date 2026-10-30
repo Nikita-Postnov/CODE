@@ -117,6 +117,8 @@ class ManualCardsHome(QWidget):
         return max(1, min(4, max(0, self.width() - 35) // 255))
 
     def _rebuild(self) -> None:
+        for column in range(4):
+            self.grid.setColumnStretch(column, 0)
         while self.grid.count():
             item = self.grid.takeAt(0)
             widget = item.widget()
