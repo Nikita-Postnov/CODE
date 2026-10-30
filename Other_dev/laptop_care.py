@@ -1471,6 +1471,12 @@ def merge_battery_points(report_hist: list[dict], own: list[dict]) -> list[tuple
 # ═══════════════════════════════════════════════════════════════════════════
 #  5. Монитор процессов
 # ═══════════════════════════════════════════════════════════════════════════
+def monitor_needs_process_details(
+        live_view: bool, journal_enabled: bool, reasons: list[str],
+        now: float, last_log: float) -> bool:
+    return live_view or (journal_enabled and bool(reasons) and now - last_log >= 30)
+
+
 class ProcMonitor(QObject):
     tick = Signal(object)
 
@@ -1479,7 +1485,14 @@ class ProcMonitor(QObject):
         self.settings = settings
         self.db_path = db_path
         self._stop = threading.Event()
+        self._live_details = threading.Event()
         self._thread: threading.Thread | None = None
+
+    def set_live_details(self, enabled: bool) -> None:
+        if enabled:
+            self._live_details.set()
+        else:
+            self._live_details.clear()
 
     @property
     def running(self) -> bool:
@@ -1512,6 +1525,7 @@ class ProcMonitor(QObject):
             prev_io: dict[int, int] = {}
             prev_disk = psutil.disk_io_counters()
             last_t, last_log = time.time(), 0.0
+            last_proc_t = last_t
             for p in psutil.process_iter(["cpu_percent"]):   # прогрев счётчиков CPU
                 pass
             while not self._stop.wait(max(2, int(self.settings["mon_interval_s"]))):
@@ -1527,25 +1541,6 @@ class ProcMonitor(QObject):
                         disk_rate = max(0, (disk.read_bytes + disk.write_bytes)
                                         - (prev_disk.read_bytes + prev_disk.write_bytes)) / span
                     prev_disk = disk
-                    procs, cur_io = [], {}
-                    for p in psutil.process_iter(["pid", "name", "cpu_percent", "memory_info", "io_counters"],
-                                                 ad_value=None):
-                        i = p.info
-                        if not i["pid"]:
-                            continue          # «Бездействие системы»
-                        io_rate = 0.0
-                        ioc = i["io_counters"]
-                        if ioc:
-                            tot = ioc.read_bytes + ioc.write_bytes
-                            cur_io[i["pid"]] = tot
-                            prev = prev_io.get(i["pid"])
-                            if prev is not None and tot >= prev:
-                                io_rate = (tot - prev) / span
-                        mi = i["memory_info"]
-                        procs.append((i["name"] or f"pid {i['pid']}", i["pid"],
-                                      (i["cpu_percent"] or 0.0) / ncpu, mi.rss if mi else 0, io_rate))
-                    prev_io = cur_io
-
                     reasons = []
                     if sys_cpu >= self.settings["mon_cpu"]:
                         reasons.append("cpu")
@@ -1553,8 +1548,39 @@ class ProcMonitor(QObject):
                         reasons.append("ram")
                     if disk_rate >= self.settings["mon_io_mb"] * MB:
                         reasons.append("disk")
+
+                    should_log = (
+                        bool(reasons) and self.settings["mon_enabled"] and now - last_log >= 30
+                    )
+                    procs = []
+                    if monitor_needs_process_details(
+                            self._live_details.is_set(), self.settings["mon_enabled"],
+                            reasons, now, last_log):
+                        proc_span = max(0.001, now - last_proc_t)
+                        last_proc_t = now
+                        cur_io = {}
+                        for p in psutil.process_iter(
+                                ["pid", "name", "cpu_percent", "memory_info", "io_counters"],
+                                ad_value=None):
+                            i = p.info
+                            if not i["pid"]:
+                                continue
+                            io_rate = 0.0
+                            ioc = i["io_counters"]
+                            if ioc:
+                                tot = ioc.read_bytes + ioc.write_bytes
+                                cur_io[i["pid"]] = tot
+                                prev = prev_io.get(i["pid"])
+                                if prev is not None and tot >= prev:
+                                    io_rate = (tot - prev) / proc_span
+                            mi = i["memory_info"]
+                            procs.append((i["name"] or f"pid {i['pid']}", i["pid"],
+                                          (i["cpu_percent"] or 0.0) / ncpu,
+                                          mi.rss if mi else 0, io_rate))
+                        prev_io = cur_io
+
                     logged = False
-                    if reasons and self.settings["mon_enabled"] and now - last_log >= 30:
+                    if should_log:
                         pick = {}
                         for x in sorted(procs, key=lambda x: x[2], reverse=True)[:5]:
                             pick[x[1]] = x
@@ -2838,7 +2864,12 @@ class ProcTab(QWidget):
 
     def showEvent(self, e) -> None:
         super().showEvent(e)
+        self.mon.set_live_details(True)
         self.load_history()
+
+    def hideEvent(self, e) -> None:
+        self.mon.set_live_details(False)
+        super().hideEvent(e)
 
     def on_tick(self, d: dict) -> None:
         col = BAD if d["reasons"] else ACCENT
