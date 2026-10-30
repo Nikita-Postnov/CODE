@@ -5,6 +5,8 @@ from pathlib import Path
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QListWidgetItem
 from typing import Optional
+from portable_paths import convert_settings_paths, locate_portable_python
+from manual_cards import ManualCardsHome, normalize_home_cards
 import ast
 import json
 import os
@@ -38,6 +40,7 @@ from PySide6.QtWidgets import (
     QSplitter,
     QTabWidget,
     QToolBar,
+    QToolButton,
     QStatusBar,
     QMessageBox,
     QSizePolicy,
@@ -50,9 +53,13 @@ APP_TITLE = "Choice"
 CONFIG_FILENAME = "launcher_config.json"
 
 def app_folder() -> Path:
+    base = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
     if getattr(sys, "frozen", False):
-        return Path(sys.executable).resolve().parent
-    return Path(__file__).resolve().parent
+        return base
+    for folder in (base, base.parent):
+        if (folder / "launcher_config.json").is_file() or (folder / "Runtime").is_dir() or (folder / "Choice.exe").is_file():
+            return folder
+    return base
 
 def config_file() -> Path:
     return app_folder() / CONFIG_FILENAME
@@ -67,9 +74,12 @@ def split_command_line(s: str) -> list[str]:
     return shlex.split(s, posix=not running_on_windows())
 
 def detect_system_python() -> str:
-    if sys.executable:
+    portable = locate_portable_python(app_folder())
+    if portable:
+        return portable
+    if sys.executable and Path(sys.executable).is_file() and not getattr(sys, "frozen", False):
         return sys.executable
-    return "python.exe" if running_on_windows() else "python"
+    return str(app_folder() / "Runtime" / "python.exe") if running_on_windows() else "python3"
 
 def find_python_icon() -> Optional[str]:
     candidates = []
@@ -141,6 +151,7 @@ class Settings:
     scan_subfolders: bool = False
     clear_output_on_start: bool = True
     favorites: list[str] | None = None
+    home_cards: list[dict[str, str]] | None = None
     autoscroll_output: bool = True
     show_errors_tab: bool = True
     per_script_workdir: dict[str, str] | None = None
@@ -155,17 +166,21 @@ class Settings:
 
     @staticmethod
     def load(path: Path) -> "Settings":
-        if not path.exists():
-            return Settings()
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-            s = Settings()
-            for k, v in data.items():
-                if hasattr(s, k):
-                    setattr(s, k, v)
-            return s
-        except Exception:
-            return Settings()
+        backup = path.with_suffix(path.suffix + ".bak")
+        for source in (path, backup):
+            try:
+                data = json.loads(source.read_text(encoding="utf-8"))
+                if not isinstance(data, dict):
+                    continue
+                data = convert_settings_paths(data, app_folder(), encode=False)
+                s = Settings()
+                for k, v in data.items():
+                    if hasattr(s, k):
+                        setattr(s, k, v)
+                return s
+            except (OSError, ValueError, TypeError):
+                continue
+        return Settings()
 
     def save(self, path: Path) -> None:
         data = {
@@ -178,6 +193,7 @@ class Settings:
             "scan_subfolders": self.scan_subfolders,
             "clear_output_on_start": self.clear_output_on_start,
             "favorites": self.favorites or [],
+            "home_cards": normalize_home_cards(self.home_cards),
             "autoscroll_output": self.autoscroll_output,
             "show_errors_tab": self.show_errors_tab,
             "per_script_workdir": self.per_script_workdir or {},
@@ -190,19 +206,84 @@ class Settings:
             "window_geometry_b64": self.window_geometry_b64,
             "splitter_state_b64": self.splitter_state_b64,
         }
-        path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        data = convert_settings_paths(data, app_folder(), encode=True)
+        temporary = path.with_suffix(path.suffix + ".tmp")
+        backup = path.with_suffix(path.suffix + ".bak")
+        temporary.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        if path.is_file():
+            try:
+                json.loads(path.read_text(encoding="utf-8"))
+                shutil.copy2(path, backup)
+            except (OSError, ValueError, TypeError):
+                pass
+        os.replace(temporary, path)
 
 class FriendlyLauncher(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.settings = Settings.load(config_file())
+        self.settings.python_executable = locate_portable_python(
+            app_folder(), self.settings.python_executable
+        ) or detect_system_python()
+        self._restoring_initial_state = True
         self.processes: dict[int, QProcess] = {}
         self.proc_start_time: dict[int, float] = {}
         self.proc_info: dict[int, dict] = {}
         self.proc_counter: int = 0
         self.all_scripts: list[Path] = []
         self.setWindowTitle(APP_TITLE)
-        self.setMinimumSize(QSize(1100, 700))
+        self.setStyleSheet("""
+            QPushButton, QToolButton {
+                border: 1px solid #9CA7B7;
+                border-radius: 5px;
+                padding: 5px 9px;
+                background-color: #F3F6FA;
+                color: #1E293B;
+            }
+            QPushButton:hover, QToolButton:hover {
+                background-color: #E5EDFA;
+                border-color: #607B9E;
+            }
+            QPushButton:pressed, QToolButton:pressed {
+                background-color: #CFDDEE;
+            }
+            QPushButton:checked {
+                background-color: #E5EDFA;
+                border-color: #607B9E;
+            }
+            QPushButton:disabled {
+                color: #718096;
+                background-color: #E9ECF1;
+            }
+            QLineEdit, QPlainTextEdit {
+                color: #1B2430;
+                background-color: #FFFFFF;
+                border: 1px solid #AAB4C3;
+                border-radius: 4px;
+                padding: 4px;
+                selection-background-color: #B9D3F5;
+                selection-color: #1B2430;
+            }
+            QLineEdit:focus, QPlainTextEdit:focus {
+                border-color: #2C67C7;
+            }
+            QListWidget {
+                border: 1px solid #AAB4C3;
+                border-radius: 4px;
+                padding: 3px;
+            }
+            QListWidget::item {
+                padding: 4px 6px;
+            }
+            QSplitter::handle {
+                background-color: #C9D2DE;
+            }
+            QSplitter::handle:hover {
+                background-color: #7A96B8;
+            }
+        """)
+        self.setMinimumSize(QSize(900, 610))
+        self.resize(QSize(1250, 760))
         self._create_actions()
         self._create_toolbar()
         self._create_main_ui()
@@ -216,14 +297,11 @@ class FriendlyLauncher(QMainWindow):
         self._restore_previous()
         self._update_script_preview()
         self._restore_window_state()
+        self._refresh_home_cards()
+        self.scripts_list.clearSelection()
+        self.scripts_list.setCurrentRow(-1)
+        self._restoring_initial_state = False
         self._run_autostart_scripts()
-
-    def _is_window_effectively_visible(self) -> bool:
-        if not self.isVisible():
-            return False
-        if self.isMinimized():
-            return False
-        return True
 
     def _sync_tray_menu(self) -> None:
         visible = self._is_window_effectively_visible()
@@ -406,6 +484,7 @@ class FriendlyLauncher(QMainWindow):
                 break
         if removed:
             self._renumber_running_items()
+        self._refresh_home_cards()
 
     def _renumber_running_items(self) -> None:
         for i in range(self.running_list.count()):
@@ -537,24 +616,49 @@ class FriendlyLauncher(QMainWindow):
         tb.addSeparator()
         tb.addAction(self.action_rescan)
         tb.addSeparator()
-        tb.addAction(self.action_check_env)
-        tb.addSeparator()
-        tb.addAction(self.action_open_in_editor)
-        tb.addAction(self.action_check_requirements)
-        tb.addSeparator()
-        tb.addAction(self.action_open_folder)
-        tb.addAction(self.action_open_config)
-        tb.addAction(self.action_configure_editor)
-        tb.addAction(self.action_clear_output)
-        tb.addAction(self.action_save_log)
+
+        tools_menu = QMenu("Инструменты", self)
+        for action in (
+            self.action_check_env,
+            self.action_check_requirements,
+            self.action_open_in_editor,
+            self.action_open_folder,
+            self.action_configure_editor,
+            self.action_open_config,
+            self.action_clear_output,
+            self.action_save_log,
+        ):
+            tools_menu.addAction(action)
+
+        self.tools_button = QToolButton(self)
+        self.tools_button.setText("Инструменты")
+        self.tools_button.setPopupMode(QToolButton.InstantPopup)
+        self.tools_button.setMenu(tools_menu)
+        self.tools_button.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        tb.addWidget(self.tools_button)
 
     def _create_main_ui(self) -> None:
         central = QWidget(self)
         self.setCentralWidget(central)
         main_layout = QVBoxLayout(central)
-        splitter = QSplitter(Qt.Horizontal, self)
+        main_layout.setContentsMargins(4, 4, 4, 4)
+        self.main_pages = QTabWidget(self)
+        main_layout.addWidget(self.main_pages, 1)
+
+        self.cards_home = ManualCardsHome(self.main_pages)
+        self.cards_home.addRequested.connect(self._add_home_card)
+        self.cards_home.launchRequested.connect(self._launch_home_card)
+        self.cards_home.removeRequested.connect(self._remove_home_card)
+        self.main_pages.addTab(self.cards_home, "Главная")
+
+        manage_page = QWidget(self.main_pages)
+        manage_layout = QVBoxLayout(manage_page)
+        manage_layout.setContentsMargins(0, 0, 0, 0)
+        self.main_pages.addTab(manage_page, "Программы и процессы")
+
+        splitter = QSplitter(Qt.Horizontal, manage_page)
         self.splitter = splitter
-        main_layout.addWidget(splitter, 1)
+        manage_layout.addWidget(splitter, 1)
         left_panel = QWidget(self)
         left_layout = QVBoxLayout(left_panel)
         left_layout.setContentsMargins(8, 8, 8, 8)
@@ -614,7 +718,7 @@ class FriendlyLauncher(QMainWindow):
         self.search_field.setClearButtonEnabled(True)
         self.search_field.textChanged.connect(self._apply_filters)
         self.search_field.returnPressed.connect(self._run_first_visible_script)
-        self.search_field.setMinimumWidth(220)
+        self.search_field.setMinimumWidth(0)
         self.search_field.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         search_block.addLayout(fav_row)
         search_block.addWidget(self.search_field)
@@ -629,13 +733,10 @@ class FriendlyLauncher(QMainWindow):
         list_buttons_layout = QHBoxLayout(list_buttons)
         pick_btn = QPushButton("Выбрать файл")
         pick_btn.clicked.connect(self._pick_script_file)
-        refresh_btn = QPushButton("Обновить")
-        refresh_btn.clicked.connect(self._refresh_script_list)
         self.star_button = QPushButton("☆")
         self.star_button.setToolTip("Отметить/снять избранное")
         self.star_button.clicked.connect(self._toggle_favorite)
         list_buttons_layout.addWidget(pick_btn)
-        list_buttons_layout.addWidget(refresh_btn)
         list_buttons_layout.addStretch(1)
         list_buttons_layout.addWidget(self.star_button)
         selection_layout.addWidget(list_buttons)
@@ -677,7 +778,20 @@ class FriendlyLauncher(QMainWindow):
         self.env_editor.setPlainText(self.settings.env_text or "")
         self.env_editor.textChanged.connect(lambda: self._env_save_debounce.start(500))
         env_layout.addWidget(self.env_editor)
+        self.advanced_button = QPushButton("Дополнительно: переменные окружения  ▾")
+        self.advanced_button.setCheckable(True)
+        self.advanced_button.setChecked(False)
+        self.advanced_button.setToolTip("Показать или скрыть дополнительные параметры запуска")
+        self.advanced_button.toggled.connect(env_group.setVisible)
+        self.advanced_button.toggled.connect(
+            lambda expanded: self.advanced_button.setText(
+                "Дополнительно: переменные окружения  ▴" if expanded
+                else "Дополнительно: переменные окружения  ▾"
+            )
+        )
+        run_layout.addRow(self.advanced_button)
         run_layout.addRow(env_group)
+        env_group.setVisible(False)
         middle_layout.addWidget(run_box)
         self.script_info_label = QLabel()
         self.script_info_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
@@ -770,7 +884,7 @@ class FriendlyLauncher(QMainWindow):
 
         self.stdin_field = QLineEdit()
         self.stdin_field.setPlaceholderText("Ввод для запущенного процесса (Enter — отправить)")
-        self.stdin_field.setMinimumWidth(520)
+        self.stdin_field.setMinimumWidth(0)
         self.stdin_field.returnPressed.connect(self._send_stdin_to_selected)
 
         bottom_layout.addWidget(buttons_row, 0, 0, 1, 1)
@@ -786,7 +900,80 @@ class FriendlyLauncher(QMainWindow):
         splitter.setStretchFactor(0, 1)
         splitter.setStretchFactor(1, 1)
         splitter.setStretchFactor(2, 3)
-        splitter.setSizes([320, 320, 760])
+        splitter.setSizes([300, 400, 550])
+        splitter.setChildrenCollapsible(False)
+        splitter.setHandleWidth(7)
+
+    def _refresh_home_cards(self) -> None:
+        if not hasattr(self, "cards_home"):
+            return
+        active = {
+            str(info.get("script") or "")
+            for rid, info in self.proc_info.items()
+            if self.processes.get(rid) is not None
+            and self.processes[rid].state() != QProcess.NotRunning
+        }
+        self.cards_home.set_cards(
+            self.settings.home_cards,
+            running=active,
+            icons=self.settings.per_script_icon or {},
+        )
+
+    def _pin_home_card(self, script: str) -> None:
+        path = Path(script).resolve(strict=False)
+        if not path.is_file() or path.suffix.casefold() not in (".py", ".pyw"):
+            QMessageBox.warning(self, "Карточка", "Выбери существующий файл Python (.py или .pyw).")
+            return
+        cards = normalize_home_cards(self.settings.home_cards)
+        if any(entry["path"].casefold() == str(path).casefold() for entry in cards):
+            self.main_pages.setCurrentWidget(self.cards_home)
+            self.statusBar().showMessage("Карточка уже есть на главной", 3000)
+            return
+        cards.append({"path": str(path), "name": path.stem})
+        self.settings.home_cards = cards
+        self._refresh_home_cards()
+        self._save_settings()
+        self.main_pages.setCurrentWidget(self.cards_home)
+        self.statusBar().showMessage(f"Карточка добавлена: {path.stem}", 3000)
+
+    def _add_home_card(self) -> None:
+        root = Path(self.folder_field.text().strip() or app_folder())
+        if not root.is_dir():
+            root = app_folder()
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Добавить приложение на главную", str(root),
+            "Python-приложения (*.py *.pyw)",
+        )
+        if path:
+            self._pin_home_card(path)
+
+    def _remove_home_card(self, script: str) -> None:
+        cards = normalize_home_cards(self.settings.home_cards)
+        removing = str(Path(script).resolve(strict=False)).casefold()
+        self.settings.home_cards = [
+            entry for entry in cards
+            if str(Path(entry["path"]).resolve(strict=False)).casefold() != removing
+        ]
+        self._refresh_home_cards()
+        self._save_settings()
+        self.statusBar().showMessage("Карточка убрана. Сам файл не удалён.", 3500)
+
+    def _launch_home_card(self, script: str) -> None:
+        if not any(
+            entry["path"] == script for entry in normalize_home_cards(self.settings.home_cards)
+        ):
+            return
+        if not Path(script).is_file():
+            QMessageBox.warning(self, "Карточка", f"Файл не найден:\n{script}")
+            self._refresh_home_cards()
+            return
+        self._set_current_script(script)
+        self.args_field.setText((self.settings.per_script_args or {}).get(script, ""))
+        self.workdir_field.setText(
+            (self.settings.per_script_workdir or {}).get(script) or str(Path(script).parent)
+        )
+        self.run_script()
+        self._refresh_home_cards()
 
     def _run_first_visible_script(self) -> None:
         if self.scripts_list.count() <= 0:
@@ -918,7 +1105,7 @@ class FriendlyLauncher(QMainWindow):
         finally:
             self.scripts_list.blockSignals(False)
 
-        if current:
+        if current and not self._restoring_initial_state:
             self._highlight_script_in_list(current)
 
         QTimer.singleShot(300, self._save_settings)
@@ -1035,9 +1222,9 @@ class FriendlyLauncher(QMainWindow):
             self._append_error(f"! Autostart: файл не найден: {script}")
             return
 
-        py = (self.python_field.text() or "").strip()
+        py = self._resolve_python_for_launch()
         if not py:
-            self._append_error("! Autostart: не указан интерпретатор Python.")
+            self._append_error("! Автозапуск: встроенный Python не найден в папке Runtime.")
             return
 
         if self._is_same_script_running(script):
@@ -1090,7 +1277,6 @@ class FriendlyLauncher(QMainWindow):
         item.setData(Qt.UserRole, rid)
         item.setToolTip(script)
         self.running_list.insertItem(0, item)
-        self.running_list.setCurrentItem(item)
         self._renumber_running_items()
 
         p.start(py, ["-u", script] + list(args))
@@ -1106,6 +1292,7 @@ class FriendlyLauncher(QMainWindow):
             pid = 0
         self._update_run_item_title(rid, pid)
         self._update_stop_enabled()
+        self._refresh_home_cards()
 
     def _run_autostart_scripts(self) -> None:
         scripts = [s for s in (self.settings.autostart_scripts or []) if (s or "").strip()]
@@ -1184,6 +1371,7 @@ class FriendlyLauncher(QMainWindow):
         menu = QMenu(self)
 
         a_run = menu.addAction("Запустить")
+        a_pin = menu.addAction("Добавить карточку на главную")
         a_copy_path = menu.addAction("Копировать путь")
         a_open_folder = menu.addAction("Открыть папку")
         menu.addSeparator()
@@ -1207,6 +1395,10 @@ class FriendlyLauncher(QMainWindow):
         if act == a_run:
             self._set_current_script(script)
             self.run_script()
+            return
+
+        if act == a_pin:
+            self._pin_home_card(script)
             return
 
         if act == a_toggle_autostart:
@@ -1366,15 +1558,34 @@ class FriendlyLauncher(QMainWindow):
 
         return " ".join(shlex.quote(p) for p in parts)
 
+    def _resolve_python_for_launch(self) -> str:
+        configured = (self.python_field.text() or "").strip()
+        if configured.lower() in ("python", "python.exe", "pythonw", "pythonw.exe"):
+            if shutil.which(configured):
+                return configured
+        resolved = locate_portable_python(app_folder(), configured)
+        if resolved and Path(resolved).is_file():
+            if resolved != configured:
+                self.python_field.setText(resolved)
+                self._append_output(f"> Python: найден встроенный интерпретатор {resolved}")
+            return resolved
+        return ""
+
     def _validate_before_run(self) -> tuple[bool, str]:
-        py = (self.python_field.text() or "").strip()
+        py = self._resolve_python_for_launch()
         script = (self._current_script_path() or "").strip()
         if not script:
             return False, "Не выбран скрипт для запуска."
         if not Path(script).exists():
             return False, f"Скрипт не найден: {script}"
         if not py:
-            return False, "Не указан интерпретатор Python."
+            configured = (self.python_field.text() or "").strip()
+            return False, (
+                "Интерпретатор Python не найден."
+                + (f"\nСохранённый путь: {configured}" if configured else "")
+                + f"\n\nПроверьте, что в папке {app_folder() / 'Runtime'}"
+                  " находится python.exe или pythonw.exe."
+            )
         if py.lower() in ("python", "python.exe"):
             if not shutil.which(py):
                 return False, f"Python не найден в PATH: {py}"
@@ -1486,18 +1697,13 @@ class FriendlyLauncher(QMainWindow):
             "py": py,
         })
         self.settings.recent_runs = self.settings.recent_runs[:30]
-        if not p.waitForStarted(3000):
-            err = p.errorString()
-            self._append_error(f"! Не удалось запустить процесс #{rid}. QProcess: {err}")
-            QMessageBox.critical(self, "Ошибка", f"Не удалось запустить процесс #{rid}.\n\nПричина: {err}")
-            self._remove_run_item(rid)
-            return
         try:
             pid = int(p.processId())
         except Exception:
             pid = 0
         self._update_run_item_title(rid, pid)
         self._update_stop_enabled()
+        self._refresh_home_cards()
         self.statusBar().showMessage("Процесс запущен", 3000)
         self._save_settings()
         self._refresh_recent_list()
@@ -1730,8 +1936,9 @@ class FriendlyLauncher(QMainWindow):
         self.settings.env_text = self.env_editor.toPlainText()
         try:
             self.settings.save(config_file())
-        except Exception:
-            pass
+        except Exception as exc:
+            self._append_error(f"! Не удалось сохранить настройки: {type(exc).__name__}: {exc}")
+            self.statusBar().showMessage("Ошибка сохранения настроек Choice", 8000)
 
     def _open_config_file(self) -> None:
         p = config_file()
@@ -2215,7 +2422,8 @@ class FriendlyLauncher(QMainWindow):
         last = (self.settings.last_script_path or "").strip()
         if last:
             self._set_current_script(last)
-            self._highlight_script_in_list(last)
+            if not self._restoring_initial_state:
+                self._highlight_script_in_list(last)
         self._refresh_recent_list()
 
     def _run_system_checks(self) -> None:
