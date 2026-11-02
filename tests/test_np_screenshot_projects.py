@@ -183,6 +183,35 @@ class ProjectTests(unittest.TestCase):
         ])
         self.assertFalse(editor.view.is_dirty())
 
+    def test_export_png_keeps_unsaved_project_dirty_and_ctrl_s_updates_project(self):
+        item = shot.EditableTextItem("Исходный текст", 16, QColor("#ee2233"))
+        self.view._scene.addItem(item)
+        project = self.folder / "edit_source.npshot"
+        self.assertTrue(shot.save_editable_project(project, self.view))
+        editor = shot.EditorWindow.from_project(project)
+        self.addCleanup(editor.close)
+        text_item = next(x for x in editor.view._scene.items()
+                         if isinstance(x, shot.EditableTextItem))
+        editor.view.push_undo()
+        text_item.text = "Текст после редактирования"
+        text_item.update()
+        png = self.folder / "export.png"
+        with patch.object(shot.QFileDialog, "getSaveFileName",
+                          return_value=(str(png), "PNG (*.png)")):
+            self.assertTrue(editor.save_as())
+        self.assertTrue(png.exists())
+        self.assertTrue(editor.view.is_dirty(),
+                        "PNG экспорт не должен помечать исходный .npshot сохранённым")
+        self.assertIn("*", editor.windowTitle())
+        old_snapshot = shot.load_editable_project(project)[2]
+        self.assertEqual(next(x["text"] for x in old_snapshot
+                              if x["type"] == "text"), "Исходный текст")
+        self.assertTrue(editor.save_quick())
+        self.assertFalse(editor.view.is_dirty())
+        saved_snapshot = shot.load_editable_project(project)[2]
+        self.assertEqual(next(x["text"] for x in saved_snapshot
+                              if x["type"] == "text"), "Текст после редактирования")
+
     def test_editor_corrupt_project_does_not_mutate_current(self):
         file = self.folder / "corrupt.npshot"
         file.write_bytes(b"x")
