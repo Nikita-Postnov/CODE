@@ -298,6 +298,74 @@ class RecoveryTests(unittest.TestCase):
         self.assertIn("Исправление раскладки: включено", report)
         self.assertIn("Слов в словаре: 1", report)
 
+    def test_conflicting_ctrl_insert_reports_real_fallback(self):
+        primary = (punto.MOD_CONTROL, punto.VK_INSERT)
+        fallback = (punto.MOD_ALT, punto.VK_INSERT)
+        definitions = [(punto._HK_CONVERT_BEFORE_CARET,
+                        [primary, fallback], "convert-before-caret")]
+        with patch.object(punto, "_register_hotkey_with_fallback", return_value=fallback):
+            self.assertEqual(punto._register_available_hotkeys(definitions),
+                             [punto._HK_CONVERT_BEFORE_CARET])
+        report = "\\n".join(punto._hotkey_diagnostic_lines())
+        self.assertIn("Ctrl+Ins", report)
+        self.assertIn("Alt+Ins", report)
+        self.assertIn("запасное сочетание", report)
+
+    def test_preferred_key_recovered_when_windows_releases_it(self):
+        logical = punto._HK_CONVERT_BEFORE_CARET
+        primary = (punto.MOD_CONTROL, punto.VK_INSERT)
+        fallback = (punto.MOD_ALT, punto.VK_INSERT)
+        bindings = {logical: (logical, fallback)}
+        with patch.object(punto, "_desired_hotkeys", {logical: primary}), \
+             patch.object(punto, "_active_hotkeys", bindings), \
+             patch.object(punto, "user32") as api:
+            api.RegisterHotKey.return_value = 1
+            api.UnregisterHotKey.return_value = 1
+            punto._retry_preferred_hotkeys()
+            new_id, new_combo = bindings[logical]
+        self.assertEqual(new_id, punto._HOTKEY_RECOVERY_ID_OFFSET + logical)
+        self.assertEqual(new_combo, primary)
+        api.RegisterHotKey.assert_called_once_with(
+            None, new_id, punto.MOD_CONTROL | punto.MOD_NOREPEAT, punto.VK_INSERT)
+        api.UnregisterHotKey.assert_called_once_with(None, logical)
+
+    def test_failed_preferred_retry_keeps_fallback_registered(self):
+        logical = punto._HK_CONVERT_BEFORE_CARET
+        primary = (punto.MOD_CONTROL, punto.VK_INSERT)
+        fallback = (punto.MOD_ALT, punto.VK_INSERT)
+        bindings = {logical: (logical, fallback)}
+        with patch.object(punto, "_desired_hotkeys", {logical: primary}), \
+             patch.object(punto, "_active_hotkeys", bindings), \
+             patch.object(punto, "user32") as api:
+            api.RegisterHotKey.return_value = 0
+            punto._retry_preferred_hotkeys()
+        self.assertEqual(bindings[logical], (logical, fallback))
+        api.UnregisterHotKey.assert_not_called()
+
+    def test_recovery_does_not_reregister_preferred_hotkey(self):
+        logical = punto._HK_CONVERT_BEFORE_CARET
+        primary = (punto.MOD_CONTROL, punto.VK_INSERT)
+        with patch.object(punto, "_desired_hotkeys", {logical: primary}), \
+             patch.object(punto, "_active_hotkeys", {logical: (102, primary)}), \
+             patch.object(punto, "user32") as api:
+            punto._retry_preferred_hotkeys()
+        api.RegisterHotKey.assert_not_called()
+        api.UnregisterHotKey.assert_not_called()
+
+    def test_unregister_failure_releases_temporary_and_keeps_fallback(self):
+        logical = punto._HK_CONVERT_BEFORE_CARET
+        primary = (punto.MOD_CONTROL, punto.VK_INSERT)
+        fallback = (punto.MOD_ALT, punto.VK_INSERT)
+        bindings = {logical: (logical, fallback)}
+        with patch.object(punto, "_desired_hotkeys", {logical: primary}), \
+             patch.object(punto, "_active_hotkeys", bindings), \
+             patch.object(punto, "user32") as api:
+            api.RegisterHotKey.return_value = 1
+            api.UnregisterHotKey.side_effect = [0, 1]
+            punto._retry_preferred_hotkeys()
+        self.assertEqual(bindings[logical], (logical, fallback))
+        self.assertEqual(api.UnregisterHotKey.call_count, 2)
+
     def test_language_indicator_default_shortcuts_do_not_overlap(self):
         forbidden = {(punto.MOD_CONTROL | punto.MOD_ALT, ord("Q")),
                      (punto.MOD_CONTROL | punto.MOD_ALT, ord("R"))}
