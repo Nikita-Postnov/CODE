@@ -1333,6 +1333,45 @@ class ResizableRectItem(QGraphicsItem, _HandleMixin):
         super().mouseReleaseEvent(e)
 
 
+
+class EditableTextItem(ResizableRectItem):
+    """Редактируемый и масштабируемый текстовый объект."""
+
+    def __init__(self, text: str, font_size: int, color: QColor):
+        self.text = text
+        self.font_size = font_size
+        self.text_color = QColor(color)
+        font = QFont()
+        font.setPointSize(font_size)
+        metrics = QFontMetrics(font)
+        width = max(30, metrics.horizontalAdvance(text) + 12)
+        height = max(28, metrics.height() + 12)
+        super().__init__(QRectF(0, 0, width, height), QPen(Qt.NoPen), Qt.NoBrush)
+
+    def paint(self, painter: QPainter, option, widget=None):
+        painter.setRenderHint(QPainter.TextAntialiasing, True)
+        font = QFont()
+        font.setPointSize(self.font_size)
+        painter.setFont(font)
+        painter.setPen(self.text_color)
+        painter.drawText(self._rect.adjusted(6, 2, -3, -2),
+                         Qt.AlignLeft | Qt.AlignVCenter | Qt.TextWordWrap, self.text)
+        if self._show_handles:
+            super().paint(painter, option, widget)
+
+    def rasterize_to(self, painter: QPainter):
+        painter.save()
+        painter.setRenderHint(QPainter.TextAntialiasing, True)
+        font = QFont()
+        font.setPointSize(self.font_size)
+        painter.setFont(font)
+        painter.setPen(self.text_color)
+        rect = self.mapRectToScene(self._rect.adjusted(6, 2, -3, -2))
+        painter.drawText(rect, Qt.AlignLeft | Qt.AlignVCenter | Qt.TextWordWrap, self.text)
+        painter.restore()
+
+
+
 class ResizableEllipseItem(ResizableRectItem):
     def paint(self, p: QPainter, opt, widget=None):
         p.setRenderHint(QPainter.Antialiasing, True)
@@ -1700,6 +1739,11 @@ class CanvasView(QGraphicsView):
                 float(it.zValue()),
             )
 
+        if isinstance(it, EditableTextItem):
+            return ("text", it.text, it.font_size, int(it.text_color.rgba()),
+                    float(it.pos().x()), float(it.pos().y()),
+                    float(it._rect.width()), float(it._rect.height()), float(it.zValue()))
+
         if isinstance(it, ResizableEllipseItem):
             return (
                 "ellipse",
@@ -1819,6 +1863,18 @@ class CanvasView(QGraphicsView):
                 })
                 continue
 
+            if isinstance(it, EditableTextItem):
+                out.append({
+                    "type": "text",
+                    "text": it.text, "font_size": int(it.font_size),
+                    "color": int(it.text_color.rgba()),
+                    "pos": (float(it.pos().x()), float(it.pos().y())),
+                    "rect": (float(it._rect.x()), float(it._rect.y()),
+                             float(it._rect.width()), float(it._rect.height())),
+                    "z": float(it.zValue()),
+                })
+                continue
+
             if isinstance(it, ResizableEllipseItem):
                 out.append({
                     "type": "ellipse",
@@ -1866,6 +1922,17 @@ class CanvasView(QGraphicsView):
 
         for d in snap:
             t = d.get("type")
+            if t == "text":
+                item = EditableTextItem(d["text"], int(d["font_size"]),
+                                        QColor.fromRgba(int(d["color"])))
+                x, y, w, h = d["rect"]
+                item._rect = QRectF(x, y, w, h)
+                px, py = d["pos"]
+                item.setPos(QPointF(px, py))
+                item.setZValue(d.get("z", 2.0))
+                self._scene.addItem(item)
+                item.setFlag(QGraphicsItem.ItemIsMovable, self.tool == Tool.PAN)
+                continue
             if t == "sticker":
                 pix = d["pix"] if isinstance(d["pix"], QPixmap) else QPixmap.fromImage(d["pix"])
                 item = StickerItem(pix, QSize(self.bg_img.width(), self.bg_img.height()))
@@ -2330,15 +2397,12 @@ class CanvasView(QGraphicsView):
                 text, ok = QInputDialog.getText(self, "Текст", "Введите текст:")
                 if ok and text:
                     self.push_undo()
-                    p = QPainter(self.ov_img)
-                    p.setRenderHint(QPainter.TextAntialiasing, True)
-                    font = QFont()
-                    font.setPointSize(max(8, int(self.thickness * 3)))
-                    p.setFont(font)
-                    p.setPen(QPen(self.color, 1))
-                    p.drawText(QPointF(img_pos), text)
-                    p.end()
-                    self._refresh()
+                    item = EditableTextItem(text, max(8, int(self.thickness * 3)),
+                                            self.color)
+                    item.setPos(QPointF(img_pos))
+                    item.setZValue(2)
+                    self._scene.addItem(item)
+                    self.viewport().update()
             elif self.tool == Tool.STEP:
                 self.push_undo()
                 radius = max(10, self.thickness * 4)
@@ -2786,6 +2850,25 @@ class CanvasView(QGraphicsView):
                 self.stickers.remove(it)
 
         self._refresh()
+
+    def edit_selected_text(self) -> bool:
+        items = [it for it in self._scene.selectedItems()
+                 if isinstance(it, EditableTextItem)]
+        if not items:
+            items = [it for it in self._active_shape_items()
+                     if isinstance(it, EditableTextItem)]
+        if not items:
+            return False
+        item = items[0]
+        text, ok = QInputDialog.getText(self, "Изменить текст", "Надпись:",
+                                        text=item.text)
+        if not ok or not text or text == item.text:
+            return False
+        self.push_undo()
+        item.text = text
+        item.update()
+        self.viewport().update()
+        return True
 
     def delete_selection(self) -> None:
         items = self._active_shape_items()
