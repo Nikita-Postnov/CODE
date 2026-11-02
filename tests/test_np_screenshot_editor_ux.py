@@ -134,6 +134,23 @@ class ObjectEditingTests(unittest.TestCase):
             color=QColor("#334455"), font_size=14))
         self.assertFalse(self.view.is_dirty())
 
+    def test_unchanged_properties_keep_redo_stack(self):
+        original = self.add_text()
+        self.view.push_undo()
+        original.text = "Изменение"
+        self.view.undo()
+        restored = next(obj for obj in self.view._resizable_items()
+                        if isinstance(obj, shot.EditableTextItem))
+        restored.setSelected(True)
+        self.assertEqual(len(self.view.redo_stack), 1)
+        self.assertFalse(self.view.apply_selected_properties(
+            color=QColor("#334455"), font_size=14))
+        self.assertEqual(len(self.view.redo_stack), 1)
+        self.view.redo()
+        after = next(obj for obj in self.view._resizable_items()
+                     if isinstance(obj, shot.EditableTextItem))
+        self.assertEqual(after.text, "Изменение")
+
     def test_object_clipboard_survives_project_round_trip(self):
         text = self.add_text("Редактируемый объект")
         self.assertTrue(self.view.copy_selected_objects())
@@ -177,6 +194,20 @@ class EditorToolbarTests(unittest.TestCase):
         self.assertIn("➤ Стрелка", names)
         self.assertIn("🅣 Текст", names)
         self.assertIn("💾 Сохранить", names)
+
+    def test_real_keyboard_shortcuts_move_selected_object(self):
+        rect = shot.ResizableRectItem(
+            QRectF(0, 0, 60, 30), QPen(QColor("#112233"), 2), Qt.NoBrush)
+        self.editor.view._scene.addItem(rect)
+        self.editor.view.set_tool(shot.Tool.PAN)
+        rect.setSelected(True)
+        self.editor.show()
+        self.editor.view.setFocus()
+        QTest.qWait(15)
+        QTest.keyClick(self.editor.view.viewport(), Qt.Key_Right)
+        self.assertEqual(rect.pos(), QPointF(1, 0))
+        QTest.keyClick(self.editor.view.viewport(), Qt.Key_Down, Qt.ShiftModifier)
+        self.assertEqual(rect.pos(), QPointF(1, 10))
 
     def test_regular_copy_without_selection_still_copies_flat_image(self):
         self.assertTrue(self.editor.copy_to_clipboard())
