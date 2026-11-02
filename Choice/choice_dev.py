@@ -6,6 +6,9 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QListWidgetItem
 from typing import Optional
 from portable_paths import convert_settings_paths, locate_portable_python
+from choice_features import ChoiceFeatures
+from choice_integration import heartbeat_file, supported_probe
+import uuid
 from manual_cards import ManualCardsHome, normalize_home_cards
 import ast
 import json
@@ -218,7 +221,7 @@ class Settings:
                 pass
         os.replace(temporary, path)
 
-class FriendlyLauncher(QMainWindow):
+class FriendlyLauncher(ChoiceFeatures, QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.settings = Settings.load(config_file())
@@ -302,6 +305,7 @@ class FriendlyLauncher(QMainWindow):
         self.scripts_list.setCurrentRow(-1)
         self._restoring_initial_state = False
         self._run_autostart_scripts()
+        self._start_choice_control()
 
     def _sync_tray_menu(self) -> None:
         visible = self._is_window_effectively_visible()
@@ -598,6 +602,12 @@ class FriendlyLauncher(QMainWindow):
         self.action_check_env = QAction("Проверить окружение", self)
         self.action_check_env.setShortcut(QKeySequence("Ctrl+D"))
         self.action_check_env.triggered.connect(self._run_system_checks)
+        self.action_health_report = QAction("Проверить работоспособность приложений", self)
+        self.action_health_report.triggered.connect(self._show_choice_health)
+        self.action_export_bundle = QAction("Экспортировать переносимые настройки…", self)
+        self.action_export_bundle.triggered.connect(self._export_choice_settings)
+        self.action_import_bundle = QAction("Импортировать переносимые настройки…", self)
+        self.action_import_bundle.triggered.connect(self._import_choice_settings)
         self.action_open_in_editor = QAction("Открыть в редакторе", self)
         self.action_open_in_editor.setShortcut(QKeySequence("Ctrl+Shift+O"))
         self.action_open_in_editor.triggered.connect(self._open_current_script_in_editor)
@@ -620,6 +630,9 @@ class FriendlyLauncher(QMainWindow):
         tools_menu = QMenu("Инструменты", self)
         for action in (
             self.action_check_env,
+            self.action_health_report,
+            self.action_export_bundle,
+            self.action_import_bundle,
             self.action_check_requirements,
             self.action_open_in_editor,
             self.action_open_folder,
@@ -1264,6 +1277,10 @@ class FriendlyLauncher(QMainWindow):
 
         env = QProcessEnvironment.systemEnvironment()
         env.insert("LAUNCHER_ROOT", str(app_folder()))
+        health_key = uuid.uuid4().hex if supported_probe(script) else ""
+        if health_key:
+            env.insert("CHOICE_HEALTH_FILE", str(heartbeat_file(app_folder(), script)))
+            env.insert("CHOICE_HEALTH_KEY", health_key)
         extra_env = self._parse_env_editor()
         for k, v in extra_env.items():
             env.insert(k, v)
@@ -1271,7 +1288,8 @@ class FriendlyLauncher(QMainWindow):
 
         self.processes[rid] = p
         self.proc_start_time[rid] = time.time()
-        self.proc_info[rid] = {"script": script, "py": py, "args": args, "workdir": workdir}
+        self.proc_info[rid] = {"script": script, "py": py, "args": args, "workdir": workdir,
+                               "health_key": health_key}
 
         item = QListWidgetItem(Path(script).name)
         item.setData(Qt.UserRole, rid)
@@ -1663,6 +1681,10 @@ class FriendlyLauncher(QMainWindow):
 
         env = QProcessEnvironment.systemEnvironment()
         env.insert("LAUNCHER_ROOT", str(app_folder()))
+        health_key = uuid.uuid4().hex if supported_probe(script) else ""
+        if health_key:
+            env.insert("CHOICE_HEALTH_FILE", str(heartbeat_file(app_folder(), script)))
+            env.insert("CHOICE_HEALTH_KEY", health_key)
         extra_env = self._parse_env_editor()
         for k, v in extra_env.items():
             env.insert(k, v)
@@ -1670,7 +1692,8 @@ class FriendlyLauncher(QMainWindow):
 
         self.processes[rid] = p
         self.proc_start_time[rid] = time.time()
-        self.proc_info[rid] = {"script": script, "py": py, "args": args, "workdir": workdir}
+        self.proc_info[rid] = {"script": script, "py": py, "args": args, "workdir": workdir,
+                               "health_key": health_key}
 
         item = QListWidgetItem(Path(script).name)
         item.setData(Qt.UserRole, rid)
