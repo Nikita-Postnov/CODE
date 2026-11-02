@@ -30,6 +30,7 @@ import json
 import logging
 import operator
 import os
+import shutil
 import struct
 import subprocess
 import sys
@@ -242,6 +243,7 @@ _TRAY_MENU_TOGGLE_DISABLED_HERE: Final[int] = 1005
 _TRAY_MENU_OPEN_DISABLED_LIST: Final[int] = 1006
 _TRAY_MENU_OPEN_SETTINGS: Final[int] = 1007
 _TRAY_MENU_OPEN_APP_SETTINGS: Final[int] = 1008
+_TRAY_MENU_OPEN_LAYOUT_WORDS: Final[int] = 1009
 
 _CLIPBOARD_POLL_TIMER_ID: Final[int] = 1  # только fallback, если listener не встал
 
@@ -602,6 +604,7 @@ class Settings:
     #           и автозакрытие скобок в IDE);
     # "type"  — набором через KEYEVENTF_UNICODE (буфер не трогается при замене).
     replace_method: ReplaceMethod = "paste"
+    auto_layout_correction: bool = False
 
 
 _HOTKEY_MOD_NAMES: Final[dict[str, int]] = {
@@ -686,6 +689,7 @@ def _settings_to_dict(settings: Settings) -> dict:
         "clipboard_history_max_items": settings.clipboard_history_max_items,
         "clipboard_history_max_total_mb": settings.clipboard_history_max_total_bytes // 1_000_000,
         "replace_method": settings.replace_method,
+        "auto_layout_correction": settings.auto_layout_correction,
     }
 
 
@@ -739,6 +743,10 @@ def _settings_from_dict(data: object) -> tuple[Settings, list[str]]:
         "clipboard_history_max_total_mb",
         defaults.clipboard_history_max_total_bytes // 1_000_000, 10, 4000, int,
     )
+    auto_layout = data.get("auto_layout_correction", False)
+    if not isinstance(auto_layout, bool):
+        warnings.append("settings: auto_layout_correction должен быть true/false")
+        auto_layout = False
     settings = Settings(
         hotkeys=Hotkeys(**hk_values),
         select_word_chord=chord,
@@ -750,6 +758,7 @@ def _settings_from_dict(data: object) -> tuple[Settings, list[str]]:
         ),
         clipboard_history_max_total_bytes=int(max_total_mb) * 1_000_000,
         replace_method=method,
+        auto_layout_correction=auto_layout,
     )
     return settings, warnings
 
@@ -801,27 +810,44 @@ _RULES_FILE_NAME: Final[str] = "punto_like_rules.json"
 _DICTIONARY_FILE_NAME: Final[str] = "punto_like_dictionary.txt"
 _DISABLED_APPS_FILE_NAME: Final[str] = "punto_like_disabled_apps.txt"
 _SETTINGS_FILE_NAME: Final[str] = "punto_like_settings.json"
+_LAYOUT_WORDS_FILE_NAME: Final[str] = "punto_like_layout_words.txt"
 
 DATA_DIR: Final[Path] = Path(__file__).resolve().parent / "Data"
 
 _rules_lock = threading.RLock()
 _rules_config: RulesConfig = RulesConfig()
 _settings: Settings = Settings()
+_layout_words: frozenset[str] = frozenset()
 
 
 def _ensure_data_dir() -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 def _atomic_write_text(path: Path, content: str) -> None:
-    """Атомарная запись текста: пишем в `.tmp`-сосед, потом `os.replace`.
-
-    Защищает от повреждения файла, если процесс убьют посередине записи.
-    На одной FS `os.replace` — атомарный rename, на Windows тоже.
-    """
+    """Атомарно сохраняет данные, резервируя последнюю корректную версию."""
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(content, encoding="utf-8")
-    os.replace(tmp, path)
+    backup = path.with_suffix(path.suffix + ".bak")
+    backup_tmp = backup.with_suffix(backup.suffix + ".tmp")
+    try:
+        with tmp.open("w", encoding="utf-8") as stream:
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+        if path.is_file():
+            valid = True
+            if path.suffix.lower() == ".json":
+                try:
+                    valid = isinstance(json.loads(path.read_text(encoding="utf-8")), dict)
+                except (OSError, UnicodeError, ValueError):
+                    valid = False
+            if valid:
+                shutil.copy2(path, backup_tmp)
+                os.replace(backup_tmp, backup)
+        os.replace(tmp, path)
+    finally:
+        tmp.unlink(missing_ok=True)
+        backup_tmp.unlink(missing_ok=True)
 
 def _rules_path() -> Path:
     return DATA_DIR / _RULES_FILE_NAME
@@ -836,25 +862,57 @@ def _settings_path() -> Path:
     return DATA_DIR / _SETTINGS_FILE_NAME
 
 
+def _layout_words_path() -> Path:
+    return DATA_DIR / _LAYOUT_WORDS_FILE_NAME
+
+
+def _load_layout_words() -> frozenset[str]:
+    path = _layout_words_path()
+    if not path.exists():
+        _atomic_write_text(path,
+            "# Слова для осторожного исправления раскладки. По одному слову на строку.\n"
+            "# Работает только при auto_layout_correction=true в настройках.\n"
+            "привет\nспасибо\nздравствуйте\nпожалуйста\n")
+    result: set[str] = set()
+    for line in path.read_text(encoding="utf-8").splitlines():
+        word = line.strip().lower()
+        if 4 <= len(word) <= 32 and word.isalpha():
+            result.add(word)
+    return frozenset(result)
+
+
+def _reload_layout_words() -> None:
+    global _layout_words
+    try:
+        _layout_words = _load_layout_words()
+    except (OSError, UnicodeError):
+        logging.warning("Не удалось обновить словарь раскладки", exc_info=True)
+
+
 def _load_settings() -> Settings:
     path = _settings_path()
+    for source in (path, path.with_suffix(path.suffix + ".bak")):
+        if not source.is_file():
+            continue
+        try:
+            data = json.loads(source.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                raise ValueError("Settings file must contain an object")
+            settings, warnings = _settings_from_dict(data)
+            if source != path:
+                logging.warning("Настройки восстановлены из копии %s", source)
+            for warning in warnings:
+                logging.warning(warning)
+            return settings
+        except (OSError, UnicodeError, ValueError, TypeError):
+            logging.warning("Не удалось прочитать настройки %s", source, exc_info=True)
+    settings = Settings()
     if not path.exists():
-        settings = Settings()
         try:
             _atomic_write_text(path, json.dumps(_settings_to_dict(settings), ensure_ascii=False, indent=2) + "\n")
-        except Exception:
-            logging.warning("Не удалось создать файл настроек %s", path, exc_info=True)
-        return settings
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        logging.warning("Файл настроек %s не читается — взяты значения по умолчанию", path, exc_info=True)
-        return Settings()
-    settings, warnings = _settings_from_dict(data)
-    for w in warnings:
-        logging.warning(w)
+        except OSError:
+            logging.warning("Не удалось создать настройки %s", path, exc_info=True)
     return settings
-
 
 def _load_dictionary() -> list[str]:
     """Загружает пользовательский словарь из Data/punto_like_dictionary.txt.
@@ -903,27 +961,34 @@ def _load_rules() -> RulesConfig:
     path = _rules_path()
     replace_rules: list[TextRule] = []
     if path.exists():
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-            replace_rules_raw = data.get("replace_rules", []) if isinstance(data, dict) else []
-            if isinstance(replace_rules_raw, list):
-                for it in replace_rules_raw:
-                    if not isinstance(it, dict):
-                        continue
-                    trigger = str(it.get("trigger", "")).strip()
-                    replacement = str(it.get("replacement", ""))
-                    is_enabled = bool(it.get("is_enabled", True))
-                    if trigger:
-                        replace_rules.append(TextRule(trigger=trigger, replacement=replacement, is_enabled=is_enabled))
-        except Exception:
-            logging.warning("Файл правил %s не читается", path, exc_info=True)
+        for source in (path, path.with_suffix(path.suffix + ".bak")):
+            if not source.is_file():
+                continue
+            try:
+                data = json.loads(source.read_text(encoding="utf-8"))
+                if not isinstance(data, dict):
+                    raise ValueError("Rules file must contain an object")
+                raw = data.get("replace_rules", [])
+                if isinstance(raw, list):
+                    for it in raw:
+                        if not isinstance(it, dict):
+                            continue
+                        trigger = str(it.get("trigger", "")).strip()
+                        if trigger:
+                            replace_rules.append(TextRule(
+                                trigger=trigger, replacement=str(it.get("replacement", "")),
+                                is_enabled=bool(it.get("is_enabled", True))))
+                if source != path:
+                    logging.warning("Правила восстановлены из копии %s", source)
+                break
+            except (OSError, ValueError, TypeError, UnicodeError):
+                logging.warning("Файл правил %s не читается", source, exc_info=True)
     else:
         try:
             _save_rules(RulesConfig())
-        except Exception:
+        except OSError:
             logging.debug("create empty rules file failed", exc_info=True)
-    block_triggers = _load_dictionary()
-    return RulesConfig(replace_rules=tuple(replace_rules), block_triggers=tuple(block_triggers))
+    return RulesConfig(replace_rules=tuple(replace_rules), block_triggers=tuple(_load_dictionary()))
 
 def _save_rules(cfg: RulesConfig) -> None:
     """Сохраняет правила автозамены в Data/punto_like_rules.json.
@@ -2373,6 +2438,16 @@ def _clipboard_set_format_bytes_from_open(fmt: int, data: bytes) -> None:
         kernel32.GlobalFree(h_mem)
         _raise_last_error("SetClipboardData failed")
 
+_clipboard_guard_local = threading.local()
+
+
+def _clipboard_mark_expected_sequence() -> None:
+    guard = getattr(_clipboard_guard_local, "current", None)
+    if guard is not None:
+        guard["expected"] = int(user32.GetClipboardSequenceNumber())
+        guard["modified"] = True
+
+
 def _clipboard_set_text(text: str, timings: Timings) -> None:
     _open_clipboard_with_retry(timings)
     try:
@@ -2381,12 +2456,15 @@ def _clipboard_set_text(text: str, timings: Timings) -> None:
         _clipboard_set_format_bytes_from_open(CF_UNICODETEXT, (text + "\0").encode("utf-16le"))
     finally:
         user32.CloseClipboard()
+    _clipboard_mark_expected_sequence()
 
 def _wait_for_new_clipboard_text(old_seq: int, timings: Timings) -> Optional[str]:
     deadline = time.monotonic() + timings.copy_poll_timeout_seconds
     while time.monotonic() < deadline:
         if int(user32.GetClipboardSequenceNumber()) != old_seq:
-            return _clipboard_get_text(timings)
+            text = _clipboard_get_text(timings)
+            _clipboard_mark_expected_sequence()
+            return text
         time.sleep(timings.copy_poll_interval_seconds)
     return None
 
@@ -2418,6 +2496,7 @@ _SNAPSHOT_SKIP_FORMAT_NAMES: Final[frozenset[str]] = frozenset({
 @dataclass(frozen=True)
 class ClipboardSnapshot:
     formats: tuple[tuple[int, bytes], ...] = ()
+    sequence: Optional[int] = None
 
     @property
     def total_bytes(self) -> int:
@@ -2440,6 +2519,39 @@ def _clipboard_format_name(fmt: int) -> str:
     n = user32.GetClipboardFormatNameW(fmt, buf, len(buf))
     return buf.value if n > 0 else ""
 
+class ClipboardSnapshotUnsafe(RuntimeError):
+    pass
+
+
+def _clipboard_snapshot_can_skip(fmt: int, name: str, present: frozenset[int]) -> bool:
+    if fmt in (CF_TEXT, CF_OEMTEXT) and CF_UNICODETEXT in present:
+        return True
+    if fmt == CF_BITMAP and (CF_DIB in present or CF_DIBV5 in present):
+        return True
+    return False
+
+
+def _clipboard_snapshot_validate_format(fmt: int, name: str, present: frozenset[int]) -> bool:
+    if _clipboard_snapshot_can_skip(fmt, name, present):
+        return False
+    if _snapshot_format_is_skipped(fmt, name, present):
+        raise ClipboardSnapshotUnsafe(
+            f"Небезопасно заменять буфер: непереносимый формат {fmt} ({name})")
+    return True
+
+
+def _clipboard_snapshot_require_deadline(deadline: float) -> None:
+    if time.monotonic() > deadline:
+        raise ClipboardSnapshotUnsafe("Превышен лимит времени сохранения буфера")
+
+
+def _clipboard_snapshot_require_data(fmt: int, data: bytes, total: int, limit: int) -> None:
+    if not data:
+        raise ClipboardSnapshotUnsafe(f"Пустой или недоступный формат {fmt}")
+    if total + len(data) > limit:
+        raise ClipboardSnapshotUnsafe("Снимок буфера превышает лимит памяти")
+
+
 def _clipboard_take_snapshot(timings: Timings) -> ClipboardSnapshot:
     _open_clipboard_with_retry(timings)
     try:
@@ -2452,60 +2564,88 @@ def _clipboard_take_snapshot(timings: Timings) -> ClipboardSnapshot:
             formats.append(fmt)
         present = frozenset(formats)
 
+        clipboard_sequence = int(user32.GetClipboardSequenceNumber())
         deadline = time.monotonic() + timings.clipboard_snapshot_deadline_seconds
         saved: list[tuple[int, bytes]] = []
         total = 0
         for index, fmt in enumerate(formats):
-            if _snapshot_format_is_skipped(fmt, _clipboard_format_name(fmt), present):
+            name = _clipboard_format_name(fmt)
+            if not _clipboard_snapshot_validate_format(fmt, name, present):
                 continue
-            if time.monotonic() > deadline:
-                logging.info("clipboard snapshot: дедлайн, не сохранено форматов: %d", len(formats) - index)
-                break
+            _clipboard_snapshot_require_deadline(deadline)
             try:
                 data = _clipboard_read_bytes_from_open(fmt)
-            except OSError:
-                logging.debug("clipboard snapshot: format %d unreadable", fmt, exc_info=True)
-                continue
-            if not data:
-                continue
-            if total + len(data) > timings.clipboard_snapshot_max_bytes:
-                logging.info("clipboard snapshot: формат %d (%d байт) не влез в бюджет", fmt, len(data))
-                continue
+            except OSError as exc:
+                raise ClipboardSnapshotUnsafe(f"Не удалось сохранить формат {fmt}") from exc
+            _clipboard_snapshot_require_data(fmt, data, total, timings.clipboard_snapshot_max_bytes)
             saved.append((fmt, data))
             total += len(data)
-        return ClipboardSnapshot(tuple(saved))
+        return ClipboardSnapshot(tuple(saved), clipboard_sequence)
     finally:
         user32.CloseClipboard()
 
-def _clipboard_restore_snapshot(snapshot: ClipboardSnapshot, timings: Timings) -> None:
-    """Возвращает буфер в состояние снапшота (пустой снапшот — пустой буфер)."""
-    _open_clipboard_with_retry(timings)
+def _clipboard_allocate_bytes(data: bytes) -> int:
+    h_mem = kernel32.GlobalAlloc(GMEM_MOVEABLE, len(data))
+    if not h_mem:
+        _raise_last_error("GlobalAlloc failed")
+    ptr = kernel32.GlobalLock(h_mem)
+    if not ptr:
+        kernel32.GlobalFree(h_mem)
+        _raise_last_error("GlobalLock failed")
     try:
-        if not user32.EmptyClipboard():
-            _raise_last_error("EmptyClipboard failed")
-        for fmt, data in snapshot.formats:
-            try:
-                _clipboard_set_format_bytes_from_open(fmt, data)
-            except OSError:
-                logging.debug("clipboard restore: format %d failed", fmt, exc_info=True)
+        ctypes.memmove(ptr, data, len(data))
     finally:
-        user32.CloseClipboard()
+        kernel32.GlobalUnlock(h_mem)
+    return int(h_mem)
+
+
+def _clipboard_restore_snapshot(snapshot: ClipboardSnapshot, timings: Timings,
+                                expected_seq: Optional[int] = None) -> bool:
+    """Восстанавливает только наш буфер; чужие новые копирования не трогает."""
+    if expected_seq is not None and int(user32.GetClipboardSequenceNumber()) != expected_seq:
+        return False
+    allocated: list[tuple[int, int]] = []
+    try:
+        for fmt, data in snapshot.formats:
+            allocated.append((fmt, _clipboard_allocate_bytes(data)))
+        _open_clipboard_with_retry(timings)
+        try:
+            if expected_seq is not None and int(user32.GetClipboardSequenceNumber()) != expected_seq:
+                return False
+            if not user32.EmptyClipboard():
+                _raise_last_error("EmptyClipboard failed")
+            for fmt, handle in allocated:
+                if not user32.SetClipboardData(fmt, handle):
+                    _raise_last_error("SetClipboardData failed in restore")
+                allocated = [(f, h) for f, h in allocated if h != handle]
+            return True
+        finally:
+            user32.CloseClipboard()
+    finally:
+        for _, handle in allocated:
+            kernel32.GlobalFree(handle)
+
 
 @contextmanager
-def _clipboard_guard(timings: Timings) -> Generator[Optional[ClipboardSnapshot], None, None]:
-    snapshot: Optional[ClipboardSnapshot] = None
-    try:
-        snapshot = _clipboard_take_snapshot(timings)
-    except OSError:
-        logging.debug("clipboard_guard: failed to take snapshot", exc_info=True)
+def _clipboard_guard(timings: Timings) -> Generator[ClipboardSnapshot, None, None]:
+    """При неполном снимке не выполняем операции и не уничтожаем чужие данные."""
+    snapshot = _clipboard_take_snapshot(timings)
+    current_sequence = int(user32.GetClipboardSequenceNumber())
+    if snapshot.sequence is not None and current_sequence != snapshot.sequence:
+        raise ClipboardSnapshotUnsafe("Буфер изменился во время подготовки снимка")
+    previous = getattr(_clipboard_guard_local, "current", None)
+    state = {"expected": current_sequence, "modified": False}
+    _clipboard_guard_local.current = state
     try:
         yield snapshot
     finally:
-        if snapshot is not None:
+        _clipboard_guard_local.current = previous
+        if state["modified"]:
             try:
-                _clipboard_restore_snapshot(snapshot, timings)
+                if not _clipboard_restore_snapshot(snapshot, timings, expected_seq=state["expected"]):
+                    logging.info("Буфер изменён другим приложением — восстановление отменено")
             except OSError:
-                logging.debug("clipboard_guard: failed to restore snapshot", exc_info=True)
+                logging.exception("Не удалось восстановить исходный буфер")
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Image / DIB helpers
@@ -3165,6 +3305,37 @@ def _prepare_clipboard_picker(target_hwnd: int) -> None:
 
 # ── Автозамена в Edit/RichEdit ────────────────────────────────────────────────
 
+def _candidate_layout_correction(raw: str, words: frozenset[str]) -> Optional[str]:
+    """Исправляем только известные слова, не меняем короткие/смешанные токены."""
+    if not (4 <= len(raw) <= 32 and raw.isalpha()):
+        return None
+    if raw.lower() in words:
+        return None
+    kind = {_layout_kind_for_char(char) for char in raw}
+    if kind not in ({"en"}, {"ru"}):
+        return None
+    converted = convert_keyboard_layout(raw)
+    if converted.lower() not in words or converted.lower() == raw.lower():
+        return None
+    return converted
+
+
+def _try_auto_layout_in_edit(hwnd: object, full_text: str, end: int, caret: int) -> bool:
+    if not _settings.auto_layout_correction or not _layout_words:
+        return False
+    start = end
+    while start > 0 and full_text[start - 1].isalpha() and end - start < 32:
+        start -= 1
+    raw = full_text[start:end]
+    corrected = _candidate_layout_correction(raw, _layout_words)
+    if corrected is None:
+        return False
+    if _replace_range_in_edit_safely(hwnd, start, end, raw, corrected, caret):
+        _switch_layout_toward_text(corrected)
+        return True
+    return False
+
+
 def _apply_rules_in_edit(hwnd: object, after_space: bool) -> None:
     """Применяет правила к тексту перед кареткой в стандартном Edit/RichEdit.
 
@@ -3189,12 +3360,14 @@ def _apply_rules_in_edit(hwnd: object, after_space: bool) -> None:
 
     cfg = _get_rules_snapshot()
     max_trigger_len = _compute_max_trigger_len(cfg)
-    if max_trigger_len <= 0:
-        return
-
     window_start = max(0, look_end - max_trigger_len)
-    match = _match_or_block(cfg, full_text[window_start:look_end], full_text, window_start)
-    if match is None or match is _BLOCK_SENTINEL:
+    match = (_match_or_block(cfg, full_text[window_start:look_end], full_text, window_start)
+             if max_trigger_len > 0 else None)
+    if match is _BLOCK_SENTINEL:
+        return
+    if match is None:
+        if after_space:
+            _try_auto_layout_in_edit(hwnd, full_text, look_end, caret)
         return
 
     replace_start = look_end - len(match.trigger)
@@ -3699,6 +3872,7 @@ def _show_tray_menu(hwnd: int) -> None:
     # Пользователь мог отредактировать файлы руками — перечитываем (дёшево).
     _run_guarded("reload disabled apps", _reload_disabled_apps)
     _run_guarded("reload dictionary", _reload_dictionary)
+    _run_guarded("reload layout words", _reload_layout_words)
 
     # Foreground сейчас уже Shell_TrayWnd — берём последнее реальное окно.
     origin_hwnd = _resolve_real_foreground_hwnd()
@@ -3716,6 +3890,7 @@ def _show_tray_menu(hwnd: int) -> None:
         add(_TRAY_MENU_OPEN_DICT, "Открыть словарь")
         add(_TRAY_MENU_OPEN_SETTINGS, "Настройки правил/словарь…")
         add(_TRAY_MENU_OPEN_APP_SETTINGS, "Открыть файл настроек (хоткеи, лимиты)")
+        add(_TRAY_MENU_OPEN_LAYOUT_WORDS, "Словарь исправления раскладки")
         add(0, None, MF_SEPARATOR)
         add(_TRAY_MENU_TOGGLE_ACTIVE_WINDOW, "Работать только в текущем окне",
             MF_STRING | (MF_CHECKED if _active_window_only else 0))
@@ -3748,6 +3923,8 @@ def _show_tray_menu(hwnd: int) -> None:
         _ui.call(_open_rules_editor_window)
     elif cmd == _TRAY_MENU_OPEN_APP_SETTINGS:
         _open_file_async(_settings_path(), _load_settings)
+    elif cmd == _TRAY_MENU_OPEN_LAYOUT_WORDS:
+        _open_file_async(_layout_words_path(), _load_layout_words)
     elif cmd == _TRAY_MENU_TOGGLE_ACTIVE_WINDOW:
         if not _active_window_only:
             _allowed_hwnd = origin_hwnd
@@ -3963,6 +4140,7 @@ _worker_stuck_warned: bool = False
 
 _space_keydown_blocked: bool = False
 _space_keydown_fg_hwnd: int = 0
+_keyboard_input_revision: int = 0
 
 # ── Аккорд Ctrl+Alt+Shift → выделить слово под кареткой ──────────────────────
 # Срабатывает на ОТПУСКАНИИ, если все три модификатора (любые — левые/правые)
@@ -4082,29 +4260,33 @@ def _on_space_up(fg_hwnd: int, fg_exe: str) -> None:
     blocked, down_fg = _space_keydown_blocked, _space_keydown_fg_hwnd
     _space_keydown_blocked = False
     _space_keydown_fg_hwnd = 0
-    if blocked:
-        return  # Shift+Space и т.п.
-    if down_fg and fg_hwnd and down_fg != fg_hwnd:
-        return  # между нажатием и отпусканием сменилось окно
+    if blocked or (down_fg and fg_hwnd and down_fg != fg_hwnd):
+        return
     if fg_exe in _MEDIA_PLAYER_EXES or fg_exe in _CONSOLE_EXES:
         return
     focus = _get_focused_control_hwnd()
-    if not _is_text_input_focus(focus):
+    if not _is_text_input_focus(focus) or _worker.busy:
         return
-    # Замену делает worker, а хук ждёт её с жёстким дедлайном: следующие нажатия
-    # пользователя придут уже после замены (как было при работе прямо в хуке),
-    # но сам хук никогда не висит дольше space_job_deadline_seconds.
-    _worker.run_sync(
-        "rules-after-space",
-        lambda f=focus: _apply_rules_in_edit(f, after_space=True),
-        _timings.space_job_deadline_seconds,
-    )
+    revision = _keyboard_input_revision
+
+    def apply_if_unchanged() -> None:
+        if _is_paused or revision != _keyboard_input_revision:
+            return
+        if _hwnd_value(user32.GetForegroundWindow()) != fg_hwnd:
+            return
+        if _get_focused_control_hwnd() != focus or not _is_text_input_focus(focus):
+            return
+        _apply_rules_in_edit(focus, after_space=True)
+
+    _worker.submit("rules-after-space", apply_if_unchanged)
 
 
 def _handle_keyboard_event(msg: int, l_param: int) -> None:
+    global _keyboard_input_revision
     kb = ctypes.cast(l_param, ctypes.POINTER(KBDLLHOOKSTRUCT)).contents
     if kb.dwExtraInfo == _INJECT_TAG:
         return  # наши собственные синтетические нажатия
+    _keyboard_input_revision += 1
     if _is_paused:
         return
 
@@ -4154,6 +4336,8 @@ def _mouse_hook_proc(n_code: int, w_param: int, l_param: int) -> int:
     _touch_hook_liveness()
     if n_code == HC_ACTION and int(w_param) in _MOUSE_BUTTON_DOWN_MESSAGES:
         try:
+            global _keyboard_input_revision
+            _keyboard_input_revision += 1
             _idle.cancel()
         except Exception:
             logging.debug("mouse hook callback error", exc_info=True)
@@ -4294,7 +4478,7 @@ def _hotkey_definitions(hk: Hotkeys) -> list[tuple[int, list[HotkeyCombo], str]]
         (_HK_EXIT, [hk.exit, (CA, VK_F12), (MOD_CONTROL, VK_F12), (MOD_ALT, VK_F12)], "exit"),
         (_HK_PAUSE, [hk.pause, (CA, VK_F11), (MOD_CONTROL, VK_F11), (MOD_ALT, VK_F11)], "pause"),
         (_HK_RULES_EDITOR, [hk.rules_editor, (CA, VK_F7), (MOD_CONTROL, VK_F7), (MOD_ALT, VK_F7)], "rules-editor"),
-        (_HK_UNDO, [hk.undo, (CA, VK_Z), (CA, VK_F6), (MOD_CONTROL, VK_Z)], "undo-last-change"),
+        (_HK_UNDO, [hk.undo, (CA, VK_Z), (CA, VK_F6), (CA, VK_F8)], "undo-last-change"),
         (_HK_TOGGLE_CASE, [hk.toggle_case, (MOD_ALT, VK_F9), (CA, VK_F9),
                            (MOD_CONTROL, VK_F8), (MOD_CONTROL, VK_F10)], "toggle-case"),
         (_HK_TOGGLE_CASE_BEFORE_CARET, [hk.toggle_case_before_caret, (MOD_CONTROL | MOD_SHIFT, VK_F9),
@@ -4378,6 +4562,7 @@ def run_app() -> None:
     _timings = Timings()
     _reload_rules()
     _reload_disabled_apps()
+    _reload_layout_words()
     _main_thread_id = int(kernel32.GetCurrentThreadId())
     _ensure_thread_message_queue()  # чтобы PostThreadMessageW из трея не потерялся
 
@@ -4572,7 +4757,8 @@ def _supervisor_entrypoint() -> int:
 # копией NP_Punto.exe (их делает make_portable.py в папке Runtime). Нет копии — работаем как есть.
 
 def _relaunch_under_own_exe(exe_name: str = "NP_Punto") -> None:
-    if sys.platform != "win32" or getattr(sys, "frozen", False):
+    if (sys.platform != "win32" or getattr(sys, "frozen", False)
+            or os.environ.get("CHOICE_PID")):
         return
     current = Path(sys.executable)
     if current.stem.lower() == exe_name.lower():
