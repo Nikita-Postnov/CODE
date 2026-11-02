@@ -201,7 +201,7 @@ class KeyboardTests(unittest.TestCase):
              patch.object(punto, "_is_password_edit", return_value=False), \
              patch.object(punto, "_get_class_name", return_value="RichEditD2DPT"), \
              patch.object(punto, "_edit_get_sel", return_value=(0, 6)), \
-             patch.object(punto, "_read_edit_full_text", return_value="ghbdtn"), \
+             patch.object(punto, "_read_edit_full_text", side_effect=["ghbdtn", "привет"]), \
              patch.object(punto, "_sendmsg_ok", return_value=True) as send, \
              patch.object(punto, "_transform_run_before_caret_in_edit", return_value=("привет", 0)), \
              patch.object(punto, "_transform_run_before_caret_via_clipboard") as fallback:
@@ -210,6 +210,57 @@ class KeyboardTests(unittest.TestCase):
         self.assertEqual(result, "привет")
         fallback.assert_not_called()
         self.assertEqual(send.call_count, 2)
+
+    def test_ctrl_insert_fake_native_success_retries_safely(self):
+        api = Mock()
+        api.GetForegroundWindow.return_value = 111
+        with patch.object(punto, "user32", api), \
+             patch.object(punto, "_get_focused_control_hwnd", return_value=222), \
+             patch.object(punto, "_is_password_edit", return_value=False), \
+             patch.object(punto, "_get_class_name", return_value="RichEditD2DPT"), \
+             patch.object(punto, "_edit_get_sel", return_value=(0, 6)), \
+             patch.object(punto, "_read_edit_full_text", return_value="ghbdtn"), \
+             patch.object(punto, "_sendmsg_ok", return_value=True), \
+             patch.object(punto, "_transform_run_before_caret_in_edit", return_value=("привет", 0)), \
+             patch.object(punto, "_transform_run_before_caret_via_clipboard", return_value="привет") as fallback:
+            result = punto._transform_run_before_caret(
+                punto.Timings(), punto.convert_keyboard_layout)
+        self.assertEqual(result, "привет")
+        fallback.assert_called_once_with(punto.Timings(), punto.convert_keyboard_layout)
+
+    def test_ctrl_f9_fake_native_success_retries_without_false_positive(self):
+        api = Mock()
+        api.GetForegroundWindow.return_value = 111
+        with patch.object(punto, "user32", api), \
+             patch.object(punto, "_get_focused_control_hwnd", return_value=222), \
+             patch.object(punto, "_is_password_edit", return_value=False), \
+             patch.object(punto, "_get_class_name", return_value="Edit"), \
+             patch.object(punto, "_edit_get_sel", return_value=(0, 3)), \
+             patch.object(punto, "_read_edit_full_text", return_value="abc"), \
+             patch.object(punto, "_sendmsg_ok", return_value=True), \
+             patch.object(punto, "_transform_run_before_caret_in_edit", return_value=("Abc", 0)), \
+             patch.object(punto, "_transform_run_before_caret_via_clipboard", return_value="Abc") as fallback:
+            result = punto._transform_run_before_caret(
+                punto.Timings(), punto.toggle_case_selected_fragment)
+        self.assertEqual(result, "Abc")
+        fallback.assert_called_once()
+
+    def test_ctrl_insert_never_retries_on_unexpected_external_edit(self):
+        api = Mock()
+        api.GetForegroundWindow.return_value = 111
+        with patch.object(punto, "user32", api), \
+             patch.object(punto, "_get_focused_control_hwnd", return_value=222), \
+             patch.object(punto, "_is_password_edit", return_value=False), \
+             patch.object(punto, "_get_class_name", return_value="Edit"), \
+             patch.object(punto, "_edit_get_sel", return_value=(0, 6)), \
+             patch.object(punto, "_read_edit_full_text", side_effect=["ghbdtn", "new unrelated text"]), \
+             patch.object(punto, "_sendmsg_ok", return_value=True), \
+             patch.object(punto, "_transform_run_before_caret_in_edit", return_value=("привет", 0)), \
+             patch.object(punto, "_transform_run_before_caret_via_clipboard") as fallback:
+            result = punto._transform_run_before_caret(
+                punto.Timings(), punto.convert_keyboard_layout)
+        self.assertIsNone(result)
+        fallback.assert_not_called()
 
     def test_ctrl_insert_falls_back_if_richedit_rejects_direct_replacement(self):
         api = Mock()
