@@ -342,6 +342,31 @@ class RecoveryTests(unittest.TestCase):
         self.assertEqual(bindings[logical], (logical, fallback))
         api.UnregisterHotKey.assert_not_called()
 
+    def test_recovered_winapi_id_dispatches_same_ctrl_insert_action(self):
+        logical = punto._HK_CONVERT_BEFORE_CARET
+        with patch.object(punto, "_desired_hotkeys", {
+            logical: (punto.MOD_CONTROL, punto.VK_INSERT),
+        }):
+            self.assertEqual(
+                punto._logical_hotkey_id(punto._HOTKEY_RECOVERY_ID_OFFSET + logical),
+                logical,
+            )
+            self.assertEqual(punto._logical_hotkey_id(logical), logical)
+
+    def test_unavailable_key_can_be_registered_later(self):
+        logical = punto._HK_CONVERT_BEFORE_CARET
+        primary = (punto.MOD_CONTROL, punto.VK_INSERT)
+        bindings = {}
+        with patch.object(punto, "_desired_hotkeys", {logical: primary}), \
+             patch.object(punto, "_active_hotkeys", bindings), \
+             patch.object(punto, "user32") as api:
+            api.RegisterHotKey.return_value = 1
+            punto._retry_preferred_hotkeys()
+        self.assertEqual(bindings[logical], (
+            punto._HOTKEY_RECOVERY_ID_OFFSET + logical, primary,
+        ))
+        api.UnregisterHotKey.assert_not_called()
+
     def test_recovery_does_not_reregister_preferred_hotkey(self):
         logical = punto._HK_CONVERT_BEFORE_CARET
         primary = (punto.MOD_CONTROL, punto.VK_INSERT)
