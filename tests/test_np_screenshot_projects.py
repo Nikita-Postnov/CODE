@@ -163,6 +163,26 @@ class ProjectTests(unittest.TestCase):
         self.assertEqual(len(editor.view._snapshot_scene()), 4)
         editor.close()
 
+    def test_ctrl_s_uses_editable_project_after_open_not_flat_png(self):
+        self.populate_shapes()
+        file = self.folder / "keep_vectors.npshot"
+        self.assertTrue(shot.save_editable_project(file, self.view))
+        editor = shot.EditorWindow.from_project(file)
+        self.addCleanup(editor.close)
+        new_text = next(it for it in editor.view._scene.items()
+                        if isinstance(it, shot.EditableTextItem))
+        new_text.text = "Новая версия проекта"
+        editor.view._set_dirty(True)
+        with patch.object(shot.QFileDialog, "getSaveFileName") as save_png:
+            self.assertTrue(editor.save_quick())
+        save_png.assert_not_called()
+        self.assertFalse((self.folder / "keep_vectors.png").exists())
+        self.assertIn("Новая версия проекта", [
+            obj["text"] for obj in shot.load_editable_project(file)[2]
+            if obj["type"] == "text"
+        ])
+        self.assertFalse(editor.view.is_dirty())
+
     def test_editor_corrupt_project_does_not_mutate_current(self):
         file = self.folder / "corrupt.npshot"
         file.write_bytes(b"x")
