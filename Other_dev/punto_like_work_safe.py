@@ -30,6 +30,7 @@ import json
 import logging
 import operator
 import os
+import shutil
 import struct
 import subprocess
 import sys
@@ -813,15 +814,30 @@ def _ensure_data_dir() -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 def _atomic_write_text(path: Path, content: str) -> None:
-    """Атомарная запись текста: пишем в `.tmp`-сосед, потом `os.replace`.
-
-    Защищает от повреждения файла, если процесс убьют посередине записи.
-    На одной FS `os.replace` — атомарный rename, на Windows тоже.
-    """
+    """Атомарно сохраняет данные, резервируя последнюю корректную версию."""
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(content, encoding="utf-8")
-    os.replace(tmp, path)
+    backup = path.with_suffix(path.suffix + ".bak")
+    backup_tmp = backup.with_suffix(backup.suffix + ".tmp")
+    try:
+        with tmp.open("w", encoding="utf-8") as stream:
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+        if path.is_file():
+            valid = True
+            if path.suffix.lower() == ".json":
+                try:
+                    valid = isinstance(json.loads(path.read_text(encoding="utf-8")), dict)
+                except (OSError, UnicodeError, ValueError):
+                    valid = False
+            if valid:
+                shutil.copy2(path, backup_tmp)
+                os.replace(backup_tmp, backup)
+        os.replace(tmp, path)
+    finally:
+        tmp.unlink(missing_ok=True)
+        backup_tmp.unlink(missing_ok=True)
 
 def _rules_path() -> Path:
     return DATA_DIR / _RULES_FILE_NAME
@@ -838,23 +854,28 @@ def _settings_path() -> Path:
 
 def _load_settings() -> Settings:
     path = _settings_path()
+    for source in (path, path.with_suffix(path.suffix + ".bak")):
+        if not source.is_file():
+            continue
+        try:
+            data = json.loads(source.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                raise ValueError("Settings file must contain an object")
+            settings, warnings = _settings_from_dict(data)
+            if source != path:
+                logging.warning("Настройки восстановлены из копии %s", source)
+            for warning in warnings:
+                logging.warning(warning)
+            return settings
+        except (OSError, UnicodeError, ValueError, TypeError):
+            logging.warning("Не удалось прочитать настройки %s", source, exc_info=True)
+    settings = Settings()
     if not path.exists():
-        settings = Settings()
         try:
             _atomic_write_text(path, json.dumps(_settings_to_dict(settings), ensure_ascii=False, indent=2) + "\n")
-        except Exception:
-            logging.warning("Не удалось создать файл настроек %s", path, exc_info=True)
-        return settings
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        logging.warning("Файл настроек %s не читается — взяты значения по умолчанию", path, exc_info=True)
-        return Settings()
-    settings, warnings = _settings_from_dict(data)
-    for w in warnings:
-        logging.warning(w)
+        except OSError:
+            logging.warning("Не удалось создать настройки %s", path, exc_info=True)
     return settings
-
 
 def _load_dictionary() -> list[str]:
     """Загружает пользовательский словарь из Data/punto_like_dictionary.txt.
@@ -903,27 +924,34 @@ def _load_rules() -> RulesConfig:
     path = _rules_path()
     replace_rules: list[TextRule] = []
     if path.exists():
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-            replace_rules_raw = data.get("replace_rules", []) if isinstance(data, dict) else []
-            if isinstance(replace_rules_raw, list):
-                for it in replace_rules_raw:
-                    if not isinstance(it, dict):
-                        continue
-                    trigger = str(it.get("trigger", "")).strip()
-                    replacement = str(it.get("replacement", ""))
-                    is_enabled = bool(it.get("is_enabled", True))
-                    if trigger:
-                        replace_rules.append(TextRule(trigger=trigger, replacement=replacement, is_enabled=is_enabled))
-        except Exception:
-            logging.warning("Файл правил %s не читается", path, exc_info=True)
+        for source in (path, path.with_suffix(path.suffix + ".bak")):
+            if not source.is_file():
+                continue
+            try:
+                data = json.loads(source.read_text(encoding="utf-8"))
+                if not isinstance(data, dict):
+                    raise ValueError("Rules file must contain an object")
+                raw = data.get("replace_rules", [])
+                if isinstance(raw, list):
+                    for it in raw:
+                        if not isinstance(it, dict):
+                            continue
+                        trigger = str(it.get("trigger", "")).strip()
+                        if trigger:
+                            replace_rules.append(TextRule(
+                                trigger=trigger, replacement=str(it.get("replacement", "")),
+                                is_enabled=bool(it.get("is_enabled", True))))
+                if source != path:
+                    logging.warning("Правила восстановлены из копии %s", source)
+                break
+            except (OSError, ValueError, TypeError, UnicodeError):
+                logging.warning("Файл правил %s не читается", source, exc_info=True)
     else:
         try:
             _save_rules(RulesConfig())
-        except Exception:
+        except OSError:
             logging.debug("create empty rules file failed", exc_info=True)
-    block_triggers = _load_dictionary()
-    return RulesConfig(replace_rules=tuple(replace_rules), block_triggers=tuple(block_triggers))
+    return RulesConfig(replace_rules=tuple(replace_rules), block_triggers=tuple(_load_dictionary()))
 
 def _save_rules(cfg: RulesConfig) -> None:
     """Сохраняет правила автозамены в Data/punto_like_rules.json.
@@ -4294,7 +4322,7 @@ def _hotkey_definitions(hk: Hotkeys) -> list[tuple[int, list[HotkeyCombo], str]]
         (_HK_EXIT, [hk.exit, (CA, VK_F12), (MOD_CONTROL, VK_F12), (MOD_ALT, VK_F12)], "exit"),
         (_HK_PAUSE, [hk.pause, (CA, VK_F11), (MOD_CONTROL, VK_F11), (MOD_ALT, VK_F11)], "pause"),
         (_HK_RULES_EDITOR, [hk.rules_editor, (CA, VK_F7), (MOD_CONTROL, VK_F7), (MOD_ALT, VK_F7)], "rules-editor"),
-        (_HK_UNDO, [hk.undo, (CA, VK_Z), (CA, VK_F6), (MOD_CONTROL, VK_Z)], "undo-last-change"),
+        (_HK_UNDO, [hk.undo, (CA, VK_Z), (CA, VK_F6), (CA, VK_F8)], "undo-last-change"),
         (_HK_TOGGLE_CASE, [hk.toggle_case, (MOD_ALT, VK_F9), (CA, VK_F9),
                            (MOD_CONTROL, VK_F8), (MOD_CONTROL, VK_F10)], "toggle-case"),
         (_HK_TOGGLE_CASE_BEFORE_CARET, [hk.toggle_case_before_caret, (MOD_CONTROL | MOD_SHIFT, VK_F9),
@@ -4572,7 +4600,8 @@ def _supervisor_entrypoint() -> int:
 # копией NP_Punto.exe (их делает make_portable.py в папке Runtime). Нет копии — работаем как есть.
 
 def _relaunch_under_own_exe(exe_name: str = "NP_Punto") -> None:
-    if sys.platform != "win32" or getattr(sys, "frozen", False):
+    if (sys.platform != "win32" or getattr(sys, "frozen", False)
+            or os.environ.get("CHOICE_PID")):
         return
     current = Path(sys.executable)
     if current.stem.lower() == exe_name.lower():
