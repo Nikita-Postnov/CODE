@@ -199,6 +199,7 @@ class KeyboardTests(unittest.TestCase):
         with patch.object(punto, "user32", api), \
              patch.object(punto, "_get_focused_control_hwnd", return_value=222), \
              patch.object(punto, "_is_password_edit", return_value=False), \
+             patch.object(punto, "_get_class_name", return_value="RichEditD2DPT"), \
              patch.object(punto, "_edit_get_sel", return_value=(0, 6)), \
              patch.object(punto, "_read_edit_full_text", return_value="ghbdtn"), \
              patch.object(punto, "_sendmsg_ok", return_value=True) as send, \
@@ -233,6 +234,7 @@ class KeyboardTests(unittest.TestCase):
         with patch.object(punto, "user32", api), \
              patch.object(punto, "_get_focused_control_hwnd", return_value=222), \
              patch.object(punto, "_is_password_edit", return_value=False), \
+             patch.object(punto, "_get_class_name", return_value="RichEditD2DPT"), \
              patch.object(punto, "_edit_get_sel", return_value=(0, 6)), \
              patch.object(punto, "_read_edit_full_text", return_value="123456"), \
              patch.object(punto, "_transform_run_before_caret_in_edit") as direct, \
