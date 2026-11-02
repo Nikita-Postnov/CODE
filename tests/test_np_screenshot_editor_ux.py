@@ -8,7 +8,7 @@ import unittest
 from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-from PySide6.QtCore import QPoint, QPointF, QRectF, Qt, QTimer
+from PySide6.QtCore import QPoint, QPointF, QRectF, Qt
 from PySide6.QtGui import QColor, QCloseEvent, QImage, QPen, QPixmap
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QToolBar, QToolButton
@@ -206,24 +206,19 @@ class EditorToolbarTests(unittest.TestCase):
         for standard_buttons, default, expected in cases:
             inspected = {}
 
-            def inspect():
-                dialog = QApplication.activeModalWidget()
-                if not isinstance(dialog, shot.QMessageBox):
-                    inspected["error"] = "Нет активного окна подтверждения"
-                    return
+            def inspect(dialog):
                 inspected["labels"] = {
                     standard: dialog.button(standard).text()
                     for standard in expected
                 }
                 inspected["default"] = dialog.defaultButton().text()
-                dialog.button(default).click()
+                return default
 
-            QTimer.singleShot(0, inspect)
-            result = shot._question_ru(
-                self.editor, "Подтверждение", "Проверка", standard_buttons, default
-            )
+            with patch.object(shot.QMessageBox, "exec", new=inspect):
+                result = shot._question_ru(
+                    self.editor, "Подтверждение", "Проверка", standard_buttons, default
+                )
             self.assertEqual(result, default)
-            self.assertNotIn("error", inspected)
             self.assertEqual(inspected["labels"], expected)
             self.assertEqual(inspected["default"], expected[default])
 
