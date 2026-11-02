@@ -3032,8 +3032,8 @@ class EditorWindow(QMainWindow):
         sb.addPermanentWidget(self._sb_right)
 
     def _on_dirty_changed(self, dirty: bool) -> None:
-        name = (self._last_save_path.name if self._last_save_path is not None else
-                self._last_project_path.name if self._last_project_path is not None
+        name = (self._last_project_path.name if self._last_project_path is not None else
+                self._last_save_path.name if self._last_save_path is not None
                 else "Без имени")
         mark = " *" if dirty else ""
         self.setWindowTitle(f"{name}{mark} — Screenshot Editor")
@@ -3142,6 +3142,8 @@ class EditorWindow(QMainWindow):
         return True
 
     def save_quick(self) -> bool:
+        if self._last_project_path is not None:
+            return self._save_project_to(self._last_project_path)
         if self._last_save_path is None:
             out = self.view.save_as(self, self._default_save_name())
             if out is None:
