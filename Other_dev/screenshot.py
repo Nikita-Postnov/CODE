@@ -2059,6 +2059,172 @@ class CanvasView(QGraphicsView):
                 selected.append(it)
         return selected
 
+    def copy_selected_objects(self) -> bool:
+        chosen = self.selected_objects()
+        if not chosen:
+            return False
+        records = []
+        try:
+            for item in self._snapshot_scene(chosen):
+                record = dict(item)
+                if record["type"] == "sticker":
+                    record["pix"] = base64.b64encode(
+                        _project_png_bytes(record["pix"].toImage())).decode("ascii")
+                records.append(record)
+            _validate_project_records(records)
+            raw = json.dumps(records, ensure_ascii=False, allow_nan=False).encode("utf-8")
+            if len(raw) > PROJECT_MAX_ARCHIVE_ENTRY_BYTES:
+                return False
+            mime = QMimeData()
+            mime.setData("application/x-np-screenshot-objects+json", raw)
+            QApplication.clipboard().setMimeData(mime, QClipboard.Clipboard)
+            self._paste_count = 0
+            return True
+        except (ValueError, RuntimeError, TypeError, OSError):
+            log.exception("Не удалось скопировать объекты скриншота")
+            return False
+
+    def paste_selected_objects(self) -> bool:
+        mime = QApplication.clipboard().mimeData(QClipboard.Clipboard)
+        if mime is None or not mime.hasFormat("application/x-np-screenshot-objects+json"):
+            return False
+        try:
+            raw = bytes(mime.data("application/x-np-screenshot-objects+json"))
+            if len(raw) > PROJECT_MAX_ARCHIVE_ENTRY_BYTES:
+                return False
+            records = _validate_project_records(json.loads(raw.decode("utf-8")))
+            pasted = []
+            for data in records:
+                rec = dict(data)
+                if rec["type"] == "sticker":
+                    png = base64.b64decode(rec["pix"], validate=True)
+                    if len(png) > PROJECT_MAX_ARCHIVE_ENTRY_BYTES:
+                        return False
+                    img = QImage.fromData(png, "PNG")
+                    if img.isNull() or img.width() * img.height() > PROJECT_MAX_IMAGE_PIXELS:
+                        return False
+                    rec["pix"] = QPixmap.fromImage(img)
+                pasted.append(rec)
+        except (ValueError, KeyError, RuntimeError, TypeError, UnicodeError,
+                base64.binascii.Error):
+            log.warning("Некорректные объекты в буфере обмена", exc_info=True)
+            return False
+        if not pasted or len(self._resizable_items()) + len(pasted) > PROJECT_MAX_SCENE_ITEMS:
+            return False
+        offset = 16 * (self._paste_count + 1)
+        for record in pasted:
+            px, py = record["pos"]
+            record["pos"] = (px + offset, py + offset)
+        self.push_undo()
+        self.set_tool(Tool.PAN)
+        existing = self._snapshot_scene()
+        self._restore_scene(existing + pasted)
+        self._paste_count += 1
+        objects = self._resizable_items()[:len(pasted)]
+        self._scene.clearSelection()
+        self._clear_all_handles()
+        for item in objects:
+            item.setSelected(True)
+            item._show_handles = True
+            item.update()
+        return True
+
+    def nudge_selected_objects(self, dx: float, dy: float) -> bool:
+        chosen = self.selected_objects()
+        if not chosen or (dx == 0 and dy == 0):
+            return False
+        self.push_undo()
+        for item in chosen:
+            item.setPos(item.pos() + QPointF(dx, dy))
+        self.viewport().update()
+        return True
+
+    @staticmethod
+    def _visible_object_rect(item: QGraphicsItem) -> QRectF:
+        if isinstance(item, ResizableArrowItem):
+            local = QRectF(item._a, item._b).normalized()
+        else:
+            local = item._rect
+        return item.mapRectToScene(local).boundingRect()
+
+    def align_selected_objects(self, mode: str) -> bool:
+        chosen = self.selected_objects()
+        if not chosen or mode not in (
+                "left", "right", "top", "bottom", "hcenter", "vcenter"):
+            return False
+        rects = [self._visible_object_rect(item) for item in chosen]
+        if len(rects) == 1:
+            target = QRectF(0, 0, self.bg_img.width(), self.bg_img.height())
+        else:
+            target = QRectF(rects[0])
+            for rect in rects[1:]:
+                target = target.united(rect)
+        offsets = []
+        for rect in rects:
+            if mode == "left":
+                delta = QPointF(target.left() - rect.left(), 0)
+            elif mode == "right":
+                delta = QPointF(target.right() - rect.right(), 0)
+            elif mode == "top":
+                delta = QPointF(0, target.top() - rect.top())
+            elif mode == "bottom":
+                delta = QPointF(0, target.bottom() - rect.bottom())
+            elif mode == "hcenter":
+                delta = QPointF(target.center().x() - rect.center().x(), 0)
+            else:
+                delta = QPointF(0, target.center().y() - rect.center().y())
+            offsets.append(delta)
+        if all(abs(d.x()) < 0.001 and abs(d.y()) < 0.001 for d in offsets):
+            return False
+        self.push_undo()
+        for item, delta in zip(chosen, offsets):
+            item.setPos(item.pos() + delta)
+        self.viewport().update()
+        return True
+
+    def apply_selected_properties(self, color: Optional[QColor] = None,
+                                  line_width: Optional[int] = None,
+                                  font_size: Optional[int] = None) -> bool:
+        chosen = self.selected_objects()
+        if len(chosen) != 1:
+            return False
+        item = chosen[0]
+        if (color is not None and not color.isValid() or
+                line_width is not None and not 1 <= line_width <= 200 or
+                font_size is not None and not 5 <= font_size <= 300):
+            return False
+        current = self._item_state(item)
+        if color is None and line_width is None and font_size is None:
+            return False
+        self.push_undo()
+        if isinstance(item, EditableTextItem):
+            if color is not None:
+                item.text_color = QColor(color)
+            if font_size is not None:
+                item.font_size = font_size
+        elif isinstance(item, ResizableArrowItem):
+            if color is not None:
+                item._color = QColor(color)
+            if line_width is not None:
+                item._width = line_width
+        elif isinstance(item, ResizableRectItem):
+            if color is not None:
+                if item._pen.style() != Qt.NoPen:
+                    item._pen.setColor(color)
+                if item._brush != Qt.NoBrush:
+                    fill = QColor(color)
+                    fill.setAlpha(QColor(item._brush).alpha())
+                    item._brush = fill
+            if line_width is not None and item._pen.style() != Qt.NoPen:
+                item._pen.setWidthF(line_width)
+        if self._item_state(item) == current:
+            self.undo_stack.pop()
+            self._set_dirty(bool(self.undo_stack))
+            return False
+        item.update()
+        self.viewport().update()
+        return True
+
     def _clear_all_handles(self):
         """Hide handles on every resizable item."""
         for it in self._resizable_items():
