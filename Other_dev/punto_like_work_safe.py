@@ -2530,6 +2530,27 @@ def _clipboard_snapshot_can_skip(fmt: int, name: str, present: frozenset[int]) -
     return False
 
 
+def _clipboard_snapshot_validate_format(fmt: int, name: str, present: frozenset[int]) -> bool:
+    if _clipboard_snapshot_can_skip(fmt, name, present):
+        return False
+    if _snapshot_format_is_skipped(fmt, name, present):
+        raise ClipboardSnapshotUnsafe(
+            f"Небезопасно заменять буфер: непереносимый формат {fmt} ({name})")
+    return True
+
+
+def _clipboard_snapshot_require_deadline(deadline: float) -> None:
+    if time.monotonic() > deadline:
+        raise ClipboardSnapshotUnsafe("Превышен лимит времени сохранения буфера")
+
+
+def _clipboard_snapshot_require_data(fmt: int, data: bytes, total: int, limit: int) -> None:
+    if not data:
+        raise ClipboardSnapshotUnsafe(f"Пустой или недоступный формат {fmt}")
+    if total + len(data) > limit:
+        raise ClipboardSnapshotUnsafe("Снимок буфера превышает лимит памяти")
+
+
 def _clipboard_take_snapshot(timings: Timings) -> ClipboardSnapshot:
     _open_clipboard_with_retry(timings)
     try:
@@ -2547,21 +2568,14 @@ def _clipboard_take_snapshot(timings: Timings) -> ClipboardSnapshot:
         total = 0
         for index, fmt in enumerate(formats):
             name = _clipboard_format_name(fmt)
-            if _clipboard_snapshot_can_skip(fmt, name, present):
+            if not _clipboard_snapshot_validate_format(fmt, name, present):
                 continue
-            if _snapshot_format_is_skipped(fmt, name, present):
-                raise ClipboardSnapshotUnsafe(
-                    f"Небезопасно заменять буфер: непереносимый формат {fmt} ({name})")
-            if time.monotonic() > deadline:
-                raise ClipboardSnapshotUnsafe("Превышен лимит времени сохранения буфера")
+            _clipboard_snapshot_require_deadline(deadline)
             try:
                 data = _clipboard_read_bytes_from_open(fmt)
             except OSError as exc:
                 raise ClipboardSnapshotUnsafe(f"Не удалось сохранить формат {fmt}") from exc
-            if not data:
-                raise ClipboardSnapshotUnsafe(f"Пустой или недоступный формат {fmt}")
-            if total + len(data) > timings.clipboard_snapshot_max_bytes:
-                raise ClipboardSnapshotUnsafe("Снимок буфера превышает лимит памяти")
+            _clipboard_snapshot_require_data(fmt, data, total, timings.clipboard_snapshot_max_bytes)
             saved.append((fmt, data))
             total += len(data)
         return ClipboardSnapshot(tuple(saved))
