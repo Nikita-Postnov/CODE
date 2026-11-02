@@ -164,7 +164,7 @@ class EditorToolbarTests(unittest.TestCase):
 
     def setUp(self):
         self.editor = shot.EditorWindow(example_image())
-        self.addCleanup(self.editor.close)
+        self.addCleanup(lambda: (self.editor.view.mark_clean(), self.editor.close()))
 
     def test_exactly_two_toolbar_rows_and_menus_keep_all_tools(self):
         self.assertEqual(len(self.editor.tb_rows), 2)
