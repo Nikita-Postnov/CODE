@@ -59,16 +59,18 @@ class NotePersistenceMixin:
             os.makedirs(NOTES_DIR, exist_ok=True)
         notes_by_id: dict[str, Note] = {}
         for entry in os.scandir(NOTES_DIR):
-            if not entry.is_dir():
+            if not entry.is_dir() or entry.name == "Trash":
                 continue
-            file_path = os.path.join(entry.path, "note.json")
-            if not os.path.exists(file_path):
+            note_folder = Path(entry.path)
+            data = NotePersistenceMixin._recover_note_payload(note_folder)
+            if not isinstance(data, dict):
                 continue
             try:
-                note = NotePersistenceMixin._load_note_from_path(file_path)
+                note = Note.from_dict(data)
+                note.content_txt = data.get("content_txt", "") or ""
+                notes_by_id[note.uuid] = note
             except Exception:
-                continue
-            notes_by_id[note.uuid] = note
+                logging.exception("Некорректные данные заметки: %s", note_folder)
         return list(notes_by_id.values())
 
     def save_note_to_specific_folder(self, note: "Note", folder: Path) -> None:
@@ -105,8 +107,29 @@ class NotePersistenceMixin:
             raise last_exc
 
     def _atomic_write_json(self, path: Path | str, payload: dict) -> None:
+        NotePersistenceMixin._atomic_write_json_static(path, payload)
+
+    @staticmethod
+    def _atomic_write_json_static(path: Path | str, payload: dict) -> None:
         data = json.dumps(payload, ensure_ascii=False, indent=4).encode("utf-8")
-        self._atomic_write_bytes(path, data)
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(f"{path.name}.{uuid.uuid4().hex}.tmp")
+        try:
+            with open(tmp, "wb") as handle:
+                handle.write(data)
+                handle.flush()
+                os.fsync(handle.fileno())
+            for attempt in range(15):
+                try:
+                    os.replace(tmp, path)
+                    return
+                except PermissionError:
+                    if attempt == 14:
+                        raise
+                    time.sleep(0.05)
+        finally:
+            tmp.unlink(missing_ok=True)
 
     def _rotate_backups(self, folder: Path | str, keep: int = 10) -> None:
         folder = self._as_path(folder)
@@ -127,14 +150,18 @@ class NotePersistenceMixin:
         except Exception:
             pass
 
-    def _load_note_json_with_recovery(self, note_folder: Path | str) -> dict | None:
-        folder = self._as_path(note_folder)
+    @staticmethod
+    def _recover_note_payload(note_folder: Path | str) -> dict | None:
+        folder = Path(note_folder)
         note_path = folder / "note.json"
         cache_path = folder / "note_cache.json"
 
         def _read_json(path: Path) -> dict:
             with open(path, "r", encoding="utf-8") as f:
-                return json.load(f)
+                payload = json.load(f)
+            if not isinstance(payload, dict) or not isinstance(payload.get("title"), str):
+                raise ValueError("Некорректная структура заметки")
+            return payload
 
         try:
             note_mtime = note_path.stat().st_mtime
@@ -153,7 +180,7 @@ class NotePersistenceMixin:
             data = _read_json(note_path)
             if note_mtime is not None:
                 try:
-                    self._atomic_write_json(cache_path, {"_note_mtime": note_mtime, "note": data})
+                    NotePersistenceMixin._atomic_write_json_static(cache_path, {"_note_mtime": note_mtime, "note": data})
                 except Exception:
                     pass
             return data
@@ -185,7 +212,12 @@ class NotePersistenceMixin:
             except Exception:
                 pass
 
+        if note_path.exists() or backups or cache_path.exists():
+            logging.error("Не удалось восстановить заметку из %s", folder)
         return None
+
+    def _load_note_json_with_recovery(self, note_folder: Path | str) -> dict | None:
+        return self._recover_note_payload(note_folder)
 
     def load_notes_from_disk(self) -> None:
         self.notes = []
@@ -232,7 +264,7 @@ class NotePersistenceMixin:
             return
         try:
             folder = note_path.parent
-            backup_name = f"note_backup_{int(time.time())}.json"
+            backup_name = f"note_backup_{time.time_ns()}_{uuid.uuid4().hex[:8]}.json"
             backup_path = folder / backup_name
             shutil.copy2(note_path, backup_path)
             self._rotate_backups(folder, keep=keep)
@@ -253,6 +285,13 @@ class NotePersistenceMixin:
     def _save_payload_to_folder(self, note_folder: Path, payload: dict, keep_backups: int = 10) -> Path:
         note_folder.mkdir(parents=True, exist_ok=True)
         note_path = note_folder / "note.json"
+        if note_path.exists():
+            try:
+                with open(note_path, "r", encoding="utf-8") as handle:
+                    if json.load(handle) == payload:
+                        return note_path
+            except (OSError, ValueError, TypeError):
+                pass
         self._make_backup_if_exists(note_path, keep=keep_backups)
         self._atomic_write_json(note_path, payload)
         self._write_note_cache_from_payload(note_path, payload)
