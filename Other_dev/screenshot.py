@@ -2197,6 +2197,7 @@ class CanvasView(QGraphicsView):
         if color is None and line_width is None and font_size is None:
             return False
         was_dirty = self.is_dirty()
+        previous_redo = list(self.redo_stack)
         self.push_undo()
         if isinstance(item, EditableTextItem):
             if color is not None:
@@ -2222,6 +2223,7 @@ class CanvasView(QGraphicsView):
                 item._pen.setWidthF(line_width)
         if self._item_state(item) == current:
             self.undo_stack.pop()
+            self.redo_stack = previous_redo
             self._set_dirty(was_dirty)
             return False
         item.update()
