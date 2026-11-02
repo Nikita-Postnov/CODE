@@ -3213,7 +3213,10 @@ def convert_before_caret_text(timings: Timings) -> None:
     """Ctrl+Ins: сменить раскладку фрагмента перед кареткой."""
     converted = _transform_run_before_caret(timings, convert_keyboard_layout)
     if converted is not None:
+        logging.info("Ctrl+Ins: converted before caret (length=%d)", len(converted))
         _switch_layout_toward_text(converted)
+    else:
+        logging.info("Ctrl+Ins: no text converted (caret/focus/clipboard/application restrictions)")
 
 
 def toggle_case_before_caret_text(timings: Timings) -> None:
@@ -4686,7 +4689,8 @@ def _on_hotkey(hotkey_id: int) -> bool:
         _worker.submit("convert-selected", lambda: convert_selected_text(timings))
     elif hotkey_id == _HK_CONVERT_BEFORE_CARET:
         _idle.cancel()
-        _worker.submit("convert-before-caret", lambda: convert_before_caret_text(timings))
+        if not _worker.submit("convert-before-caret", lambda: convert_before_caret_text(timings)):
+            logging.warning("Ctrl+Ins: worker queue full, action not accepted")
     elif hotkey_id == _HK_TOGGLE_CASE:
         _idle.cancel()
         _worker.submit("toggle-case", lambda: toggle_case_selected_text(timings))
@@ -4724,6 +4728,7 @@ def run_app() -> None:
     hotkey_defs = _hotkey_definitions(_settings.hotkeys)
     registered_ids: list[int] = []
     timer_id = 0
+    last_hotkey_retry = 0.0
     try:
         registered_ids = _register_available_hotkeys(hotkey_defs)
 
@@ -4770,9 +4775,25 @@ def run_app() -> None:
                     # Watchdog хуков — даже на паузе: хук должен оставаться живым.
                     _run_guarded("hook-watchdog", _watchdog_check_hooks)
                     _run_guarded("worker-watchdog", _watchdog_check_worker)
+                    now = time.monotonic()
+                    if now - last_hotkey_retry >= 10.0:
+                        last_hotkey_retry = now
+                        _run_guarded("hotkey-recovery", _retry_preferred_hotkeys)
                     continue
                 if msg.message == WM_HOTKEY:
-                    if not _on_hotkey(int(msg.wParam)):
+                    physical_id = int(msg.wParam)
+                    logical_id = physical_id - _HOTKEY_RECOVERY_ID_OFFSET if (
+                        physical_id >= _HOTKEY_RECOVERY_ID_OFFSET
+                    ) else physical_id
+                    active = _active_hotkeys.get(logical_id)
+                    if active is None or active[0] != physical_id:
+                        logging.debug("Ignored stale WM_HOTKEY id=%d", physical_id)
+                        continue
+                    _hotkey_hit_counts[logical_id] = _hotkey_hit_counts.get(logical_id, 0) + 1
+                    logging.info("Hotkey pressed: %s (%s), paused=%s",
+                                 _hotkey_names.get(logical_id, logical_id),
+                                 _format_hotkey(*active[1]), _is_paused)
+                    if not _on_hotkey(logical_id):
                         break
                     continue
 
@@ -4791,8 +4812,9 @@ def run_app() -> None:
         _run_guarded("stop worker", _worker.stop)
         _run_guarded("stop ui", _ui.stop)
         _run_guarded("stop tray", _stop_tray_thread)
-        for hk_id in registered_ids:
-            _run_guarded("UnregisterHotKey", lambda hk_id=hk_id: user32.UnregisterHotKey(None, hk_id))
+        for physical_id, combo in tuple(_active_hotkeys.values()):
+            _run_guarded("UnregisterHotKey", lambda hk_id=physical_id: user32.UnregisterHotKey(None, hk_id))
+        _active_hotkeys.clear()
         _run_guarded("CloseHandle(mutex)", lambda: kernel32.CloseHandle(mutex_handle))
 
 
