@@ -41,6 +41,7 @@ class TestNotesStorage(unittest.TestCase):
         namespace = {
             "Path": pathlib.Path, "json": json, "os": os, "time": time, "uuid": uuid,
             "shutil": shutil, "logging": __import__("logging"), "NotePersistenceMixin": self.cfg,
+            "qt_path": str,
         }
         funcs = compile_methods(APP / "persistence.py", [
             "_atomic_write_json_static", "_make_backup_if_exists", "_rotate_backups",
@@ -55,6 +56,7 @@ class TestNotesStorage(unittest.TestCase):
         self.worker._make_backup_if_exists = types.MethodType(funcs["_make_backup_if_exists"], self.worker)
         self.worker._rotate_backups = types.MethodType(funcs["_rotate_backups"], self.worker)
         self.worker._atomic_write_json = funcs["_atomic_write_json_static"]
+        self.worker._as_path = pathlib.Path
 
     def test_unique_backups_even_when_saved_in_same_second(self):
         folder = self.root / "a"
@@ -71,7 +73,7 @@ class TestNotesStorage(unittest.TestCase):
         payload = {"title": "important", "content": "abc"}
         save = types.MethodType(
             compile_methods(APP / "persistence.py", ["_save_payload_to_folder"],
-                            "NotePersistenceMixin", {})["_save_payload_to_folder"], self.worker)
+                            "NotePersistenceMixin", {"Path": pathlib.Path, "json": json})["_save_payload_to_folder"], self.worker)
         self.assertEqual(save(path, payload), path / "note.json")
         before = (path / "note.json").stat().st_mtime_ns
         self.assertEqual(save(path, payload), path / "note.json")
