@@ -92,6 +92,13 @@ class TestNotesStorage(unittest.TestCase):
         self.assertEqual(data["title"], "restored")
         self.assertEqual((folder / "note.json").read_text(), "{broken")
 
+    def test_wrong_json_type_does_not_hide_valid_backup(self):
+        folder = self.root / "d"
+        folder.mkdir()
+        (folder / "note.json").write_text('["not a note"]', encoding="utf-8")
+        (folder / "note_backup_123.json").write_text(json.dumps({"title": "recovered"}))
+        self.assertEqual(self.cfg._recover_note_payload(folder)["title"], "recovered")
+
 
 class TestReminders(unittest.TestCase):
     @classmethod
