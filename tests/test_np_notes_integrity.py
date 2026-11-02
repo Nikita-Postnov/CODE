@@ -134,6 +134,8 @@ class TestReminders(unittest.TestCase):
         f = self.f["next_reminder_datetime"]
         self.assertEqual(f(datetime(2028, 1, 31, 9), datetime(2028, 2, 1), "monthly"),
                          datetime(2028, 2, 29, 9))
+        self.assertEqual(f(datetime(2028, 2, 29, 9), datetime(2028, 2, 29, 10),
+                           "monthly", 31), datetime(2028, 3, 31, 9))
 
     def test_iso_legacy_dates(self):
         f = self.f["parse_reminder_datetime"]
