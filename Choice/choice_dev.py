@@ -224,6 +224,10 @@ class Settings:
 class FriendlyLauncher(ChoiceFeatures, QMainWindow):
     def __init__(self) -> None:
         super().__init__()
+        self._choice_root = app_folder()
+        self._choice_config = config_file()
+        self._choice_settings_type = Settings
+        self._choice_detect_python = detect_system_python
         self.settings = Settings.load(config_file())
         self.settings.python_executable = locate_portable_python(
             app_folder(), self.settings.python_executable
