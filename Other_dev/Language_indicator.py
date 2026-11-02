@@ -1,12 +1,16 @@
 
 from __future__ import annotations
 import ctypes
+import json
 import logging
+import os
+import re
+import shutil
 import subprocess
 import sys
 import time
 import traceback
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, fields, replace
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from ctypes import wintypes
@@ -31,6 +35,10 @@ if sys.platform != "win32":
 
 def _relaunch_under_own_exe(exe_name: str = "NP_LangIndicator") -> None:
     if sys.platform != "win32" or getattr(sys, "frozen", False):
+        return
+    # Choice уже умеет запускать NP_LangIndicator.exe и управляет этим
+    # процессом. Самовольный повторный запуск потерял бы связь с лаунчером.
+    if os.environ.get("CHOICE_PID"):
         return
     current = Path(sys.executable)
     if current.stem.lower() == exe_name.lower():
@@ -216,8 +224,8 @@ def release_single_instance_lock() -> None:
 
 try:
     from PyQt6.QtCore import QAbstractNativeEventFilter, QRect, QSize, Qt, QTimer
-    from PyQt6.QtGui import QAction, QColor, QCursor, QFont, QIcon, QPainter, QPixmap
-    from PyQt6.QtWidgets import QApplication, QLabel, QMenu, QSystemTrayIcon, QWidget
+    from PyQt6.QtGui import QAction, QActionGroup, QColor, QCursor, QFont, QIcon, QPainter, QPixmap
+    from PyQt6.QtWidgets import QApplication, QColorDialog, QLabel, QMenu, QSystemTrayIcon, QWidget
 except Exception as exc:
     logging.exception("PyQt6 import failed")
     show_message(
@@ -267,11 +275,14 @@ class AppConfig:
     popup_height: int = 100
     popup_font_size: int = 42
     popup_duration_ms: int = 700
+    popup_enabled: bool = True
+    popup_on_focus_change: bool = False
+    indicators_visible: bool = True
     popup_normal_alpha: int = 255
     popup_fullscreen_alpha: int = 255
 
     # Частота проверки раскладки.
-    update_interval_ms: int = 200
+    update_interval_ms: int = 100
 
     topmost_reinforce_interval_ms: int = 0
 
@@ -306,7 +317,126 @@ class AppConfig:
     tray_icon_padding_ratio: float = 0.06
 
 
-CONFIG = AppConfig()
+
+# Настройки хранятся рядом со скриптом, чтобы папка Launcher оставалась
+# переносимой при запуске с другого диска или флешки.
+CONFIG_FILE = DATA_DIR / "language_indicator_settings.json"
+_BOOL_SETTINGS = frozenset({
+    "taskbar_primary_only", "treat_maximized_as_fullscreen",
+    "popup_enabled", "popup_on_focus_change", "indicators_visible",
+})
+_COLOR_SETTINGS = frozenset({
+    "ru_text_color", "en_text_color", "unknown_text_color",
+    "ru_popup_bg", "en_popup_bg", "unknown_popup_bg",
+    "popup_text_color", "small_bg_color",
+    "tray_icon_bg_color", "tray_icon_border_color",
+})
+_INT_RANGES = {
+    "small_width": (25, 160), "small_height": (18, 80),
+    "small_right_offset": (0, 250), "small_bottom_offset": (0, 250),
+    "small_font_size": (8, 44),
+    "taskbar_gap_px": (0, 100),
+    "taskbar_fallback_offset_right": (0, 500),
+    "taskbar_fallback_height": (24, 120),
+    "normal_alpha": (0, 255), "fullscreen_alpha": (0, 255),
+    "popup_width": (80, 500), "popup_height": (50, 300),
+    "popup_font_size": (18, 120), "popup_duration_ms": (100, 6000),
+    "popup_normal_alpha": (0, 255), "popup_fullscreen_alpha": (0, 255),
+    "update_interval_ms": (50, 2000),
+    "topmost_reinforce_interval_ms": (0, 60000),
+    "fullscreen_tolerance_px": (0, 60),
+    "tray_icon_font_size": (8, 64),
+}
+_FLOAT_RANGES = {"tray_icon_padding_ratio": (0.0, 0.4)}
+
+
+def _read_config_dict(path: Path) -> dict:
+    data = json.loads(path.read_text(encoding="utf-8-sig"))
+    if not isinstance(data, dict):
+        raise ValueError("Ожидался JSON-объект с настройками")
+    return data
+
+
+def _parse_config(data: dict) -> AppConfig:
+    defaults = AppConfig()
+    allowed = {item.name for item in fields(AppConfig)}
+    parsed = {}
+    for key, value in data.items():
+        if key not in allowed:
+            logging.warning("Language Indicator: неизвестная настройка %s", key)
+            continue
+        valid = False
+        if key in _BOOL_SETTINGS:
+            valid = isinstance(value, bool)
+        elif key in _COLOR_SETTINGS:
+            valid = isinstance(value, str) and re.fullmatch(r"#[0-9a-fA-F]{6}", value) is not None
+        elif key in _INT_RANGES:
+            lo, hi = _INT_RANGES[key]
+            valid = type(value) is int and lo <= value <= hi
+        elif key in _FLOAT_RANGES:
+            lo, hi = _FLOAT_RANGES[key]
+            valid = type(value) in (float, int) and lo <= value <= hi
+        elif key == "placement_mode":
+            valid = value in ("taskbar", "corners")
+        elif key == "tray_title":
+            valid = isinstance(value, str) and 1 <= len(value) <= 60
+        if valid:
+            parsed[key] = value
+        else:
+            logging.warning("Language Indicator: недопустимое значение %s=%r, по умолчанию %r",
+                            key, value, getattr(defaults, key))
+    return replace(defaults, **parsed)
+
+
+def _save_config(config: AppConfig) -> bool:
+    """Атомарное сохранение: старая корректная версия в .bak."""
+    tmp = CONFIG_FILE.with_suffix(".json.tmp")
+    backup = CONFIG_FILE.with_suffix(".json.bak")
+    try:
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        with tmp.open("w", encoding="utf-8", newline="\n") as fh:
+            json.dump(asdict(config), fh, indent=2, ensure_ascii=False)
+            fh.write("\n")
+            fh.flush()
+            os.fsync(fh.fileno())
+        if CONFIG_FILE.is_file():
+            try:
+                _read_config_dict(CONFIG_FILE)
+                shutil.copy2(CONFIG_FILE, backup)
+            except (ValueError, OSError, UnicodeError):
+                logging.warning("Language Indicator: некорректные текущие настройки не сохранены как резервные")
+        os.replace(tmp, CONFIG_FILE)
+        return True
+    except (OSError, TypeError, ValueError):
+        logging.exception("Language Indicator: не удалось сохранить настройки %s", CONFIG_FILE)
+        return False
+    finally:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def _load_config() -> AppConfig:
+    backup = CONFIG_FILE.with_suffix(".json.bak")
+    for path in (CONFIG_FILE, backup):
+        if not path.is_file():
+            continue
+        try:
+            parsed = _parse_config(_read_config_dict(path))
+            if path == backup:
+                logging.warning("Language Indicator: настройки восстановлены из %s", backup)
+            logging.info("Language Indicator: настройки загружены из %s", path)
+            return parsed
+        except (ValueError, OSError, UnicodeError, TypeError):
+            logging.exception("Language Indicator: не удалось прочитать настройки %s", path)
+    defaults = AppConfig()
+    if not CONFIG_FILE.exists():
+        _save_config(defaults)
+    return defaults
+
+
+CONFIG = _load_config()
 
 
 # ============================================================
@@ -631,14 +761,15 @@ def lang_code_from_langid(lang_id: int) -> str:
     return code
 
 
-def get_active_keyboard_lang() -> str:
+def get_active_keyboard_lang(hwnd: int | None = None) -> str:
     """
     Возвращает текущую раскладку активного окна.
 
     RU — русский, EN — любой английский primary language, не только US/UK.
     Для остальных языков — ISO-код (UK, DE…), если Windows его не знает — HEX.
     """
-    hwnd = get_foreground_hwnd()
+    if hwnd is None:
+        hwnd = get_foreground_hwnd()
     if not hwnd:
         return ""
 
@@ -1354,8 +1485,12 @@ class LanguageIndicatorApp:
         self.popup = PopupIndicator()
         self.last_lang = ""
         self.current_tray_lang = ""
-        self.is_visible = True
+        self.is_visible = CONFIG.indicators_visible
         self._update_tick = 0
+        self._last_foreground_hwnd = 0
+        self._last_geometry_refresh_time = 0.0
+        self._last_layout_warning_time = 0.0
+        self._cached_fullscreen_screen = None
         self._all_targets: list[ScreenTarget] = []
         self._tray_icon_cache: dict[str, QIcon] = {}
         self._last_screen_signature: tuple[tuple[str, tuple[int, int, int, int], tuple[int, int, int, int]], ...] = tuple()
@@ -1375,6 +1510,11 @@ class LanguageIndicatorApp:
         self.tray_menu.aboutToShow.connect(self.reinforce_indicators_now)
         self.tray_menu.aboutToHide.connect(self.reinforce_indicators_now)
         self.tray_menu.aboutToHide.connect(self.reinforce_indicators_deferred)
+        logging.info(
+            "Language Indicator: Choice=%s, config=%s, popup=%s, frequency=%dms, visible=%s",
+            bool(os.environ.get("CHOICE_PID")), CONFIG_FILE, CONFIG.popup_enabled,
+            CONFIG.update_interval_ms, self.is_visible,
+        )
 
         self.update_timer = QTimer()
         self.update_timer.timeout.connect(self.safe_update_state)
@@ -1442,9 +1582,117 @@ class LanguageIndicatorApp:
     def create_tray_menu(self) -> QMenu:
         menu = QMenu()
 
-        show_hide_action = QAction("Скрыть/показать индикаторы", menu)
-        show_hide_action.triggered.connect(self.toggle_visibility)
-        menu.addAction(show_hide_action)
+        visibility_action = QAction("Скрыть/показать индикаторы", menu)
+        visibility_action.triggered.connect(self.toggle_visibility)
+        menu.addAction(visibility_action)
+
+        settings_menu = menu.addMenu("Настройки")
+        popup_action = QAction("Большое уведомление при смене раскладки", settings_menu)
+        popup_action.setCheckable(True)
+        popup_action.setChecked(CONFIG.popup_enabled)
+        popup_action.triggered.connect(
+            lambda enabled: self.change_settings(popup_enabled=enabled)
+        )
+        settings_menu.addAction(popup_action)
+
+        focus_action = QAction("Уведомление при переключении между окнами", settings_menu)
+        focus_action.setCheckable(True)
+        focus_action.setChecked(CONFIG.popup_on_focus_change)
+        focus_action.triggered.connect(
+            lambda enabled: self.change_settings(popup_on_focus_change=enabled)
+        )
+        settings_menu.addAction(focus_action)
+
+        primary_action = QAction("Только основной монитор", settings_menu)
+        primary_action.setCheckable(True)
+        primary_action.setChecked(CONFIG.taskbar_primary_only)
+        primary_action.triggered.connect(
+            lambda enabled: self.change_settings(taskbar_primary_only=enabled)
+        )
+        settings_menu.addAction(primary_action)
+
+        placement_menu = settings_menu.addMenu("Расположение индикатора")
+        placement_group = QActionGroup(placement_menu)
+        placement_group.setExclusive(True)
+        for name, value in (("На панели задач", "taskbar"), ("В углах экранов", "corners")):
+            action = QAction(name, placement_menu)
+            action.setCheckable(True)
+            action.setChecked(CONFIG.placement_mode == value)
+            placement_group.addAction(action)
+            placement_menu.addAction(action)
+            action.triggered.connect(
+                lambda checked=False, mode=value: self.change_settings(placement_mode=mode)
+            )
+
+        duration_menu = settings_menu.addMenu("Длительность большого уведомления")
+        duration_group = QActionGroup(duration_menu)
+        duration_group.setExclusive(True)
+        for value, name in ((400, "0,4 секунды"), (700, "0,7 секунды"),
+                            (1200, "1,2 секунды"), (2000, "2 секунды")):
+            action = QAction(name, duration_menu)
+            action.setCheckable(True)
+            action.setChecked(CONFIG.popup_duration_ms == value)
+            duration_group.addAction(action)
+            duration_menu.addAction(action)
+            action.triggered.connect(
+                lambda checked=False, ms=value: self.change_settings(popup_duration_ms=ms)
+            )
+
+        small_menu = settings_menu.addMenu("Размер маленького индикатора")
+        small_group = QActionGroup(small_menu)
+        small_group.setExclusive(True)
+        for width, height, font, name in ((42, 22, 9, "Компактный"),
+                                          (52, 26, 11, "Обычный"),
+                                          (64, 32, 14, "Крупный")):
+            action = QAction(name, small_menu)
+            action.setCheckable(True)
+            action.setChecked(CONFIG.small_width == width and CONFIG.small_height == height)
+            small_group.addAction(action)
+            small_menu.addAction(action)
+            action.triggered.connect(
+                lambda checked=False, w=width, h=height, f=font:
+                    self.change_settings(small_width=w, small_height=h, small_font_size=f)
+            )
+
+        popup_size_menu = settings_menu.addMenu("Размер большого уведомления")
+        popup_size_group = QActionGroup(popup_size_menu)
+        popup_size_group.setExclusive(True)
+        for width, height, font, name in ((140, 80, 32, "Компактный"),
+                                          (180, 100, 42, "Обычный"),
+                                          (240, 130, 54, "Крупный")):
+            action = QAction(name, popup_size_menu)
+            action.setCheckable(True)
+            action.setChecked(CONFIG.popup_width == width and CONFIG.popup_height == height)
+            popup_size_group.addAction(action)
+            popup_size_menu.addAction(action)
+            action.triggered.connect(
+                lambda checked=False, w=width, h=height, f=font:
+                    self.change_settings(popup_width=w, popup_height=h, popup_font_size=f)
+            )
+
+        color_menu = settings_menu.addMenu("Цвета")
+        for label, field in (
+            ("Текст RU", "ru_text_color"),
+            ("Текст EN", "en_text_color"),
+            ("Фон маленького индикатора", "small_bg_color"),
+            ("Фон большого RU", "ru_popup_bg"),
+            ("Фон большого EN", "en_popup_bg"),
+            ("Текст большого уведомления", "popup_text_color"),
+        ):
+            action = QAction(label, color_menu)
+            color_menu.addAction(action)
+            action.triggered.connect(
+                lambda checked=False, key=field, title=label: self.choose_color(key, title)
+            )
+
+        settings_menu.addSeparator()
+        reset_action = QAction("Восстановить настройки по умолчанию", settings_menu)
+        reset_action.triggered.connect(lambda: self.change_settings(**asdict(AppConfig())))
+        settings_menu.addAction(reset_action)
+
+        reload_action = QAction("Перезагрузить настройки из файла", menu)
+        reload_action.triggered.connect(self.reload_settings)
+        menu.addAction(reload_action)
 
         recreate_action = QAction("Пересоздать индикаторы", menu)
         recreate_action.triggered.connect(self.safe_recreate_widgets)
@@ -1455,12 +1703,58 @@ class LanguageIndicatorApp:
         menu.addAction(restart_action)
 
         menu.addSeparator()
-
         exit_action = QAction("Выход", menu)
         exit_action.triggered.connect(self.quit)
         menu.addAction(exit_action)
 
         return menu
+
+    def choose_color(self, field: str, title: str) -> None:
+        selected = QColorDialog.getColor(QColor(getattr(CONFIG, field)), None, title)
+        if selected.isValid():
+            self.change_settings(**{field: selected.name().upper()})
+
+    def change_settings(self, **changes) -> None:
+        global CONFIG
+        try:
+            next_config = replace(CONFIG, **changes)
+            next_config = _parse_config(asdict(next_config))
+        except (ValueError, TypeError):
+            logging.exception("Language Indicator: некорректное изменение настроек")
+            return
+        if not _save_config(next_config):
+            show_message("Language Indicator", "Не удалось сохранить настройки. См. журнал.",
+                         MB_ICONWARNING)
+            return
+        self._apply_config(next_config)
+
+    def _apply_config(self, next_config: AppConfig) -> None:
+        global CONFIG
+        CONFIG = next_config
+        self.is_visible = CONFIG.indicators_visible
+        self.update_timer.setInterval(CONFIG.update_interval_ms)
+        self.current_tray_lang = ""
+        self._tray_icon_cache.clear()
+        self._last_geometry_refresh_time = 0.0
+        self._cached_fullscreen_screen = None
+        self.popup.hide()
+        self.popup.deleteLater()
+        self.popup = PopupIndicator()
+        self.safe_recreate_widgets()
+        QTimer.singleShot(0, self._rebuild_tray_menu)
+        logging.info("Language Indicator: настройки применены, путь=%s", CONFIG_FILE)
+
+    def _rebuild_tray_menu(self) -> None:
+        old_menu = self.tray_menu
+        self.tray_menu = self.create_tray_menu()
+        self.tray.setContextMenu(self.tray_menu)
+        self.tray_menu.aboutToShow.connect(self.reinforce_indicators_now)
+        self.tray_menu.aboutToHide.connect(self.reinforce_indicators_now)
+        self.tray_menu.aboutToHide.connect(self.reinforce_indicators_deferred)
+        old_menu.deleteLater()
+
+    def reload_settings(self) -> None:
+        self._apply_config(_load_config())
 
     def on_tray_activated(self, reason) -> None:
         """Не трогает окно индикатора при кликах по трею, чтобы не было моргания."""
@@ -1490,7 +1784,7 @@ class LanguageIndicatorApp:
         targets = merge_screen_targets(self.qt_app)
         self._all_targets = targets
 
-        if CONFIG.placement_mode == "taskbar" and CONFIG.taskbar_primary_only:
+        if CONFIG.taskbar_primary_only:
             primary = self.qt_app.primaryScreen()
             if primary is None:
                 return targets[:1]
@@ -1532,6 +1826,8 @@ class LanguageIndicatorApp:
             logging.exception("recreate_widgets failed")
 
     def recreate_widgets(self) -> None:
+        self._last_geometry_refresh_time = 0.0
+        self._cached_fullscreen_screen = None
         for _, widget in self.widgets:
             widget.hide()
             widget.deleteLater()
@@ -1561,21 +1857,16 @@ class LanguageIndicatorApp:
                 widget.show_corner_at(screen.availableGeometry(), force_topmost=True)
 
             widget.set_alpha(CONFIG.normal_alpha)
+            if not self.is_visible:
+                widget.hide()
             self.widgets.append((screen, widget))
 
         self.safe_update_state(force_no_popup=True)
         self.reinforce_indicators_deferred()
 
     def toggle_visibility(self) -> None:
-        self.is_visible = not self.is_visible
+        self.change_settings(indicators_visible=not self.is_visible)
 
-        for _, widget in self.widgets:
-            widget.setVisible(self.is_visible)
-
-        if self.is_visible:
-            self.reinforce_indicators_now()
-        else:
-            self.popup.hide()
 
     def restart_app(self) -> None:
         """
@@ -1585,6 +1876,12 @@ class LanguageIndicatorApp:
         скрипт из папки с пробелом в пути («C:\\My Tools\\...») не перезапускался.
         """
         logging.info("Restart requested")
+        if os.environ.get("CHOICE_PID"):
+            # Choice отслеживает первоначальный PID. Пересоздание процесса
+            # сделало бы его невидимым для кнопки «Остановить» в лаунчере.
+            logging.info("Restart inside Choice: reload settings and recreate widgets in place")
+            self.reload_settings()
+            return
         command = build_restart_command()
         self.hotkeys.unregister_all()
         self.tray.hide()
@@ -1614,57 +1911,71 @@ class LanguageIndicatorApp:
             logging.exception("update_state failed")
 
     def should_force_topmost_now(self) -> bool:
-        # Раз в ~2 секунды заново выставляем topmost, чтобы плашка сама
-        # восстанавливалась, если её перекрыла панель задач (меню трея,
-        # перерисовка Explorer, выход из полноэкранного приложения и т.п.).
-        # Один SetWindowPos без перемещения/изменения размера — операция дешёвая.
-        interval_ticks = max(1, 2000 // max(1, CONFIG.update_interval_ms))
-        return self._update_tick % interval_ticks == 0
+        """Пересчёт геометрии и Z-порядка — редко, но раскладка читается быстро."""
+        now = time.monotonic()
+        interval_ms = CONFIG.topmost_reinforce_interval_ms or 2000
+        if now - self._last_geometry_refresh_time >= interval_ms / 1000:
+            self._last_geometry_refresh_time = now
+            return True
+        return False
 
     def update_state(self, force_no_popup: bool = False) -> None:
         self._update_tick += 1
-
-        lang = get_active_keyboard_lang()
+        hwnd = get_foreground_hwnd()
+        focus_changed = bool(self._last_foreground_hwnd) and hwnd != self._last_foreground_hwnd
+        lang = get_active_keyboard_lang(hwnd)
         if not lang:
+            # Нет фокуса (экран блокировки/UAC) или Windows ещё не предоставила HKL.
+            # Не дёргаем индикатор в "??" и не засоряем журнал каждые 100 мс.
+            now = time.monotonic()
+            if hwnd and now - self._last_layout_warning_time >= 60:
+                self._last_layout_warning_time = now
+                logging.warning("Language Indicator: не определена раскладка окна hwnd=0x%X", hwnd)
             lang = self.last_lang or "??"
 
+        if lang != self.last_lang and self.last_lang:
+            logging.info("Language Indicator: раскладка %s -> %s, hwnd=0x%X, смена окна=%s",
+                         self.last_lang, lang, hwnd, focus_changed)
+
         self.update_tray_icon(lang)
+        self._last_foreground_hwnd = hwnd
 
         if not self.is_visible:
             self.last_lang = lang
+            if self.popup.isVisible():
+                self.popup.hide()
             return
 
-        # Экран, на котором сейчас настоящее полноэкранное окно (или None).
-        # Раньше это значение вычислялось как None и не использовалось — фича
-        # затемнения в fullscreen была не подключена, из-за чего настройки
-        # fullscreen_alpha / popup_fullscreen_alpha ни на что не влияли.
-        fullscreen_screen = self.get_fullscreen_screen()
+        relayout = self.should_force_topmost_now()
+        if relayout or focus_changed:
+            self._cached_fullscreen_screen = self.get_fullscreen_screen()
+        fullscreen_screen = self._cached_fullscreen_screen
         fullscreen_name = fullscreen_screen.name() if fullscreen_screen is not None else None
-        force_topmost = self.should_force_topmost_now()
 
         for screen, widget in self.widgets:
-            if CONFIG.placement_mode == "taskbar":
-                widget.show_taskbar_at(screen, force_topmost=force_topmost)
-            else:
-                widget.show_corner_at(screen.availableGeometry(), force_topmost=force_topmost)
-
+            # WinAPI поиск панели задач и установка HWND topmost стоят дороже
+            # простой смены текста. Делаем их раз в ~2 с, не каждые 100 мс.
+            if relayout:
+                if CONFIG.placement_mode == "taskbar":
+                    widget.show_taskbar_at(screen, force_topmost=True)
+                else:
+                    widget.show_corner_at(screen.availableGeometry(), force_topmost=True)
             widget.set_lang(lang)
-
             on_fullscreen = fullscreen_name is not None and screen.name() == fullscreen_name
             widget.set_alpha(CONFIG.fullscreen_alpha if on_fullscreen else CONFIG.normal_alpha)
 
-        if self.last_lang and lang != self.last_lang and not force_no_popup:
+        should_popup = (
+            CONFIG.popup_enabled
+            and self.last_lang
+            and lang != self.last_lang
+            and not force_no_popup
+            and (CONFIG.popup_on_focus_change or not focus_changed)
+        )
+        if should_popup:
             active_screen = self.get_active_screen()
-
             if active_screen is not None:
-                active_on_fullscreen = (
-                    fullscreen_name is not None and active_screen.name() == fullscreen_name
-                )
-                popup_alpha = (
-                    CONFIG.popup_fullscreen_alpha
-                    if active_on_fullscreen
-                    else CONFIG.popup_normal_alpha
-                )
+                on_fullscreen = fullscreen_name is not None and active_screen.name() == fullscreen_name
+                popup_alpha = CONFIG.popup_fullscreen_alpha if on_fullscreen else CONFIG.popup_normal_alpha
                 self.popup.show_lang(lang, active_screen, popup_alpha)
 
         self.last_lang = lang
