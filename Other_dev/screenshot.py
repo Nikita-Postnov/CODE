@@ -3514,20 +3514,18 @@ class EditorWindow(QMainWindow):
             self._centered_once = True
 
     def _build_toolbar(self):
-        t1 = QToolBar("Инструменты — 1", self)
-        t2 = QToolBar("Инструменты — 2", self)
-        t3 = QToolBar("Инструменты — 3", self)
-        t4 = QToolBar("Инструменты — 4", self)
-        for t in (t1, t2, t3, t4):
+        t1 = QToolBar("Инструменты", self)
+        t2 = QToolBar("Параметры", self)
+        for t in (t1, t2):
             t.setMovable(False)
         self.addToolBar(Qt.TopToolBarArea, t1)
         self.addToolBarBreak(Qt.TopToolBarArea)
         self.addToolBar(Qt.TopToolBarArea, t2)
-        self.addToolBarBreak(Qt.TopToolBarArea)
-        self.addToolBar(Qt.TopToolBarArea, t3)
-        self.addToolBarBreak(Qt.TopToolBarArea)
-        self.addToolBar(Qt.TopToolBarArea, t4)
-        self.tb_rows = (t1, t2, t3, t4)
+        self.tb_rows = (t1, t2)
+        t3 = QMenu("Файл", self)
+        t4 = QMenu("Правка и вид", self)
+        tool_menus = {title: QMenu(title, self)
+                      for title in ("Выбор", "Рисование", "Фигуры", "Обработка")}
 
         def add_action(bar: QToolBar, text, cb, shortcut=None, checkable=False):
             act = QAction(text, self)
@@ -3536,6 +3534,7 @@ class EditorWindow(QMainWindow):
             if shortcut:
                 act.setShortcut(shortcut)
             bar.addAction(act)
+            self.addAction(act)
             return act
 
         self.group_actions: List[QAction] = []
@@ -3547,7 +3546,11 @@ class EditorWindow(QMainWindow):
                 act.setChecked(True)
                 self.view.set_tool(t)
 
-            act = add_action(bar, label, cb, shortcut, checkable=True)
+            group = ("Выбор" if t == Tool.PAN else
+                     "Рисование" if t in (Tool.PEN, Tool.HIGHLIGHT, Tool.TEXT, Tool.STEP) else
+                     "Фигуры" if t in (Tool.RECT, Tool.ELLIPSE, Tool.ARROW) else
+                     "Обработка")
+            act = add_action(tool_menus[group], label, cb, shortcut, checkable=True)
             self.group_actions.append(act)
             return act
 
@@ -3576,6 +3579,19 @@ class EditorWindow(QMainWindow):
         saved_tool = self.view.tool
         restored_action = _tool_action_map.get(saved_tool, a_pen)
         restored_action.trigger()
+        for group_name, group_menu in tool_menus.items():
+            button = QToolButton(self)
+            button.setText(group_name)
+            button.setMenu(group_menu)
+            button.setPopupMode(QToolButton.InstantPopup)
+            t1.addWidget(button)
+        for name, menu in (("Файл", t3), ("Правка и вид", t4)):
+            button = QToolButton(self)
+            button.setText(name)
+            button.setMenu(menu)
+            button.setPopupMode(QToolButton.InstantPopup)
+            button.setToolTip("Все команды и прежние сочетания клавиш доступны в меню")
+            t1.addWidget(button)
         t1.addSeparator()
         self.line_caption = QLabel(" Линия")
         self.line_caption.setStyleSheet("color: #c8c8c8;")
@@ -3642,13 +3658,25 @@ class EditorWindow(QMainWindow):
         add_action(t3, "📋 Вставить как картинку", self.insert_sticker_from_clipboard, "Ctrl+Shift+V")
         add_action(t3, "⎆ Зафиксировать", self.flatten_selection, "Return")
         add_action(t3, "⌧ Удалить объект", self.delete_selection, "Del")
-        add_action(t3, "📋 Вставить из буфера (заменить)", self.open_from_clipboard, "Ctrl+V")
+        add_action(t3, "📋 Вставить из буфера", self.paste_from_clipboard, "Ctrl+V")
         add_action(t3, "💾 Сохранить", self.save_quick, "Ctrl+S")
         add_action(t3, "💾 Сохранить как…", self.save_as, "Ctrl+Shift+S")
         add_action(t3, "📦 Проект", self.save_project, "Ctrl+Alt+S")
         add_action(t3, "📦 Проект как…", self.save_project_as, "Ctrl+Alt+Shift+S")
         add_action(t3, "📂 Открыть проект", self.open_project, "Ctrl+Shift+O")
         add_action(t3, "✏ Изменить текст", self.view.edit_selected_text, "Ctrl+Alt+T")
+        add_action(t4, "⚙ Свойства объекта", self.edit_object_properties, "Alt+Return")
+        add_action(t4, "📋 Копировать объект", self.copy_to_clipboard)
+        add_action(t4, "📋 Вставить объект", self.paste_from_clipboard)
+        alignment = t4.addMenu("Выравнивание")
+        for title, mode in (
+            ("По левому краю", "left"), ("По правому краю", "right"),
+            ("По верхнему краю", "top"), ("По нижнему краю", "bottom"),
+            ("По горизонтальному центру", "hcenter"),
+            ("По вертикальному центру", "vcenter"),
+        ):
+            add_action(alignment, title,
+                       lambda checked=False, m=mode: self.view.align_selected_objects(m))
         add_action(t3, "📁 Показать в папке", self.reveal_last_saved, "Ctrl+Shift+E")
         add_action(t3, "📋 Копировать", self.copy_to_clipboard, "Ctrl+C")
         add_action(t4, "↶ Отменить", self.view.undo, "Ctrl+Z")
@@ -3661,7 +3689,7 @@ class EditorWindow(QMainWindow):
         add_action(t4, "⟲ Сброс шагов", lambda: setattr(self.view, "step_counter", 1))
         self.tip_label = QLabel(" Подсказки: Ctrl+Колесо — зум, Средняя кнопка — панорама")
         self.tip_label.setStyleSheet("color: gray;")
-        t4.addWidget(self.tip_label)
+        t1.setToolTip(self.tip_label.text())
 
     def _update_alpha_label(self, v:int):
         pct = int(round(v/255*100))
