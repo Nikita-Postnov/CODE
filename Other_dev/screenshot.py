@@ -321,6 +321,124 @@ def center_on_screen(win: QWidget, prefer_cursor: bool = True):
     fg.moveCenter(geo.center())
     win.move(fg.topLeft())
 
+def window_at_point(point: QPoint, windows: List[Tuple[str, QRect]]) -> Optional[QRect]:
+    """Возвращает первое подходящее окно; входной список упорядочен по Z-order."""
+    for _title, rect in windows:
+        if rect.contains(point) and rect.width() >= 40 and rect.height() >= 30:
+            return QRect(rect)
+    return None
+
+
+def _native_window_to_qt_rect(native_rect: QRect) -> QRect:
+    """Переводит физические координаты Win32 в логические координаты Qt."""
+    screens = QGuiApplication.screens()
+    if not screens:
+        return native_rect
+    best = None
+    best_overlap = 0
+    for screen in screens:
+        geo = screen.geometry()
+        scale = max(1.0, float(screen.devicePixelRatio()))
+        physical = QRect(geo.topLeft(), QSize(
+            int(round(geo.width() * scale)),
+            int(round(geo.height() * scale)),
+        ))
+        inter = physical.intersected(native_rect)
+        overlap = max(0, inter.width()) * max(0, inter.height())
+        if overlap > best_overlap:
+            best, best_overlap = (geo, scale), overlap
+    if best is None:
+        return native_rect
+    geo, scale = best
+    return QRect(
+        geo.left() + int(round((native_rect.left() - geo.left()) / scale)),
+        geo.top() + int(round((native_rect.top() - geo.top()) / scale)),
+        max(1, int(round(native_rect.width() / scale))),
+        max(1, int(round(native_rect.height() / scale))),
+    )
+
+
+def list_capturable_windows() -> List[Tuple[str, QRect]]:
+    """Снимок списка видимых окон в порядке Windows Z-order, до показа оверлея."""
+    if sys.platform != "win32":
+        return []
+    windows: List[Tuple[str, QRect]] = []
+    try:
+        user32 = ctypes.WinDLL("user32", use_last_error=True)
+        user32.IsWindowVisible.argtypes = [wintypes.HWND]
+        user32.IsWindowVisible.restype = wintypes.BOOL
+        user32.IsIconic.argtypes = [wintypes.HWND]
+        user32.IsIconic.restype = wintypes.BOOL
+        user32.GetWindowTextLengthW.argtypes = [wintypes.HWND]
+        user32.GetWindowTextLengthW.restype = ctypes.c_int
+        user32.GetWindowTextW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+        user32.GetWindowTextW.restype = ctypes.c_int
+        user32.GetWindowRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
+        user32.GetWindowRect.restype = wintypes.BOOL
+        user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+        user32.GetWindowThreadProcessId.restype = wintypes.DWORD
+        user32.GetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int]
+        user32.GetWindowLongW.restype = ctypes.c_long
+        callback_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+        user32.EnumWindows.argtypes = [callback_type, wintypes.LPARAM]
+        user32.EnumWindows.restype = wintypes.BOOL
+        try:
+            dwm = ctypes.WinDLL("dwmapi")
+            dwm.DwmGetWindowAttribute.argtypes = [
+                wintypes.HWND, wintypes.DWORD, ctypes.c_void_p, wintypes.DWORD]
+            dwm.DwmGetWindowAttribute.restype = ctypes.c_long
+        except OSError:
+            dwm = None
+        own_pid = os.getpid()
+
+        @callback_type
+        def visit(hwnd, _param):
+            try:
+                if not user32.IsWindowVisible(hwnd) or user32.IsIconic(hwnd):
+                    return True
+                if user32.GetWindowLongW(hwnd, -20) & 0x80:
+                    return True
+                pid = wintypes.DWORD()
+                user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+                if pid.value == own_pid:
+                    return True
+                length = user32.GetWindowTextLengthW(hwnd)
+                if length <= 0 or length > 2048:
+                    return True
+                name = ctypes.create_unicode_buffer(length + 1)
+                if not user32.GetWindowTextW(hwnd, name, length + 1):
+                    return True
+                rect = wintypes.RECT()
+                if dwm is not None:
+                    cloaked = wintypes.DWORD()
+                    if dwm.DwmGetWindowAttribute(
+                            hwnd, 14, ctypes.byref(cloaked), ctypes.sizeof(cloaked)) == 0:
+                        if cloaked.value:
+                            return True
+                    if dwm.DwmGetWindowAttribute(
+                            hwnd, 9, ctypes.byref(rect), ctypes.sizeof(rect)) != 0:
+                        if not user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+                            return True
+                elif not user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+                    return True
+                raw = QRect(
+                    rect.left, rect.top,
+                    max(0, rect.right - rect.left),
+                    max(0, rect.bottom - rect.top),
+                )
+                logical = _native_window_to_qt_rect(raw)
+                if logical.width() >= 40 and logical.height() >= 30:
+                    windows.append((name.value, logical))
+            except (OSError, ValueError, RuntimeError, AttributeError):
+                log.debug("Не удалось прочитать геометрию окна", exc_info=True)
+            return True
+
+        user32.EnumWindows(visit, 0)
+    except (OSError, ValueError, AttributeError):
+        log.exception("Получение списка окон недоступно")
+    return windows
+
+
 class SelectionOverlay:
     """Затемнённый слой выбора области поверх всех мониторов.
 
@@ -345,8 +463,12 @@ class SelectionOverlay:
     MODE_SHOT = "shot"
     MODE_RECORD = "record"
     MODE_OCR = "ocr"
-    _MODES = (MODE_SHOT, MODE_RECORD, MODE_OCR)
-    _MODE_LABELS = {MODE_SHOT: "📷  Скриншот", MODE_RECORD: "⏺  Запись экрана", MODE_OCR: "🔤  Текст"}
+    MODE_WINDOW = "window"
+    _MODES = (MODE_SHOT, MODE_WINDOW, MODE_RECORD, MODE_OCR)
+    _MODE_LABELS = {
+        MODE_SHOT: "📷  Скриншот", MODE_WINDOW: "▣  Окно",
+        MODE_RECORD: "⏺  Запись экрана", MODE_OCR: "🔤  Текст",
+    }
 
     class _Pane(QWidget):
         def __init__(self, mgr: "SelectionOverlay", screen, frozen: Optional[QPixmap]):
@@ -445,6 +567,9 @@ class SelectionOverlay:
                         self.mgr.set_mode(hit)
                     return
                 g = e.globalPosition().toPoint()
+                if self.mgr.mode == SelectionOverlay.MODE_WINDOW:
+                    self.mgr._on_pick_window(g)
+                    return
                 self.mgr._on_press(g)
                 for p in self.mgr._panes:
                     p.update()
@@ -457,9 +582,12 @@ class SelectionOverlay:
                 self.mgr._on_move(g)
                 for p in self.mgr._panes:
                     p.update()
-            elif self.has_bar:
-                over_bar = self._bar_hit(e.position().toPoint()) is not None
-                self.setCursor(Qt.ArrowCursor if over_bar else Qt.CrossCursor)
+            else:
+                if self.mgr.mode == SelectionOverlay.MODE_WINDOW:
+                    self.mgr._on_window_hover(e.globalPosition().toPoint())
+                if self.has_bar:
+                    over_bar = self._bar_hit(e.position().toPoint()) is not None
+                    self.setCursor(Qt.ArrowCursor if over_bar else Qt.CrossCursor)
 
         def mouseReleaseEvent(self, e: QMouseEvent):
             if e.button() == Qt.LeftButton and self.mgr._origin_g is not None:
@@ -476,8 +604,11 @@ class SelectionOverlay:
             r_global: Optional[QRect] = None
             r_local = QRect()
             inter = QRect()
-            if self.mgr._origin_g is not None and self.mgr._current_g is not None:
+            if self.mgr.mode == SelectionOverlay.MODE_WINDOW:
+                r_global = self.mgr._hover_window_g
+            elif self.mgr._origin_g is not None and self.mgr._current_g is not None:
                 r_global = QRect(self.mgr._origin_g, self.mgr._current_g).normalized()
+            if r_global is not None:
                 r_local = r_global.translated(-self.geometry().topLeft())
                 inter = r_local.intersected(self.rect())
 
@@ -518,6 +649,8 @@ class SelectionOverlay:
                     info = "⏺ " + info
                 elif ocr:
                     info = "🔤 " + info
+                elif self.mgr.mode == SelectionOverlay.MODE_WINDOW:
+                    info = "▣ Окно · " + info
                 metrics = p.fontMetrics()
                 label_h = metrics.height() + 8
                 label_y = r_local.top() - label_h
@@ -543,6 +676,8 @@ class SelectionOverlay:
         record_unavailable_reason: str = "",
     ):
         self._frozen = frozen
+        self._windows = list_capturable_windows() if sys.platform == "win32" else []
+        self._hover_window_g: Optional[QRect] = None
         self.switchable = switchable
         self.record_available = record_available
         self._record_unavailable_reason = record_unavailable_reason
@@ -567,6 +702,8 @@ class SelectionOverlay:
         self.selection_made = lambda rect: None
 
     def bar_hint(self) -> str:
+        if self.mode == self.MODE_WINDOW:
+            return "Наведите на окно и нажмите ЛКМ · Tab — режим · Esc — отмена"
         if not self.record_available:
             reason = self._record_unavailable_reason or "запись недоступна"
             return f"{reason} · ПКМ / Esc — отмена"
@@ -577,6 +714,8 @@ class SelectionOverlay:
             return self.record_available
         if mode == self.MODE_OCR:
             return sys.platform.startswith("win")
+        if mode == self.MODE_WINDOW:
+            return sys.platform.startswith("win")
         return mode == self.MODE_SHOT
 
     def set_mode(self, mode: str) -> None:
@@ -584,6 +723,10 @@ class SelectionOverlay:
             return
         if mode != self.mode:
             self.mode = mode
+            self._hover_window_g = (
+                window_at_point(QCursor.pos(), self._windows)
+                if mode == self.MODE_WINDOW else None
+            )
             for p in self._panes:
                 p.update()
 
@@ -603,6 +746,8 @@ class SelectionOverlay:
 
     def begin(self):
         self._origin_g = self._current_g = None
+        if self.mode == self.MODE_WINDOW:
+            self._hover_window_g = window_at_point(QCursor.pos(), self._windows)
         SelectionOverlay.active = self
         bar_pane = None
         for p in self._panes:
@@ -631,6 +776,21 @@ class SelectionOverlay:
             p.hide()
             p.deleteLater()
         self._panes = []
+
+    def _on_window_hover(self, global_pos: QPoint) -> None:
+        candidate = window_at_point(global_pos, self._windows)
+        if candidate != self._hover_window_g:
+            self._hover_window_g = candidate
+            for pane in self._panes:
+                pane.update()
+
+    def _on_pick_window(self, global_pos: QPoint) -> None:
+        candidate = window_at_point(global_pos, self._windows)
+        if candidate is None:
+            return
+        self._hover_window_g = None
+        self.hide()
+        self.selection_made(candidate)
 
     def _on_press(self, g: QPoint):
         self._origin_g = g
@@ -3341,7 +3501,7 @@ class Launcher(QMainWindow):
         title = QLabel(
             "<b>Скриншоты</b><br>"
             "PrintScreen — выделить область. Режим (снимок / запись экрана / текст) — "
-            "панель сверху или Tab; отмена — ПКМ или Esc.<br>"
+            "панель сверху или Tab; захват окна — режим «Окно»; отмена — ПКМ или Esc.<br>"
             "Shift+PrintScreen — сразу распознать текст в буфер обмена.<br>"
             "В редакторе: Ctrl+S — сохранить, Ctrl+C — копировать, PrintScreen — новый снимок."
         )
@@ -3350,6 +3510,9 @@ class Launcher(QMainWindow):
         btn = QPushButton("Сделать скриншот")
         btn.clicked.connect(self.make_shot)
         v.addWidget(btn)
+        btn_window = QPushButton("Снимок отдельного окна")
+        btn_window.clicked.connect(self.make_window_shot)
+        v.addWidget(btn_window)
         btn_rec = QPushButton("Запись экрана")
         btn_rec.clicked.connect(self.start_recording)
         v.addWidget(btn_rec)
@@ -3406,6 +3569,7 @@ class Launcher(QMainWindow):
         self.tray.setToolTip("NPCore Скриншоты")
         m = QMenu(self)
         self.act_tray_shot = m.addAction("Сделать скриншот", self.make_shot)
+        self.act_tray_window = m.addAction("Снимок отдельного окна", self.make_window_shot)
         delayed_menu = m.addMenu("Снимок с задержкой")
         for seconds in (3, 5, 10):
             delayed_menu.addAction(
@@ -3541,6 +3705,13 @@ class Launcher(QMainWindow):
     def make_shot(self):
         self.hide()
         QTimer.singleShot(200, lambda: self._capture(SelectionOverlay.MODE_SHOT))
+
+    def make_window_shot(self):
+        if not sys.platform.startswith("win"):
+            QMessageBox.information(self, "Захват окна", "Захват отдельного окна доступен в Windows.")
+            return
+        self.hide()
+        QTimer.singleShot(200, lambda: self._capture(SelectionOverlay.MODE_WINDOW))
 
     def _capture(self, initial_mode: str) -> None:
         log.info("capture: _capture start mode=%s", initial_mode)

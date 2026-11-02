@@ -6,12 +6,14 @@ on:
     paths:
       - "Other_dev/screenshot.py"
       - "tests/test_np_screenshot_reliability.py"
+      - "tests/test_np_screenshot_window_capture.py"
       - ".github/workflows/np-screenshot-reliability.yml"
   pull_request:
     branches: [main]
     paths:
       - "Other_dev/screenshot.py"
       - "tests/test_np_screenshot_reliability.py"
+      - "tests/test_np_screenshot_window_capture.py"
       - ".github/workflows/np-screenshot-reliability.yml"
 
 jobs:
@@ -38,4 +40,4 @@ jobs:
       - name: Compile screenshot
         run: python -m py_compile Other_dev/screenshot.py
       - name: Run screenshot reliability tests
-        run: python -m unittest discover -s tests -p "test_np_screenshot_reliability.py" -v
+        run: python -m unittest discover -s tests -p "test_np_screenshot*.py" -v
