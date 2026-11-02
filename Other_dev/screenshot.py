@@ -11,6 +11,7 @@ import subprocess
 import sys
 import threading
 import time
+import tempfile
 import traceback
 from array import array
 from ctypes import wintypes
@@ -124,6 +125,33 @@ DATA_DIR = ROOT_DIR / "Data"
 NOTES_DIR = ROOT_DIR / "Notes"
 PASSWORDS_DIR = ROOT_DIR / "Passwords"
 SCREENSHOT_STATE_PATH = DATA_DIR / "screenshot_editor_state.json"
+
+
+def save_image_atomically(image: QImage, path: Path, image_format: str, quality: int = -1) -> bool:
+    """Записывает изображение во временный файл рядом с целевым и заменяет его после успеха."""
+    target = Path(path)
+    temporary = None
+    try:
+        fd, temporary = tempfile.mkstemp(
+            prefix="." + target.stem + ".", suffix=target.suffix + ".tmp",
+            dir=str(target.parent),
+        )
+        os.close(fd)
+        if not image.save(temporary, image_format, quality):
+            log.error("Image encoder returned false: %s", target)
+            return False
+        os.replace(temporary, target)
+        temporary = None
+        return True
+    except (OSError, RuntimeError, ValueError):
+        log.exception("Atomic image save failed: %s", target)
+        return False
+    finally:
+        if temporary is not None:
+            try:
+                Path(temporary).unlink(missing_ok=True)
+            except OSError:
+                log.warning("Cannot remove temporary screenshot: %s", temporary)
 
 
 def qpixmap_from_qimage(img: QImage) -> QPixmap:
@@ -2282,7 +2310,7 @@ class CanvasView(QGraphicsView):
         img = self.render_scene_to_image(hide_handles=True)
         if fmt in ("JPG", "BMP"):
             img = self._flatten_on_white(img)
-        return bool(img.save(str(path), fmt, quality))
+        return save_image_atomically(img, path, fmt, quality)
 
     @staticmethod
     def _flatten_on_white(img: QImage) -> QImage:
@@ -2543,8 +2571,13 @@ class EditorWindow(QMainWindow):
     def _default_save_name(self) -> Path:
         stamp = time.strftime("%Y-%m-%d_%H-%M-%S")
         folder = self.view.last_save_dir or QStandardPaths.writableLocation(QStandardPaths.PicturesLocation)
-        name = f"Screenshot_{stamp}.png"
-        return Path(folder) / name if folder else Path(name)
+        directory = Path(folder) if folder else Path.cwd()
+        candidate = directory / f"Screenshot_{stamp}.png"
+        suffix = 2
+        while candidate.exists():
+            candidate = directory / f"Screenshot_{stamp}_{suffix}.png"
+            suffix += 1
+        return candidate
 
     def _remember_save(self, path: Path) -> None:
         self._last_save_path = path
@@ -3980,15 +4013,18 @@ def _rec_tmp_dir() -> Path:
     return d
 
 
+def _recordings_dir() -> Path:
+    """Постоянные видеозаписи не должны попадать под очистку временных файлов."""
+    directory = DATA_DIR / "Recordings"
+    directory.mkdir(parents=True, exist_ok=True)
+    return directory
+
+
 _REC_TMP_MAX_AGE_DAYS = 7
 
 
 def _cleanup_rec_tmp(max_age_days: float = _REC_TMP_MAX_AGE_DAYS) -> None:
-    """Удаляет из Data/_rec_tmp записи и экспорты старше max_age_days.
-
-    Раньше каждая запись и каждый экспорт оставались там навсегда.
-    Занятые файлы (открыты другой программой) пропускаются.
-    """
+    """Удаляет только промежуточные файлы; старые rec_*.mp4 сохраняет для миграции."""
     d = DATA_DIR / "_rec_tmp"
     if not d.is_dir():
         return
@@ -3996,7 +4032,9 @@ def _cleanup_rec_tmp(max_age_days: float = _REC_TMP_MAX_AGE_DAYS) -> None:
     removed = 0
     for p in d.iterdir():
         try:
-            if p.is_file() and p.stat().st_mtime < cutoff:
+            if (p.is_file() and not (p.name.lower().startswith("rec_")
+                                    and p.suffix.lower() == ".mp4")
+                    and p.stat().st_mtime < cutoff):
                 p.unlink()
                 removed += 1
         except OSError:
@@ -4380,7 +4418,7 @@ class RecordHUD(QWidget):
             return
         mode, dev = self.audio_combo.currentData()
         stamp = time.strftime("%Y-%m-%d_%H-%M-%S")
-        self._out_path = str(_rec_tmp_dir() / f"rec_{stamp}.mp4")
+        self._out_path = str(_recordings_dir() / f"rec_{stamp}_{time.time_ns() % 1_000_000_000:09d}.mp4")
         cmd = build_record_cmd(self._out_path, self.region, DEFAULT_FPS, mode, dev)
 
         self._proc = QProcess(self)
