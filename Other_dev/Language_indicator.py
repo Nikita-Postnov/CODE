@@ -224,8 +224,8 @@ def release_single_instance_lock() -> None:
 
 try:
     from PyQt6.QtCore import QAbstractNativeEventFilter, QRect, QSize, Qt, QTimer
-    from PyQt6.QtGui import QAction, QColor, QCursor, QFont, QIcon, QPainter, QPixmap
-    from PyQt6.QtWidgets import QApplication, QLabel, QMenu, QSystemTrayIcon, QWidget
+    from PyQt6.QtGui import QAction, QActionGroup, QColor, QCursor, QFont, QIcon, QPainter, QPixmap
+    from PyQt6.QtWidgets import QApplication, QColorDialog, QLabel, QMenu, QSystemTrayIcon, QWidget
 except Exception as exc:
     logging.exception("PyQt6 import failed")
     show_message(
@@ -282,7 +282,7 @@ class AppConfig:
     popup_fullscreen_alpha: int = 255
 
     # Частота проверки раскладки.
-    update_interval_ms: int = 200
+    update_interval_ms: int = 100
 
     topmost_reinforce_interval_ms: int = 0
 
@@ -1484,8 +1484,12 @@ class LanguageIndicatorApp:
         self.popup = PopupIndicator()
         self.last_lang = ""
         self.current_tray_lang = ""
-        self.is_visible = True
+        self.is_visible = CONFIG.indicators_visible
         self._update_tick = 0
+        self._last_foreground_hwnd = 0
+        self._last_geometry_refresh_time = 0.0
+        self._last_layout_warning_time = 0.0
+        self._cached_fullscreen_screen = None
         self._all_targets: list[ScreenTarget] = []
         self._tray_icon_cache: dict[str, QIcon] = {}
         self._last_screen_signature: tuple[tuple[str, tuple[int, int, int, int], tuple[int, int, int, int]], ...] = tuple()
@@ -1572,9 +1576,117 @@ class LanguageIndicatorApp:
     def create_tray_menu(self) -> QMenu:
         menu = QMenu()
 
-        show_hide_action = QAction("Скрыть/показать индикаторы", menu)
-        show_hide_action.triggered.connect(self.toggle_visibility)
-        menu.addAction(show_hide_action)
+        visibility_action = QAction("Скрыть/показать индикаторы", menu)
+        visibility_action.triggered.connect(self.toggle_visibility)
+        menu.addAction(visibility_action)
+
+        settings_menu = menu.addMenu("Настройки")
+        popup_action = QAction("Большое уведомление при смене раскладки", settings_menu)
+        popup_action.setCheckable(True)
+        popup_action.setChecked(CONFIG.popup_enabled)
+        popup_action.triggered.connect(
+            lambda enabled: self.change_settings(popup_enabled=enabled)
+        )
+        settings_menu.addAction(popup_action)
+
+        focus_action = QAction("Уведомление при переключении между окнами", settings_menu)
+        focus_action.setCheckable(True)
+        focus_action.setChecked(CONFIG.popup_on_focus_change)
+        focus_action.triggered.connect(
+            lambda enabled: self.change_settings(popup_on_focus_change=enabled)
+        )
+        settings_menu.addAction(focus_action)
+
+        primary_action = QAction("Только основной монитор", settings_menu)
+        primary_action.setCheckable(True)
+        primary_action.setChecked(CONFIG.taskbar_primary_only)
+        primary_action.triggered.connect(
+            lambda enabled: self.change_settings(taskbar_primary_only=enabled)
+        )
+        settings_menu.addAction(primary_action)
+
+        placement_menu = settings_menu.addMenu("Расположение индикатора")
+        placement_group = QActionGroup(placement_menu)
+        placement_group.setExclusive(True)
+        for name, value in (("На панели задач", "taskbar"), ("В углах экранов", "corners")):
+            action = QAction(name, placement_menu)
+            action.setCheckable(True)
+            action.setChecked(CONFIG.placement_mode == value)
+            placement_group.addAction(action)
+            placement_menu.addAction(action)
+            action.triggered.connect(
+                lambda checked=False, mode=value: self.change_settings(placement_mode=mode)
+            )
+
+        duration_menu = settings_menu.addMenu("Длительность большого уведомления")
+        duration_group = QActionGroup(duration_menu)
+        duration_group.setExclusive(True)
+        for value, name in ((400, "0,4 секунды"), (700, "0,7 секунды"),
+                            (1200, "1,2 секунды"), (2000, "2 секунды")):
+            action = QAction(name, duration_menu)
+            action.setCheckable(True)
+            action.setChecked(CONFIG.popup_duration_ms == value)
+            duration_group.addAction(action)
+            duration_menu.addAction(action)
+            action.triggered.connect(
+                lambda checked=False, ms=value: self.change_settings(popup_duration_ms=ms)
+            )
+
+        small_menu = settings_menu.addMenu("Размер маленького индикатора")
+        small_group = QActionGroup(small_menu)
+        small_group.setExclusive(True)
+        for width, height, font, name in ((42, 22, 9, "Компактный"),
+                                          (52, 26, 11, "Обычный"),
+                                          (64, 32, 14, "Крупный")):
+            action = QAction(name, small_menu)
+            action.setCheckable(True)
+            action.setChecked(CONFIG.small_width == width and CONFIG.small_height == height)
+            small_group.addAction(action)
+            small_menu.addAction(action)
+            action.triggered.connect(
+                lambda checked=False, w=width, h=height, f=font:
+                    self.change_settings(small_width=w, small_height=h, small_font_size=f)
+            )
+
+        popup_size_menu = settings_menu.addMenu("Размер большого уведомления")
+        popup_size_group = QActionGroup(popup_size_menu)
+        popup_size_group.setExclusive(True)
+        for width, height, font, name in ((140, 80, 32, "Компактный"),
+                                          (180, 100, 42, "Обычный"),
+                                          (240, 130, 54, "Крупный")):
+            action = QAction(name, popup_size_menu)
+            action.setCheckable(True)
+            action.setChecked(CONFIG.popup_width == width and CONFIG.popup_height == height)
+            popup_size_group.addAction(action)
+            popup_size_menu.addAction(action)
+            action.triggered.connect(
+                lambda checked=False, w=width, h=height, f=font:
+                    self.change_settings(popup_width=w, popup_height=h, popup_font_size=f)
+            )
+
+        color_menu = settings_menu.addMenu("Цвета")
+        for label, field in (
+            ("Текст RU", "ru_text_color"),
+            ("Текст EN", "en_text_color"),
+            ("Фон маленького индикатора", "small_bg_color"),
+            ("Фон большого RU", "ru_popup_bg"),
+            ("Фон большого EN", "en_popup_bg"),
+            ("Текст большого уведомления", "popup_text_color"),
+        ):
+            action = QAction(label, color_menu)
+            color_menu.addAction(action)
+            action.triggered.connect(
+                lambda checked=False, key=field, title=label: self.choose_color(key, title)
+            )
+
+        settings_menu.addSeparator()
+        reset_action = QAction("Восстановить настройки по умолчанию", settings_menu)
+        reset_action.triggered.connect(lambda: self.change_settings(**asdict(AppConfig())))
+        settings_menu.addAction(reset_action)
+
+        reload_action = QAction("Перезагрузить настройки из файла", menu)
+        reload_action.triggered.connect(self.reload_settings)
+        menu.addAction(reload_action)
 
         recreate_action = QAction("Пересоздать индикаторы", menu)
         recreate_action.triggered.connect(self.safe_recreate_widgets)
@@ -1585,12 +1697,58 @@ class LanguageIndicatorApp:
         menu.addAction(restart_action)
 
         menu.addSeparator()
-
         exit_action = QAction("Выход", menu)
         exit_action.triggered.connect(self.quit)
         menu.addAction(exit_action)
 
         return menu
+
+    def choose_color(self, field: str, title: str) -> None:
+        selected = QColorDialog.getColor(QColor(getattr(CONFIG, field)), None, title)
+        if selected.isValid():
+            self.change_settings(**{field: selected.name().upper()})
+
+    def change_settings(self, **changes) -> None:
+        global CONFIG
+        try:
+            next_config = replace(CONFIG, **changes)
+            next_config = _parse_config(asdict(next_config))
+        except (ValueError, TypeError):
+            logging.exception("Language Indicator: некорректное изменение настроек")
+            return
+        if not _save_config(next_config):
+            show_message("Language Indicator", "Не удалось сохранить настройки. См. журнал.",
+                         MB_ICONWARNING)
+            return
+        self._apply_config(next_config)
+
+    def _apply_config(self, next_config: AppConfig) -> None:
+        global CONFIG
+        CONFIG = next_config
+        self.is_visible = CONFIG.indicators_visible
+        self.update_timer.setInterval(CONFIG.update_interval_ms)
+        self.current_tray_lang = ""
+        self._tray_icon_cache.clear()
+        self._last_geometry_refresh_time = 0.0
+        self._cached_fullscreen_screen = None
+        self.popup.hide()
+        self.popup.deleteLater()
+        self.popup = PopupIndicator()
+        self.safe_recreate_widgets()
+        QTimer.singleShot(0, self._rebuild_tray_menu)
+        logging.info("Language Indicator: настройки применены, путь=%s", CONFIG_FILE)
+
+    def _rebuild_tray_menu(self) -> None:
+        old_menu = self.tray_menu
+        self.tray_menu = self.create_tray_menu()
+        self.tray.setContextMenu(self.tray_menu)
+        self.tray_menu.aboutToShow.connect(self.reinforce_indicators_now)
+        self.tray_menu.aboutToHide.connect(self.reinforce_indicators_now)
+        self.tray_menu.aboutToHide.connect(self.reinforce_indicators_deferred)
+        old_menu.deleteLater()
+
+    def reload_settings(self) -> None:
+        self._apply_config(_load_config())
 
     def on_tray_activated(self, reason) -> None:
         """Не трогает окно индикатора при кликах по трею, чтобы не было моргания."""
@@ -1691,21 +1849,16 @@ class LanguageIndicatorApp:
                 widget.show_corner_at(screen.availableGeometry(), force_topmost=True)
 
             widget.set_alpha(CONFIG.normal_alpha)
-            self.widgets.append((screen, widget))
+            if not self.is_visible:
+            widget.hide()
+        self.widgets.append((screen, widget))
 
         self.safe_update_state(force_no_popup=True)
         self.reinforce_indicators_deferred()
 
     def toggle_visibility(self) -> None:
-        self.is_visible = not self.is_visible
+        self.change_settings(indicators_visible=not self.is_visible)
 
-        for _, widget in self.widgets:
-            widget.setVisible(self.is_visible)
-
-        if self.is_visible:
-            self.reinforce_indicators_now()
-        else:
-            self.popup.hide()
 
     def restart_app(self) -> None:
         """
@@ -1715,6 +1868,12 @@ class LanguageIndicatorApp:
         скрипт из папки с пробелом в пути («C:\\My Tools\\...») не перезапускался.
         """
         logging.info("Restart requested")
+        if os.environ.get("CHOICE_PID"):
+            # Choice отслеживает первоначальный PID. Пересоздание процесса
+            # сделало бы его невидимым для кнопки «Остановить» в лаунчере.
+            logging.info("Restart inside Choice: reload settings and recreate widgets in place")
+            self.reload_settings()
+            return
         command = build_restart_command()
         self.hotkeys.unregister_all()
         self.tray.hide()
