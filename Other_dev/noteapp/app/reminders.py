@@ -48,7 +48,8 @@ def parse_reminder_datetime(value: str | None) -> datetime | None:
         return None
 
 
-def next_reminder_datetime(due: datetime, now: datetime, repeat: str) -> datetime | None:
+def next_reminder_datetime(due: datetime, now: datetime, repeat: str,
+                           anchor_day: int | None = None) -> datetime | None:
     repeat = normalize_reminder_repeat(repeat)
     if not repeat:
         return None
@@ -63,7 +64,7 @@ def next_reminder_datetime(due: datetime, now: datetime, repeat: str) -> datetim
         return due
     if repeat == "monthly":
         year, month = due.year, due.month
-        original_day = due.day
+        original_day = anchor_day if isinstance(anchor_day, int) and 1 <= anchor_day <= 31 else due.day
         while True:
             month += 1
             if month > 12:
@@ -166,9 +167,13 @@ class RemindersMixin:
                 self.save_note_to_file(note)
                 changed = True
                 continue
-            following = next_reminder_datetime(due, datetime.now(), note.reminder_repeat)
+            following = next_reminder_datetime(
+                due, datetime.now(), note.reminder_repeat,
+                getattr(note, "reminder_anchor_day", None))
             note.reminder = following.isoformat(timespec="seconds") if following else None
             note.reminder_repeat = normalize_reminder_repeat(note.reminder_repeat) if following else None
+            if not following:
+                note.reminder_anchor_day = None
             note.reminder_shown = False
             self.save_note_to_file(note)
             changed = True
@@ -205,6 +210,8 @@ class RemindersMixin:
                 self.current_note.reminder_repeat = None
             else:
                 self.current_note.reminder_repeat = normalize_reminder_repeat(repeat_option)
+            self.current_note.reminder_anchor_day = (
+                dt.date().day() if self.current_note.reminder_repeat == "monthly" else None)
             self.save_note_to_file(self.current_note)
             self.refresh_notes_list()
             self.show_toast(f"Напоминание: {self.current_note.reminder}")
@@ -255,6 +262,8 @@ class RemindersMixin:
             self.current_note.reminder_repeat = (
                 normalize_reminder_repeat(selected) or None
             )
+            self.current_note.reminder_anchor_day = (
+                dt.date().day() if self.current_note.reminder_repeat == "monthly" else None)
             self.save_note_to_file(self.current_note)
             self.refresh_notes_list()
             self.show_toast("Напоминание обновлено")
@@ -263,6 +272,7 @@ class RemindersMixin:
         if self.current_note:
             self.current_note.reminder = None
             self.current_note.reminder_repeat = None
+            self.current_note.reminder_anchor_day = None
             self.save_note_to_file(self.current_note)
             self.refresh_notes_list()
             self.show_toast("Напоминание удалено")
