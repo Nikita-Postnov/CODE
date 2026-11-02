@@ -3166,8 +3166,9 @@ class EditorWindow(QMainWindow):
         if out is None:
             return False
         self._remember_save(out)
-        self.view.mark_clean()
-        self._on_dirty_changed(False)
+        if self._last_project_path is None:
+            self.view.mark_clean()
+        self._on_dirty_changed(self.view.is_dirty())
         return True
 
     def copy_to_clipboard(self) -> bool:
