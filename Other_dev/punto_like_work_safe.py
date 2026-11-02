@@ -3331,8 +3331,11 @@ def _try_auto_layout_in_edit(hwnd: object, full_text: str, end: int, caret: int)
     if corrected is None:
         return False
     if _replace_range_in_edit_safely(hwnd, start, end, raw, corrected, caret):
+        logging.info("Autocorrection: %s -> %s", raw, corrected)
         _switch_layout_toward_text(corrected)
         return True
+    logging.debug("Autocorrection: replacement failed for %r in control %s",
+                  raw, _get_class_name(hwnd))
     return False
 
 
@@ -4264,8 +4267,12 @@ def _on_space_up(fg_hwnd: int, fg_exe: str) -> None:
         return
     if fg_exe in _MEDIA_PLAYER_EXES or fg_exe in _CONSOLE_EXES:
         return
+    if not _settings.auto_layout_correction and _compute_max_trigger_len(_get_rules_snapshot()) == 0:
+        return
     focus = _get_focused_control_hwnd()
-    if not _is_text_input_focus(focus) or _worker.busy:
+    if not _is_text_input_focus(focus):
+        logging.debug("Autocorrection: unsupported focus class=%r exe=%s",
+                      _get_class_name(focus), fg_exe)
         return
     revision = _keyboard_input_revision
 
@@ -4278,7 +4285,10 @@ def _on_space_up(fg_hwnd: int, fg_exe: str) -> None:
             return
         _apply_rules_in_edit(focus, after_space=True)
 
-    _worker.submit("rules-after-space", apply_if_unchanged)
+    # После отпускания Space целевое приложение ещё может обрабатывать символ.
+    # Не читаем текст в клавиатурном хуке и не блокируем ввод: через 80 мс
+    # запускаем одноразовую проверку в worker, если пользователь не продолжил печатать.
+    _idle.schedule(0.08, apply_if_unchanged)
 
 
 def _handle_keyboard_event(msg: int, l_param: int) -> None:
@@ -4563,6 +4573,11 @@ def run_app() -> None:
     _reload_rules()
     _reload_disabled_apps()
     _reload_layout_words()
+    logging.info(
+        "Autocorrection: enabled=%s, dictionary=%d words, settings=%s, dictionary_path=%s",
+        _settings.auto_layout_correction, len(_layout_words),
+        _settings_path(), _layout_words_path(),
+    )
     _main_thread_id = int(kernel32.GetCurrentThreadId())
     _ensure_thread_message_queue()  # чтобы PostThreadMessageW из трея не потерялся
 
