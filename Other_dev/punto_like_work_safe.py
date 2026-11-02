@@ -4478,6 +4478,47 @@ def _reinstall_hooks() -> None:
     _last_hook_event_time = time.monotonic()
 
 
+def _emit_choice_health() -> None:
+    target = os.environ.get("CHOICE_HEALTH_FILE", "").strip()
+    key = os.environ.get("CHOICE_HEALTH_KEY", "").strip()
+    if not target or not key:
+        return
+    try:
+        required = (_HK_CONVERT_BEFORE_CARET, _HK_TOGGLE_CASE_BEFORE_CARET)
+        hotkeys = all(
+            hotkey in _active_hotkeys
+            and _active_hotkeys[hotkey][1] == _desired_hotkeys.get(hotkey)
+            for hotkey in required
+        )
+        worker_ok = bool(_worker._thread and _worker._thread.is_alive())
+        idle_ok = bool(_idle._thread and _idle._thread.is_alive())
+        hooks_ok = bool(_hook_handle and _mouse_hook_handle)
+        busy_name, busy_for = _worker.current_job()
+        worker_ok = worker_ok and busy_for < _WORKER_STUCK_WARN_SECONDS
+        ok = bool(hotkeys and worker_ok and idle_ok and hooks_ok)
+        reasons = []
+        if not hotkeys:
+            reasons.append("Основное сочетание горячей клавиши занято или не зарегистрировано")
+        if not worker_ok:
+            reasons.append("Фоновый обработчик не отвечает")
+        if not idle_ok:
+            reasons.append("Таймер автозамены остановлен")
+        if not hooks_ok:
+            reasons.append("Клавиатурный или мышиный хук отсутствует")
+        data = {"key": key, "ts": time.time(), "ok": ok,
+                "detail": "Хуки, настроенные горячие клавиши и фоновые потоки активны" if ok else "; ".join(reasons)}
+        path = Path(target)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_name(path.name + "." + str(os.getpid()) + ".tmp")
+        try:
+            temporary.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+            os.replace(temporary, path)
+        finally:
+            temporary.unlink(missing_ok=True)
+    except (OSError, ValueError, RuntimeError) as exc:
+        logging.debug("Choice health probe failed: %s", exc)
+
+
 def _watchdog_check_hooks() -> None:
     """Переустанавливает LL-хуки, если Windows их тихо снял.
 
@@ -4840,6 +4881,7 @@ def run_app() -> None:
                     if now - last_hotkey_retry >= 10.0:
                         last_hotkey_retry = now
                         _run_guarded("hotkey-recovery", _retry_preferred_hotkeys)
+                    _emit_choice_health()
                     continue
                 if msg.message == WM_HOTKEY:
                     physical_id = int(msg.wParam)
