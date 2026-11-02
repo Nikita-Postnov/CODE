@@ -57,6 +57,7 @@ class TestNotesStorage(unittest.TestCase):
         self.worker._rotate_backups = types.MethodType(funcs["_rotate_backups"], self.worker)
         self.worker._atomic_write_json = funcs["_atomic_write_json_static"]
         self.worker._as_path = pathlib.Path
+        self.worker._write_note_cache_from_payload = lambda path, payload: None
 
     def test_unique_backups_even_when_saved_in_same_second(self):
         folder = self.root / "a"
