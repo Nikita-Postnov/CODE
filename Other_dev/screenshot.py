@@ -94,6 +94,9 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QAbstractItemView,
     QCheckBox,
+    QDialogButtonBox,
+    QFormLayout,
+    QSpinBox,
 )
 
 log = logging.getLogger(__name__)
@@ -1665,6 +1668,7 @@ class CanvasView(QGraphicsView):
         self._dirty_hook: Optional[Callable[[bool], None]] = None
         self._scene_edit_pre: Optional[tuple[QImage, QImage, list[dict]]] = None
         self._scene_edit_items: list[tuple[QGraphicsItem, tuple]] = []
+        self._paste_count = 0
 
     def _load_editor_state(self) -> None:
         try:
@@ -1847,10 +1851,12 @@ class CanvasView(QGraphicsView):
         self.horizontalScrollBar().setValue(0)
         self.verticalScrollBar().setValue(0)
 
-    def _snapshot_scene(self) -> list[dict]:
+    def _snapshot_scene(self, only_items=None) -> list[dict]:
         out: list[dict] = []
         for it in self._scene.items():
             if it in (self.base_item, self.preview_item):
+                continue
+            if only_items is not None and it not in only_items:
                 continue
 
             if isinstance(it, StickerItem):
@@ -2044,6 +2050,14 @@ class CanvasView(QGraphicsView):
             if isinstance(it, (ResizableRectItem, ResizableEllipseItem,
                                 ResizableArrowItem, StickerItem))
         ]
+
+    def selected_objects(self) -> list:
+        selectable = self._resizable_items()
+        selected = [it for it in selectable if it.isSelected()]
+        for it in selectable:
+            if it._show_handles and it not in selected:
+                selected.append(it)
+        return selected
 
     def _clear_all_handles(self):
         """Hide handles on every resizable item."""
