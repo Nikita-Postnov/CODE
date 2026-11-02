@@ -101,10 +101,10 @@ class HistoryGuiTests(unittest.TestCase):
         self.assertEqual(launcher._open_editor_image.call_args.args[0].size(), image.size())
         dialog.copy_selected()
         self.assertEqual(QApplication.clipboard().image().size(), image.size())
-        with patch.object(QMessageBox, "question", return_value=QMessageBox.No):
+        with patch.object(shot, "_question_ru", return_value=QMessageBox.No):
             dialog.delete_selected()
         self.assertTrue(path.exists())
-        with patch.object(QMessageBox, "question", return_value=QMessageBox.Yes):
+        with patch.object(shot, "_question_ru", return_value=QMessageBox.Yes):
             dialog.delete_selected()
         self.assertFalse(path.exists())
         self.assertEqual(dialog.items.count(), 0)
@@ -117,7 +117,7 @@ class HistoryGuiTests(unittest.TestCase):
         self.addCleanup(dialog.close)
         dialog.items.currentItem().setData(shot.Qt.UserRole, str(outside))
         self.assertIsNone(dialog._selected_path())
-        with patch.object(QMessageBox, "question") as question:
+        with patch.object(shot, "_question_ru") as question:
             dialog.delete_selected()
         question.assert_not_called()
         self.assertTrue(outside.exists())
