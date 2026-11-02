@@ -244,6 +244,8 @@ _TRAY_MENU_OPEN_DISABLED_LIST: Final[int] = 1006
 _TRAY_MENU_OPEN_SETTINGS: Final[int] = 1007
 _TRAY_MENU_OPEN_APP_SETTINGS: Final[int] = 1008
 _TRAY_MENU_OPEN_LAYOUT_WORDS: Final[int] = 1009
+_TRAY_MENU_DIAGNOSTICS: Final[int] = 1010
+_TRAY_MENU_RESUME_ALL: Final[int] = 1011
 
 _CLIPBOARD_POLL_TIMER_ID: Final[int] = 1  # только fallback, если listener не встал
 
@@ -1169,7 +1171,7 @@ class _JobWorker:
         self._job_name: str = ""
 
     def start(self) -> None:
-        if self._thread is None:
+        if self._thread is None or not self._thread.is_alive():
             self._thread = threading.Thread(target=self._run, name=self._name, daemon=True)
             self._thread.start()
 
@@ -1264,7 +1266,7 @@ class _IdleScheduler:
         self._thread: Optional[threading.Thread] = None
 
     def start(self) -> None:
-        if self._thread is None:
+        if self._thread is None or not self._thread.is_alive():
             self._stopped = False
             self._thread = threading.Thread(target=self._run, name="idle", daemon=True)
             self._thread.start()
@@ -3894,6 +3896,8 @@ def _show_tray_menu(hwnd: int) -> None:
         add(_TRAY_MENU_OPEN_SETTINGS, "Настройки правил/словарь…")
         add(_TRAY_MENU_OPEN_APP_SETTINGS, "Открыть файл настроек (хоткеи, лимиты)")
         add(_TRAY_MENU_OPEN_LAYOUT_WORDS, "Словарь исправления раскладки")
+        add(_TRAY_MENU_DIAGNOSTICS, "Проверить состояние NP_Punto")
+        add(_TRAY_MENU_RESUME_ALL, "Возобновить работу во всех окнах")
         add(0, None, MF_SEPARATOR)
         add(_TRAY_MENU_TOGGLE_ACTIVE_WINDOW, "Работать только в текущем окне",
             MF_STRING | (MF_CHECKED if _active_window_only else 0))
@@ -3928,6 +3932,15 @@ def _show_tray_menu(hwnd: int) -> None:
         _open_file_async(_settings_path(), _load_settings)
     elif cmd == _TRAY_MENU_OPEN_LAYOUT_WORDS:
         _open_file_async(_layout_words_path(), _load_layout_words)
+    elif cmd == _TRAY_MENU_DIAGNOSTICS:
+        report = _runtime_diagnostics(origin_exe)
+        logging.info("NP_Punto diagnosis: %s", report.replace("\n", "; "))
+        threading.Thread(
+            target=lambda: _show_message_box("NP_Punto — состояние", report),
+            name="punto-diagnostics", daemon=True,
+        ).start()
+    elif cmd == _TRAY_MENU_RESUME_ALL:
+        _resume_in_all_windows()
     elif cmd == _TRAY_MENU_TOGGLE_ACTIVE_WINDOW:
         if not _active_window_only:
             _allowed_hwnd = origin_hwnd
@@ -4444,8 +4457,13 @@ def _watchdog_check_hooks() -> None:
 
 
 def _watchdog_check_worker() -> None:
-    """Пишет в лог, если задача worker'а выполняется подозрительно долго."""
+    """Обнаруживает отказ worker/idle, восстанавливает потоки, диагностирует зависания."""
     global _worker_stuck_warned
+    for component, label in ((_worker, "worker"), (_idle, "idle")):
+        thread = component._thread
+        if thread is None or not thread.is_alive():
+            logging.error("NP_Punto: %s thread stopped unexpectedly; restarting", label)
+            component.start()
     name, running_for = _worker.current_job()
     if running_for > _WORKER_STUCK_WARN_SECONDS:
         if not _worker_stuck_warned:
@@ -4517,6 +4535,63 @@ def _register_hotkey_with_fallback(hotkey_id: int, candidates: list[HotkeyCombo]
     )
 
 
+_unavailable_hotkeys: tuple[str, ...] = ()
+
+
+def _register_available_hotkeys(definitions: list[tuple[int, list[HotkeyCombo], str]]) -> list[int]:
+    """Занятый хоткей не должен лишать пользователя ВСЕХ функций NP_Punto."""
+    global _unavailable_hotkeys
+    successful: list[int] = []
+    unavailable: list[str] = []
+    for hotkey_id, candidates, purpose in definitions:
+        try:
+            _register_hotkey_with_fallback(hotkey_id, candidates, purpose)
+            successful.append(hotkey_id)
+        except OSError as exc:
+            unavailable.append(purpose)
+            logging.warning("Hotkey unavailable (%s): %s; other NP_Punto features remain active",
+                            purpose, exc)
+    _unavailable_hotkeys = tuple(unavailable)
+    if unavailable:
+        logging.warning("Unavailable hotkeys: %s. Other functions and tray stay enabled.",
+                        ", ".join(unavailable))
+    return successful
+
+
+def _resume_in_all_windows() -> None:
+    """Восстанавливает глобальную обработку после случайной паузы/ограничения окном."""
+    global _is_paused, _active_window_only, _allowed_hwnd
+    _is_paused = False
+    _active_window_only = False
+    _allowed_hwnd = 0
+    _idle.cancel()
+    _invalidate_fg_cache()
+    _post_tray_refresh()
+    logging.info("NP_Punto resumed: pause=False, active_window_only=False")
+
+
+def _runtime_diagnostics(exe: str = "") -> str:
+    """Без чтения набираемого текста показывает причины неработающей автозамены."""
+    with _disabled_apps_lock:
+        disabled = exe.lower() in _disabled_apps if exe else False
+    worker_ok = _worker._thread is not None and _worker._thread.is_alive()
+    idle_ok = _idle._thread is not None and _idle._thread.is_alive()
+    return "\n".join((
+        f"Работа: {'ПАУЗА' if _is_paused else 'включена'}",
+        f"Только одно окно: {'ДА' if _active_window_only else 'нет'}",
+        f"Исправление раскладки: {'включено' if _settings.auto_layout_correction else 'выключено'}",
+        f"Слов в словаре: {len(_layout_words)}",
+        f"Недоступные хоткеи: {', '.join(_unavailable_hotkeys) if _unavailable_hotkeys else 'нет'}",
+        f"Текущее приложение: {exe or 'не определено'}",
+        f"Исключено: {'ДА' if disabled else 'нет'}",
+        f"Фоновая обработка: {'работает' if worker_ok else 'НЕ РАБОТАЕТ'}",
+        f"Таймер автозамены: {'работает' if idle_ok else 'НЕ РАБОТАЕТ'}",
+        f"Клавиатурный хук: {'установлен' if _hook_handle else 'НЕ УСТАНОВЛЕН'}",
+        f"Файл настроек: {_settings_path()}",
+        f"Журнал: {DATA_DIR / ('punto_like' + _session_suffix() + '.log')}",
+    ))
+
+
 def _toggle_pause() -> None:
     global _is_paused
     _is_paused = not _is_paused
@@ -4586,9 +4661,7 @@ def run_app() -> None:
     registered_ids: list[int] = []
     timer_id = 0
     try:
-        for hk_id, candidates, purpose in hotkey_defs:
-            _register_hotkey_with_fallback(hk_id, candidates, purpose)
-            registered_ids.append(hk_id)
+        registered_ids = _register_available_hotkeys(hotkey_defs)
 
         logging.info("punto_like started (session=%d, rdp=%s)", _get_session_id(), _is_rdp_session())
         logging.info(

@@ -221,5 +221,89 @@ class KeyboardTests(unittest.TestCase):
 
 
 
+
+class RecoveryTests(unittest.TestCase):
+    def test_busy_hotkey_does_not_disable_other_functions(self):
+        candidates = [(1, [(0, punto.VK_INSERT)], "convert-selected"),
+                      (2, [(punto.MOD_CONTROL, punto.VK_INSERT)], "convert-before-caret"),
+                      (3, [(punto.MOD_CONTROL | punto.MOD_ALT, punto.VK_F11)], "pause")]
+        def register(ident, combos, purpose):
+            if ident == 2:
+                raise OSError(1409, "already in use")
+            return combos[0]
+        with patch.object(punto, "_register_hotkey_with_fallback", side_effect=register):
+            result = punto._register_available_hotkeys(candidates)
+        self.assertEqual(result, [1, 3])
+
+    def test_all_hotkeys_busy_still_allows_tray_and_auto_layout(self):
+        candidates = [(1, [(0, punto.VK_INSERT)], "convert-selected")]
+        with patch.object(punto, "_register_hotkey_with_fallback", side_effect=OSError(1409, "busy")):
+            result = punto._register_available_hotkeys(candidates)
+        self.assertEqual(result, [])
+
+    def test_watchdog_recovers_dead_worker_and_idle_scheduler(self):
+        worker = Mock()
+        worker._thread = Mock()
+        worker._thread.is_alive.return_value = False
+        worker.current_job.return_value = ("", 0.0)
+        idle = Mock()
+        idle._thread = Mock()
+        idle._thread.is_alive.return_value = False
+        with patch.object(punto, "_worker", worker), patch.object(punto, "_idle", idle):
+            punto._watchdog_check_worker()
+        worker.start.assert_called_once_with()
+        idle.start.assert_called_once_with()
+
+    def test_watchdog_preserves_healthy_threads(self):
+        worker = Mock()
+        worker._thread = Mock()
+        worker._thread.is_alive.return_value = True
+        worker.current_job.return_value = ("", 0.0)
+        idle = Mock()
+        idle._thread = Mock()
+        idle._thread.is_alive.return_value = True
+        with patch.object(punto, "_worker", worker), patch.object(punto, "_idle", idle):
+            punto._watchdog_check_worker()
+        worker.start.assert_not_called()
+        idle.start.assert_not_called()
+
+    def test_resuming_clears_pause_and_single_window_restriction(self):
+        with patch.object(punto, "_is_paused", True), \
+             patch.object(punto, "_active_window_only", True), \
+             patch.object(punto, "_allowed_hwnd", 123), \
+             patch.object(punto, "_idle") as idle, \
+             patch.object(punto, "_post_tray_refresh"), \
+             patch.object(punto, "_invalidate_fg_cache"):
+            punto._resume_in_all_windows()
+            self.assertFalse(punto._is_paused)
+            self.assertFalse(punto._active_window_only)
+            self.assertEqual(punto._allowed_hwnd, 0)
+            idle.cancel.assert_called_once()
+
+    def test_diagnostic_exposes_paused_and_disabled_app_without_user_text(self):
+        worker = Mock()
+        worker._thread = Mock()
+        worker._thread.is_alive.return_value = True
+        idle = Mock()
+        idle._thread = Mock()
+        idle._thread.is_alive.return_value = True
+        with patch.object(punto, "_worker", worker), patch.object(punto, "_idle", idle), \
+             patch.object(punto, "_disabled_apps", frozenset({"notepad.exe"})), \
+             patch.object(punto, "_settings", punto.Settings(auto_layout_correction=True)), \
+             patch.object(punto, "_layout_words", frozenset({"привет"})), \
+             patch.object(punto, "_is_paused", True):
+            report = punto._runtime_diagnostics("notepad.exe")
+        self.assertIn("ПАУЗА", report)
+        self.assertIn("Исключено: ДА", report)
+        self.assertIn("Исправление раскладки: включено", report)
+        self.assertIn("Слов в словаре: 1", report)
+
+    def test_language_indicator_default_shortcuts_do_not_overlap(self):
+        forbidden = {(punto.MOD_CONTROL | punto.MOD_ALT, ord("Q")),
+                     (punto.MOD_CONTROL | punto.MOD_ALT, ord("R"))}
+        for _, candidates, _ in punto._hotkey_definitions(punto.Hotkeys()):
+            self.assertTrue(forbidden.isdisjoint(candidates))
+
+
 if __name__ == "__main__":
     unittest.main()
