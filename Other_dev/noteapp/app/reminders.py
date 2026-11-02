@@ -5,6 +5,8 @@ select_note, show_toast) остаются в NotesApp и доступны чер
 """
 
 from PySide6.QtCore import QDateTime, QTimer, Qt
+from datetime import datetime, timedelta
+from calendar import monthrange
 from PySide6.QtWidgets import (
     QComboBox,
     QDateTimeEdit,
@@ -19,6 +21,57 @@ from PySide6.QtWidgets import (
     QSystemTrayIcon,
     QVBoxLayout,
 )
+
+
+
+REPEAT_CODES = {
+    "": "", "once": "", "однократно": "",
+    "daily": "daily", "каждый день": "daily",
+    "workdays": "workdays", "по будням": "workdays",
+    "weekends": "weekends", "по выходным": "weekends",
+    "weekly": "weekly", "каждую неделю": "weekly",
+    "monthly": "monthly", "каждый месяц": "monthly",
+    "minutely": "minutely", "hourly": "hourly",
+}
+
+
+def normalize_reminder_repeat(value: str | None) -> str:
+    return REPEAT_CODES.get(str(value or "").strip().casefold(), "")
+
+
+def parse_reminder_datetime(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        return None
+
+
+def next_reminder_datetime(due: datetime, now: datetime, repeat: str) -> datetime | None:
+    repeat = normalize_reminder_repeat(repeat)
+    if not repeat:
+        return None
+    if repeat in ("daily", "weekly", "hourly", "minutely"):
+        seconds = {"daily": 86400, "weekly": 604800, "hourly": 3600, "minutely": 60}[repeat]
+        jump = (now - due).total_seconds()
+        return due + timedelta(seconds=seconds * (max(0, int(jump // seconds)) + 1))
+    if repeat in ("workdays", "weekends"):
+        due += timedelta(days=max(1, (now.date() - due.date()).days))
+        while due <= now or ((due.weekday() < 5) != (repeat == "workdays")):
+            due += timedelta(days=1)
+        return due
+    if repeat == "monthly":
+        candidate = due
+        original_day = due.day
+        while candidate <= now:
+            year, month = candidate.year, candidate.month + 1
+            if month > 12:
+                year += 1
+                month = 1
+            candidate = candidate.replace(year=year, month=month, day=min(original_day, monthrange(year, month)[1]))
+        return candidate
+    return None
 
 
 class RemindersMixin:
@@ -88,65 +141,35 @@ class RemindersMixin:
                 self.select_note(note)
             except Exception:
                 pass
-            note.reminder_shown = True
         elif clicked == snooze5_btn:
             _snooze(5)
+            return True
         elif clicked == snooze15_btn:
             _snooze(15)
+            return True
         elif clicked == snooze60_btn:
             _snooze(60)
-        else:
-            note.reminder_shown = True
+            return True
+        return False
 
     def check_reminders(self):
-        now = QDateTime.currentDateTime()
+        now = datetime.now()
         changed = False
-        for note in self.notes:
-            if note.reminder and not getattr(note, "reminder_shown", False):
-                reminder_time = QDateTime.fromString(note.reminder, Qt.ISODate)
-                if not reminder_time.isValid():
-                    continue
-                if reminder_time <= now:
-                    self.show_reminder_dialog(note)
-                    changed = True
-                    repeat = (note.reminder_repeat or "").lower()
-                    if repeat in ("once", "", None):
-                        note.reminder = None
-                        note.reminder_repeat = None
-                    elif repeat == "workdays":
-                        next_dt = reminder_time.addDays(1)
-                        while next_dt.date().dayOfWeek() > 5:
-                            next_dt = next_dt.addDays(1)
-                        note.reminder = next_dt.toString(Qt.ISODate)
-                        note.reminder_shown = False
-                    elif repeat == "weekends":
-                        next_dt = reminder_time.addDays(1)
-                        while next_dt.date().dayOfWeek() < 6:
-                            next_dt = next_dt.addDays(1)
-                        note.reminder = next_dt.toString(Qt.ISODate)
-                        note.reminder_shown = False
-                    elif repeat == "daily":
-                        next_dt = reminder_time.addDays(1)
-                        note.reminder = next_dt.toString(Qt.ISODate)
-                        note.reminder_shown = False
-                    elif repeat == "weekly":
-                        next_dt = reminder_time.addDays(7)
-                        note.reminder = next_dt.toString(Qt.ISODate)
-                        note.reminder_shown = False
-                    elif repeat == "minutely":
-                        next_dt = reminder_time.addSecs(60)
-                        note.reminder = next_dt.toString(Qt.ISODate)
-                        note.reminder_shown = False
-                    elif repeat == "hourly":
-                        next_dt = reminder_time.addSecs(3600)
-                        note.reminder = next_dt.toString(Qt.ISODate)
-                        note.reminder_shown = False
-                    else:
-                        note.reminder = None
-                        note.reminder_repeat = None
-
+        for note in list(self.notes):
+            due = parse_reminder_datetime(note.reminder)
+            if due is None or due.tzinfo is not None or due > now:
+                continue
+            if self.show_reminder_dialog(note):
+                self.save_note_to_file(note)
+                changed = True
+                continue
+            following = next_reminder_datetime(due, datetime.now(), note.reminder_repeat)
+            note.reminder = following.isoformat(timespec="seconds") if following else None
+            note.reminder_repeat = normalize_reminder_repeat(note.reminder_repeat) if following else None
+            note.reminder_shown = False
+            self.save_note_to_file(note)
+            changed = True
         if changed:
-            self.save_all_notes_to_disk()
             self.refresh_notes_list()
 
     def set_reminder_for_note(self):
@@ -173,12 +196,12 @@ class RemindersMixin:
         layout.addWidget(buttons)
         if dialog.exec() == QDialog.DialogCode.Accepted:
             dt = datetime_edit.dateTime()
-            self.current_note.reminder = dt.toString("yyyy-MM-dd HH:mm")
+            self.current_note.reminder = dt.toString(Qt.ISODate)
             repeat_option = repeat_combo.currentText()
             if repeat_option == "Однократно":
                 self.current_note.reminder_repeat = None
             else:
-                self.current_note.reminder_repeat = repeat_option
+                self.current_note.reminder_repeat = normalize_reminder_repeat(repeat_option)
             self.save_note_to_file(self.current_note)
             self.refresh_notes_list()
             self.show_toast(f"Напоминание: {self.current_note.reminder}")
@@ -225,10 +248,10 @@ class RemindersMixin:
 
         if dialog.exec() == QDialog.Accepted:
             dt = datetime_edit.dateTime()
-            self.current_note.reminder = dt.toString("yyyy-MM-dd HH:mm")
+            self.current_note.reminder = dt.toString(Qt.ISODate)
             selected = repeat_combo.currentText()
             self.current_note.reminder_repeat = (
-                None if selected == "Однократно" else selected
+                normalize_reminder_repeat(selected) or None
             )
             self.save_note_to_file(self.current_note)
             self.refresh_notes_list()
@@ -243,52 +266,7 @@ class RemindersMixin:
             self.show_toast("Напоминание удалено")
 
     def check_upcoming_reminders(self):
-        now = QDateTime.currentDateTime()
-        for note in self.notes:
-            if note.reminder:
-                reminder_dt = QDateTime.fromString(note.reminder, "yyyy-MM-dd HH:mm")
-                if -60 <= now.secsTo(reminder_dt) <= 60:
-                    self.tray_icon.showMessage(
-                        "Напоминание",
-                        f"Заметка: {note.title}",
-                        QSystemTrayIcon.Information,
-                        10000,
-                    )
-                    self.show_reminder_popup(note)
-                    if note.reminder_repeat == "Каждый день":
-                        note.reminder = reminder_dt.addDays(1).toString(
-                            "yyyy-MM-dd HH:mm"
-                        )
-                        self.save_note_to_file(note)
-                    elif note.reminder_repeat == "По будням":
-                        if reminder_dt.date().dayOfWeek() < 6:
-                            note.reminder = reminder_dt.addDays(1).toString(
-                                "yyyy-MM-dd HH:mm"
-                            )
-                        else:
-                            days_to_monday = 8 - reminder_dt.date().dayOfWeek()
-                            note.reminder = reminder_dt.addDays(
-                                days_to_monday
-                            ).toString("yyyy-MM-dd HH:mm")
-                        self.save_note_to_file(note)
-                    elif note.reminder_repeat == "Каждую неделю":
-                        note.reminder = reminder_dt.addDays(7).toString(
-                            "yyyy-MM-dd HH:mm"
-                        )
-                        self.save_note_to_file(note)
-                    elif note.reminder_repeat == "Каждый месяц":
-                        note.reminder = reminder_dt.addMonths(1).toString(
-                            "yyyy-MM-dd HH:mm"
-                        )
-                        self.save_note_to_file(note)
-                    else:
-                        note.reminder = None
-                        note.reminder_repeat = None
-                        self.save_note_to_file(note)
-                elif now > reminder_dt.addSecs(60):
-                    note.reminder = None
-                    self.save_note_to_file(note)
-                    self.refresh_notes_list()
+        self.check_reminders()
 
     def show_reminder_popup(self, note):
         dlg = QDialog(self, Qt.WindowStaysOnTopHint)
@@ -305,5 +283,5 @@ class RemindersMixin:
 
     def setup_reminder_timer(self):
         self.reminder_timer = QTimer(self)
-        self.reminder_timer.timeout.connect(self.check_upcoming_reminders)
+        self.reminder_timer.timeout.connect(self.check_reminders)
         self.reminder_timer.start(60000)
