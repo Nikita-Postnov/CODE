@@ -4536,17 +4536,38 @@ def _register_hotkey_with_fallback(hotkey_id: int, candidates: list[HotkeyCombo]
 
 
 _unavailable_hotkeys: tuple[str, ...] = ()
+_active_hotkeys: dict[int, tuple[int, HotkeyCombo]] = {}
+_desired_hotkeys: dict[int, HotkeyCombo] = {}
+_hotkey_names: dict[int, str] = {}
+_hotkey_hit_counts: dict[int, int] = {}
+_HOTKEY_RECOVERY_ID_OFFSET: Final[int] = 100
 
 
 def _register_available_hotkeys(definitions: list[tuple[int, list[HotkeyCombo], str]]) -> list[int]:
     """Занятый хоткей не должен лишать пользователя ВСЕХ функций NP_Punto."""
-    global _unavailable_hotkeys
+    global _unavailable_hotkeys, _active_hotkeys, _desired_hotkeys, _hotkey_names
     successful: list[int] = []
     unavailable: list[str] = []
+    _active_hotkeys = {}
+    _desired_hotkeys = {}
+    _hotkey_names = {}
+    _hotkey_hit_counts.clear()
     for hotkey_id, candidates, purpose in definitions:
+        prepared = _prepare_hotkey_candidates(candidates)
+        if not prepared:
+            unavailable.append(purpose)
+            continue
+        _desired_hotkeys[hotkey_id] = prepared[0]
+        _hotkey_names[hotkey_id] = purpose
         try:
-            _register_hotkey_with_fallback(hotkey_id, candidates, purpose)
+            actual = _register_hotkey_with_fallback(hotkey_id, candidates, purpose)
+            _active_hotkeys[hotkey_id] = (hotkey_id, actual)
             successful.append(hotkey_id)
+            if actual != prepared[0]:
+                logging.warning(
+                    "Hotkey fallback: %s requested=%s active=%s; will retry preferred",
+                    purpose, _format_hotkey(*prepared[0]), _format_hotkey(*actual),
+                )
         except OSError as exc:
             unavailable.append(purpose)
             logging.warning("Hotkey unavailable (%s): %s; other NP_Punto features remain active",
@@ -4556,6 +4577,47 @@ def _register_available_hotkeys(definitions: list[tuple[int, list[HotkeyCombo], 
         logging.warning("Unavailable hotkeys: %s. Other functions and tray stay enabled.",
                         ", ".join(unavailable))
     return successful
+
+
+def _retry_preferred_hotkeys() -> None:
+    """Возвращаем штатные сочетания, не теряя текущий хоткей при неудаче."""
+    for logical_id, preferred in tuple(_desired_hotkeys.items()):
+        active = _active_hotkeys.get(logical_id)
+        if active is not None and active[1] == preferred:
+            continue
+        temporary_id = _HOTKEY_RECOVERY_ID_OFFSET + logical_id
+        ctypes.set_last_error(0)
+        if not user32.RegisterHotKey(None, temporary_id, preferred[0] | MOD_NOREPEAT, preferred[1]):
+            err = ctypes.get_last_error()
+            if err != ERROR_HOTKEY_ALREADY_REGISTERED:
+                logging.warning("Hotkey retry %s: RegisterHotKey error=%d",
+                                _hotkey_names.get(logical_id), err)
+            continue
+        if active is not None and not user32.UnregisterHotKey(None, active[0]):
+            user32.UnregisterHotKey(None, temporary_id)
+            logging.warning("Hotkey retry %s: old binding could not be released",
+                            _hotkey_names.get(logical_id))
+            continue
+        _active_hotkeys[logical_id] = (temporary_id, preferred)
+        logging.info("Hotkey recovered: %s restored to %s (id=%d)",
+                     _hotkey_names.get(logical_id, logical_id),
+                     _format_hotkey(*preferred), temporary_id)
+
+
+def _hotkey_diagnostic_lines() -> tuple[str, ...]:
+    lines = []
+    for logical_id, preferred in _desired_hotkeys.items():
+        active = _active_hotkeys.get(logical_id)
+        name = _hotkey_names.get(logical_id, str(logical_id))
+        state = ("НЕДОСТУПЕН" if active is None else
+                 "работает" if active[1] == preferred else
+                 "запасное сочетание; основное занято")
+        current = _format_hotkey(*active[1]) if active else "—"
+        lines.append(
+            f"{name}: {current} ({state}; настроено {_format_hotkey(*preferred)}; "
+            f"срабатываний {_hotkey_hit_counts.get(logical_id, 0)})"
+        )
+    return tuple(lines)
 
 
 def _resume_in_all_windows() -> None:
@@ -4581,7 +4643,9 @@ def _runtime_diagnostics(exe: str = "") -> str:
         f"Только одно окно: {'ДА' if _active_window_only else 'нет'}",
         f"Исправление раскладки: {'включено' if _settings.auto_layout_correction else 'выключено'}",
         f"Слов в словаре: {len(_layout_words)}",
-        f"Недоступные хоткеи: {', '.join(_unavailable_hotkeys) if _unavailable_hotkeys else 'нет'}",
+        f"Недоступные хоткеи при запуске: {', '.join(_unavailable_hotkeys) if _unavailable_hotkeys else 'нет'}",
+        "Горячие клавиши (фактическая регистрация):",
+        *_hotkey_diagnostic_lines(),
         f"Текущее приложение: {exe or 'не определено'}",
         f"Исключено: {'ДА' if disabled else 'нет'}",
         f"Фоновая обработка: {'работает' if worker_ok else 'НЕ РАБОТАЕТ'}",
