@@ -46,9 +46,9 @@ class ChoiceFeatures:
                     rid, _ = active[-1]
                     key = str(self.proc_info.get(rid, {}).get("health_key") or "")
                     if key:
-                        from choice_dev import app_folder
+                        
                         state, detail = health_status(
-                            heartbeat_file(app_folder(), path), key=key,
+                            heartbeat_file(self._choice_root, path), key=key,
                             started=self.proc_start_time.get(rid, time.time()))
             result.append({"path": path, "name": name, "running": bool(active),
                            "state": state, "detail": detail})
@@ -104,7 +104,7 @@ class ChoiceFeatures:
 
     def _choice_service_tick(self):
         try:
-            from choice_dev import app_folder
+            
             entries = self._choice_entries()
             for entry in entries:
                 path = entry["path"]
@@ -129,19 +129,19 @@ class ChoiceFeatures:
                     self._choice_health_failures[path] = 0
                     self._append_error(f"Автовосстановление {entry['name']}: перезапуск")
                     self._choice_restart(path)
-            atomic_json(control_dir(app_folder()) / "status.json", {
+            atomic_json(control_dir(self._choice_root) / "status.json", {
                 "ts": time.time(), "apps": entries, "choice_pid": os.getpid(),
             })
-            receive_requests(app_folder(), self._choice_handle_request)
+            receive_requests(self._choice_root, self._choice_handle_request)
         except Exception as exc:
             self._append_error("Choice Control: " + str(exc)[:200])
 
     def _show_choice_health(self):
-        from choice_dev import app_folder
+        
         entries = self._choice_entries()
         lines = [f"{x['name']}: {x['state']} — {x['detail']}"
                  for x in entries if x["running"]]
-        report = portability_report(self.settings.__dict__, app_folder())
+        report = portability_report(self.settings.__dict__, self._choice_root)
         lines += ["", f"Отсутствующих файлов: {len(report['missing'])}",
                   f"Внешних путей: {len(report['external'])}"]
         lines.extend(report["missing"][:10])
@@ -149,28 +149,28 @@ class ChoiceFeatures:
                                 "\n".join(lines) if lines else "Нет запущенных приложений")
 
     def _export_choice_settings(self):
-        from choice_dev import app_folder, config_file
+        
         self._save_settings()
         target, _ = QFileDialog.getSaveFileName(
-            self, "Экспорт настроек Choice", str(app_folder() / "Choice_backup.zip"),
+            self, "Экспорт настроек Choice", str(self._choice_root / "Choice_backup.zip"),
             "Архив ZIP (*.zip)")
         if not target:
             return
         try:
-            images = export_bundle(app_folder(), config_file(), Path(target))
+            images = export_bundle(self._choice_root, self._choice_config, Path(target))
             QMessageBox.information(self, "Экспорт выполнен",
                                     f"Настройки и {images} файлов иконок сохранены.\n{target}")
         except (OSError, ValueError, TypeError) as exc:
             QMessageBox.warning(self, "Ошибка экспорта", str(exc))
 
     def _import_choice_settings(self):
-        from choice_dev import app_folder, config_file, Settings, detect_system_python
+        
         if any(p.state() != QProcess.NotRunning for p in self.processes.values()):
             QMessageBox.warning(self, "Импорт настроек",
                                 "Перед импортом останови приложения, которыми управляет Choice.")
             return
         source, _ = QFileDialog.getOpenFileName(
-            self, "Импорт настроек Choice", str(app_folder()), "Архив ZIP (*.zip)")
+            self, "Импорт настроек Choice", str(self._choice_root), "Архив ZIP (*.zip)")
         if not source:
             return
         if QMessageBox.question(
@@ -179,10 +179,10 @@ class ChoiceFeatures:
         ) != QMessageBox.Yes:
             return
         try:
-            images = import_bundle(app_folder(), config_file(), Path(source))
-            self.settings = Settings.load(config_file())
-            self.python_field.setText(self.settings.python_executable or detect_system_python())
-            self.folder_field.setText(self.settings.scripts_folder or str(app_folder()))
+            images = import_bundle(self._choice_root, self._choice_config, Path(source))
+            self.settings = self._choice_settings_type.load(self._choice_config)
+            self.python_field.setText(self.settings.python_executable or self._choice_detect_python())
+            self.folder_field.setText(self.settings.scripts_folder or str(self._choice_root))
             self.scan_checkbox.setChecked(bool(self.settings.scan_subfolders))
             self._refresh_script_list(save=False)
             self._refresh_home_cards()
