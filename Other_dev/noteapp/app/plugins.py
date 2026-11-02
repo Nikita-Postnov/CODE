@@ -219,6 +219,8 @@ class PluginsMixin:
 
         for plugin_file in sorted(plugins_folder.glob("*.py"), key=lambda p: p.name.lower()):
             plugin_name = plugin_file.stem
+            if not plugins_state.get(plugin_name, False):
+                continue
             try:
                 spec = importlib.util.spec_from_file_location(plugin_name, str(plugin_file))
                 if spec is None or spec.loader is None:
@@ -232,10 +234,9 @@ class PluginsMixin:
                     raise
                 self.active_plugins[plugin_name] = module
 
-                if plugins_state.get(plugin_name, False):
-                    on_enable = getattr(module, "on_enable", None)
-                    if callable(on_enable):
-                        on_enable(parent=self)
+                on_enable = getattr(module, "on_enable", None)
+                if callable(on_enable):
+                    on_enable(parent=self)
             except Exception as exc:
                 logging.exception("Ошибка при загрузке плагина %s", plugin_name)
                 self._append_plugin_error(
