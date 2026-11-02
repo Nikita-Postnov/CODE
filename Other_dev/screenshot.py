@@ -3775,10 +3775,6 @@ class Launcher(QMainWindow):
                 self.act_tray_shot.setText(f"Сделать скриншот\t{main}")
                 if ocr:
                     self.act_tray_ocr.setText(f"Распознать текст\t{ocr}")
-                msg = f"{self._hotkey.description} — выделить область, Tab — снимок / запись / текст."
-                if ocr:
-                    msg += f"\n{ocr} — сразу распознать текст."
-                self.tray.showMessage("NPCore Скриншоты", msg, QSystemTrayIcon.Information, 3000)
             else:
                 self.tray.showMessage(
                     "NPCore Скриншоты",
