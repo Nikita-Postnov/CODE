@@ -4535,8 +4535,12 @@ def _register_hotkey_with_fallback(hotkey_id: int, candidates: list[HotkeyCombo]
     )
 
 
+_unavailable_hotkeys: tuple[str, ...] = ()
+
+
 def _register_available_hotkeys(definitions: list[tuple[int, list[HotkeyCombo], str]]) -> list[int]:
     """Занятый хоткей не должен лишать пользователя ВСЕХ функций NP_Punto."""
+    global _unavailable_hotkeys
     successful: list[int] = []
     unavailable: list[str] = []
     for hotkey_id, candidates, purpose in definitions:
@@ -4547,6 +4551,7 @@ def _register_available_hotkeys(definitions: list[tuple[int, list[HotkeyCombo], 
             unavailable.append(purpose)
             logging.warning("Hotkey unavailable (%s): %s; other NP_Punto features remain active",
                             purpose, exc)
+    _unavailable_hotkeys = tuple(unavailable)
     if unavailable:
         logging.warning("Unavailable hotkeys: %s. Other functions and tray stay enabled.",
                         ", ".join(unavailable))
@@ -4576,6 +4581,7 @@ def _runtime_diagnostics(exe: str = "") -> str:
         f"Только одно окно: {'ДА' if _active_window_only else 'нет'}",
         f"Исправление раскладки: {'включено' if _settings.auto_layout_correction else 'выключено'}",
         f"Слов в словаре: {len(_layout_words)}",
+        f"Недоступные хоткеи: {', '.join(_unavailable_hotkeys) if _unavailable_hotkeys else 'нет'}",
         f"Текущее приложение: {exe or 'не определено'}",
         f"Исключено: {'ДА' if disabled else 'нет'}",
         f"Фоновая обработка: {'работает' if worker_ok else 'НЕ РАБОТАЕТ'}",
