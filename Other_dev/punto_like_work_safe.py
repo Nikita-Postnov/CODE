@@ -3189,24 +3189,54 @@ def _transform_run_before_caret_via_clipboard(
 
 
 def _transform_run_before_caret(timings: Timings, transform: Callable[[str], str]) -> Optional[str]:
-    """Применяет transform к фрагменту перед кареткой — как Ctrl+Ins, выделять не нужно.
+    """Меняет текст перед кареткой в Edit, с безопасным резервным путём.
 
-    Возвращает новый фрагмент или None, если менять было нечего.
+    Некоторые современные RichEdit-контролы принимают EM_GETSEL, но отказываются
+    выполнять EM_SETSEL / EM_REPLACESEL. Нельзя считать это успешной командой.
     """
     hwnd_focus = _get_focused_control_hwnd()
+    if hwnd_focus and _is_password_edit(hwnd_focus):
+        logging.info("before-caret: skipped protected password control")
+        return None
+
+    foreground = _hwnd_value(user32.GetForegroundWindow())
     sel = _edit_get_sel(hwnd_focus)
     if sel is None:
+        logging.info("before-caret: no Edit selection available (class=%s); clipboard fallback",
+                     _get_class_name(hwnd_focus))
         return _transform_run_before_caret_via_clipboard(timings, transform)
 
-    s, e = sel
-    # Каретка — в конце выделения (EM_GETSEL гарантирует s ≤ e).
-    _sendmsg_ok(hwnd_focus, EM_SETSEL, e, e)
-    result = _transform_run_before_caret_in_edit(hwnd_focus, e, transform)
-    if result is None or result[1] == 0:
-        # Длина не изменилась (раскладка и регистр меняют текст символ в символ) —
-        # возвращаем прежнее выделение/позицию каретки как было.
-        _sendmsg_ok(hwnd_focus, EM_SETSEL, s, e)
-    return None if result is None else result[0]
+    start, caret = sel
+    original = _read_edit_full_text(hwnd_focus)
+    if original and caret <= len(original):
+        candidate = _transform_run_before_caret_text(original, caret, transform)
+        if candidate is None:
+            logging.info("before-caret: no convertible fragment (class=%s, caret=%d)",
+                         _get_class_name(hwnd_focus), caret)
+            return None
+    elif original and caret > len(original):
+        logging.warning("before-caret: invalid selection offset (class=%s, caret=%d, length=%d)",
+                        _get_class_name(hwnd_focus), caret, len(original))
+
+    # Проверяем успех команды изменения каретки; на некоторых RichEdit он ложный.
+    if caret > 0 and _sendmsg_ok(hwnd_focus, EM_SETSEL, caret, caret):
+        result = _transform_run_before_caret_in_edit(hwnd_focus, caret, transform)
+        if result is not None:
+            if result[1] == 0:
+                _sendmsg_ok(hwnd_focus, EM_SETSEL, start, caret)
+            logging.info("before-caret: direct Edit replacement completed (class=%s, length=%d)",
+                         _get_class_name(hwnd_focus), len(result[0]))
+            return result[0]
+
+    # Восстановление позиции обязательно перед Shift+Home из fallback.
+    _sendmsg_ok(hwnd_focus, EM_SETSEL, caret, caret)
+    if (_hwnd_value(user32.GetForegroundWindow()) != foreground
+            or _get_focused_control_hwnd() != hwnd_focus):
+        logging.warning("before-caret: foreground or focus changed, fallback aborted")
+        return None
+    logging.warning("before-caret: Edit replacement unavailable (class=%s, caret=%d), trying clipboard fallback",
+                    _get_class_name(hwnd_focus), caret)
+    return _transform_run_before_caret_via_clipboard(timings, transform)
 
 
 def convert_before_caret_text(timings: Timings) -> None:
