@@ -4582,6 +4582,15 @@ def _register_available_hotkeys(definitions: list[tuple[int, list[HotkeyCombo], 
     return successful
 
 
+def _logical_hotkey_id(physical_id: int) -> int:
+    """Переводит временный WinAPI id в исходное назначение хоткея."""
+    if physical_id >= _HOTKEY_RECOVERY_ID_OFFSET:
+        logical_id = physical_id - _HOTKEY_RECOVERY_ID_OFFSET
+        if logical_id in _desired_hotkeys:
+            return logical_id
+    return physical_id
+
+
 def _retry_preferred_hotkeys() -> None:
     """Возвращаем штатные сочетания, не теряя текущий хоткей при неудаче."""
     for logical_id, preferred in tuple(_desired_hotkeys.items()):
@@ -4783,9 +4792,7 @@ def run_app() -> None:
                     continue
                 if msg.message == WM_HOTKEY:
                     physical_id = int(msg.wParam)
-                    logical_id = physical_id - _HOTKEY_RECOVERY_ID_OFFSET if (
-                        physical_id >= _HOTKEY_RECOVERY_ID_OFFSET
-                    ) else physical_id
+                    logical_id = _logical_hotkey_id(physical_id)
                     active = _active_hotkeys.get(logical_id)
                     if active is None or active[0] != physical_id:
                         logging.debug("Ignored stale WM_HOTKEY id=%d", physical_id)
