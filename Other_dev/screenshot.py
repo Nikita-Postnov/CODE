@@ -94,6 +94,9 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QAbstractItemView,
     QCheckBox,
+    QDialogButtonBox,
+    QFormLayout,
+    QSpinBox,
 )
 
 log = logging.getLogger(__name__)
@@ -1665,6 +1668,7 @@ class CanvasView(QGraphicsView):
         self._dirty_hook: Optional[Callable[[bool], None]] = None
         self._scene_edit_pre: Optional[tuple[QImage, QImage, list[dict]]] = None
         self._scene_edit_items: list[tuple[QGraphicsItem, tuple]] = []
+        self._paste_count = 0
 
     def _load_editor_state(self) -> None:
         try:
@@ -1847,10 +1851,12 @@ class CanvasView(QGraphicsView):
         self.horizontalScrollBar().setValue(0)
         self.verticalScrollBar().setValue(0)
 
-    def _snapshot_scene(self) -> list[dict]:
+    def _snapshot_scene(self, only_items=None) -> list[dict]:
         out: list[dict] = []
         for it in self._scene.items():
             if it in (self.base_item, self.preview_item):
+                continue
+            if only_items is not None and it not in only_items:
                 continue
 
             if isinstance(it, StickerItem):
@@ -2044,6 +2050,185 @@ class CanvasView(QGraphicsView):
             if isinstance(it, (ResizableRectItem, ResizableEllipseItem,
                                 ResizableArrowItem, StickerItem))
         ]
+
+    def selected_objects(self) -> list:
+        selectable = self._resizable_items()
+        selected = [it for it in selectable if it.isSelected()]
+        for it in selectable:
+            if it._show_handles and it not in selected:
+                selected.append(it)
+        return selected
+
+    def copy_selected_objects(self) -> bool:
+        chosen = self.selected_objects()
+        if not chosen:
+            return False
+        records = []
+        try:
+            for item in self._snapshot_scene(chosen):
+                record = dict(item)
+                if record["type"] == "sticker":
+                    record["pix"] = base64.b64encode(
+                        _project_png_bytes(record["pix"].toImage())).decode("ascii")
+                records.append(record)
+            _validate_project_records(records)
+            raw = json.dumps(records, ensure_ascii=False, allow_nan=False).encode("utf-8")
+            if len(raw) > PROJECT_MAX_ARCHIVE_ENTRY_BYTES:
+                return False
+            mime = QMimeData()
+            mime.setData("application/x-np-screenshot-objects+json", raw)
+            QApplication.clipboard().setMimeData(mime, QClipboard.Clipboard)
+            self._paste_count = 0
+            return True
+        except (ValueError, RuntimeError, TypeError, OSError):
+            log.exception("Не удалось скопировать объекты скриншота")
+            return False
+
+    def paste_selected_objects(self) -> bool:
+        mime = QApplication.clipboard().mimeData(QClipboard.Clipboard)
+        if mime is None or not mime.hasFormat("application/x-np-screenshot-objects+json"):
+            return False
+        try:
+            raw = bytes(mime.data("application/x-np-screenshot-objects+json"))
+            if len(raw) > PROJECT_MAX_ARCHIVE_ENTRY_BYTES:
+                return False
+            records = _validate_project_records(json.loads(raw.decode("utf-8")))
+            pasted = []
+            for data in records:
+                rec = dict(data)
+                if rec["type"] == "sticker":
+                    png = base64.b64decode(rec["pix"], validate=True)
+                    if len(png) > PROJECT_MAX_ARCHIVE_ENTRY_BYTES:
+                        return False
+                    img = QImage.fromData(png, "PNG")
+                    if img.isNull() or img.width() * img.height() > PROJECT_MAX_IMAGE_PIXELS:
+                        return False
+                    rec["pix"] = QPixmap.fromImage(img)
+                pasted.append(rec)
+        except (ValueError, KeyError, RuntimeError, TypeError, UnicodeError,
+                base64.binascii.Error):
+            log.warning("Некорректные объекты в буфере обмена", exc_info=True)
+            return False
+        if not pasted or len(self._resizable_items()) + len(pasted) > PROJECT_MAX_SCENE_ITEMS:
+            return False
+        offset = 16 * (self._paste_count + 1)
+        for record in pasted:
+            px, py = record["pos"]
+            record["pos"] = (px + offset, py + offset)
+        self.push_undo()
+        self.set_tool(Tool.PAN)
+        existing = self._snapshot_scene()
+        self._restore_scene(existing + pasted)
+        self._paste_count += 1
+        objects = self._resizable_items()[:len(pasted)]
+        self._scene.clearSelection()
+        self._clear_all_handles()
+        for item in objects:
+            item.setSelected(True)
+            item._show_handles = True
+            item.update()
+        return True
+
+    def nudge_selected_objects(self, dx: float, dy: float) -> bool:
+        chosen = self.selected_objects()
+        if not chosen or (dx == 0 and dy == 0):
+            return False
+        self.push_undo()
+        for item in chosen:
+            item.setPos(item.pos() + QPointF(dx, dy))
+        self.viewport().update()
+        return True
+
+    @staticmethod
+    def _visible_object_rect(item: QGraphicsItem) -> QRectF:
+        if isinstance(item, ResizableArrowItem):
+            local = QRectF(item._a, item._b).normalized()
+        else:
+            local = item._rect
+        return item.mapRectToScene(local)
+
+    def align_selected_objects(self, mode: str) -> bool:
+        chosen = self.selected_objects()
+        if not chosen or mode not in (
+                "left", "right", "top", "bottom", "hcenter", "vcenter"):
+            return False
+        rects = [self._visible_object_rect(item) for item in chosen]
+        if len(rects) == 1:
+            target = QRectF(0, 0, self.bg_img.width(), self.bg_img.height())
+        else:
+            target = QRectF(rects[0])
+            for rect in rects[1:]:
+                target = target.united(rect)
+        offsets = []
+        for rect in rects:
+            if mode == "left":
+                delta = QPointF(target.left() - rect.left(), 0)
+            elif mode == "right":
+                delta = QPointF(target.right() - rect.right(), 0)
+            elif mode == "top":
+                delta = QPointF(0, target.top() - rect.top())
+            elif mode == "bottom":
+                delta = QPointF(0, target.bottom() - rect.bottom())
+            elif mode == "hcenter":
+                delta = QPointF(target.center().x() - rect.center().x(), 0)
+            else:
+                delta = QPointF(0, target.center().y() - rect.center().y())
+            offsets.append(delta)
+        if all(abs(d.x()) < 0.001 and abs(d.y()) < 0.001 for d in offsets):
+            return False
+        self.push_undo()
+        for item, delta in zip(chosen, offsets):
+            item.setPos(item.pos() + delta)
+        self.viewport().update()
+        return True
+
+    def apply_selected_properties(self, color: Optional[QColor] = None,
+                                  line_width: Optional[int] = None,
+                                  font_size: Optional[int] = None) -> bool:
+        chosen = self.selected_objects()
+        if len(chosen) != 1:
+            return False
+        item = chosen[0]
+        if (color is not None and not color.isValid() or
+                line_width is not None and not 1 <= line_width <= 200 or
+                font_size is not None and not 5 <= font_size <= 300):
+            return False
+        current = self._item_state(item)
+        if color is None and line_width is None and font_size is None:
+            return False
+        was_dirty = self.is_dirty()
+        previous_redo = list(self.redo_stack)
+        self.push_undo()
+        if isinstance(item, EditableTextItem):
+            if color is not None:
+                item.text_color = QColor(color)
+            if font_size is not None:
+                item.font_size = font_size
+        elif isinstance(item, ResizableArrowItem):
+            if color is not None:
+                item._color = QColor(color)
+            if line_width is not None:
+                item.prepareGeometryChange()
+                item._width = line_width
+        elif isinstance(item, ResizableRectItem):
+            if color is not None:
+                if item._pen.style() != Qt.NoPen:
+                    item._pen.setColor(color)
+                if item._brush != Qt.NoBrush:
+                    fill = QColor(color)
+                    fill.setAlpha(QColor(item._brush).alpha())
+                    item._brush = fill
+            if line_width is not None and item._pen.style() != Qt.NoPen:
+                item.prepareGeometryChange()
+                item._pen.setWidthF(line_width)
+        if self._item_state(item) == current:
+            self.undo_stack.pop()
+            self.redo_stack = previous_redo
+            self._set_dirty(was_dirty)
+            return False
+        item.update()
+        self.viewport().update()
+        return True
 
     def _clear_all_handles(self):
         """Hide handles on every resizable item."""
@@ -2249,6 +2434,16 @@ class CanvasView(QGraphicsView):
             super().wheelEvent(e)
             if self.tool == Tool.ERASER:
                 self.viewport().update()
+
+    def mouseDoubleClickEvent(self, e: QMouseEvent):
+        if e.button() == Qt.LeftButton:
+            scene_pos = self.mapToScene(e.position().toPoint())
+            target = self._hit_resizable_item(scene_pos)
+            if isinstance(target, EditableTextItem):
+                self.edit_selected_text(target)
+                e.accept()
+                return
+        super().mouseDoubleClickEvent(e)
 
     def mousePressEvent(self, e: QMouseEvent):
         if e.button() == Qt.LeftButton:
@@ -2851,15 +3046,13 @@ class CanvasView(QGraphicsView):
 
         self._refresh()
 
-    def edit_selected_text(self) -> bool:
-        items = [it for it in self._scene.selectedItems()
-                 if isinstance(it, EditableTextItem)]
-        if not items:
-            items = [it for it in self._active_shape_items()
+    def edit_selected_text(self, item: Optional[EditableTextItem] = None) -> bool:
+        if item is None:
+            items = [it for it in self.selected_objects()
                      if isinstance(it, EditableTextItem)]
-        if not items:
-            return False
-        item = items[0]
+            if not items:
+                return False
+            item = items[0]
         text, ok = QInputDialog.getText(self, "Изменить текст", "Надпись:",
                                         text=item.text)
         if not ok or not text or text == item.text:
@@ -3172,11 +3365,77 @@ class EditorWindow(QMainWindow):
         return True
 
     def copy_to_clipboard(self) -> bool:
-        ok = self.view.copy_to_clipboard()
-        self.statusBar().showMessage(
-            "Скопировано в буфер обмена" if ok else "Не удалось скопировать", 2000
-        )
+        if self.view.selected_objects():
+            ok = self.view.copy_selected_objects()
+            message = "Объект скопирован" if ok else "Не удалось скопировать объект"
+        else:
+            ok = self.view.copy_to_clipboard()
+            message = "Скопировано в буфер обмена" if ok else "Не удалось скопировать"
+        self.statusBar().showMessage(message, 2000)
         return ok
+
+    def paste_from_clipboard(self) -> None:
+        mime = QApplication.clipboard().mimeData(QClipboard.Clipboard)
+        if mime is not None and mime.hasFormat("application/x-np-screenshot-objects+json"):
+            if not self.view.paste_selected_objects():
+                QMessageBox.warning(self, "Вставка", "Не удалось вставить объекты из буфера.")
+            return
+        self.open_from_clipboard()
+
+    def edit_object_properties(self) -> bool:
+        chosen = self.view.selected_objects()
+        if len(chosen) != 1:
+            QMessageBox.information(self, "Свойства", "Выдели один объект инструментом «Переместиться».")
+            return False
+        item = chosen[0]
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Свойства объекта")
+        layout = QFormLayout(dialog)
+        if isinstance(item, EditableTextItem):
+            color = QColor(item.text_color)
+        elif isinstance(item, ResizableArrowItem):
+            color = QColor(item._color)
+        elif isinstance(item, ResizableRectItem):
+            color = (QColor(item._brush) if item._pen.style() == Qt.NoPen and
+                     item._brush != Qt.NoBrush else QColor(item._pen.color()))
+        else:
+            color = QColor()
+        color_holder = {"value": color}
+        color_button = QPushButton("Выбрать цвет", dialog)
+        color_button.setEnabled(color.isValid())
+        color_button.setToolTip(color.name() if color.isValid() else "Не применимо к стикеру")
+        def pick():
+            next_color = QColorDialog.getColor(color_holder["value"], dialog, "Цвет объекта")
+            if next_color.isValid():
+                color_holder["value"] = next_color
+                color_button.setToolTip(next_color.name())
+        color_button.clicked.connect(pick)
+        layout.addRow("Цвет", color_button)
+        width_box = None
+        if isinstance(item, ResizableArrowItem) or (
+                isinstance(item, ResizableRectItem) and
+                not isinstance(item, EditableTextItem) and item._pen.style() != Qt.NoPen):
+            width_box = QSpinBox(dialog)
+            width_box.setRange(1, 200)
+            width_box.setValue(int(item._width) if isinstance(item, ResizableArrowItem)
+                               else max(1, int(item._pen.widthF())))
+            layout.addRow("Толщина линии, px", width_box)
+        font_box = None
+        if isinstance(item, EditableTextItem):
+            font_box = QSpinBox(dialog)
+            font_box.setRange(5, 300)
+            font_box.setValue(int(item.font_size))
+            layout.addRow("Размер текста, pt", font_box)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel, dialog)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addRow(buttons)
+        if dialog.exec() != QDialog.Accepted:
+            return False
+        return self.view.apply_selected_properties(
+            color_holder["value"] if color.isValid() else None,
+            width_box.value() if width_box is not None else None,
+            font_box.value() if font_box is not None else None)
 
     def _bump_thickness(self, delta: int) -> None:
         new_val = max(1, min(200, int(self.view.thickness) + int(delta)))
@@ -3260,20 +3519,18 @@ class EditorWindow(QMainWindow):
             self._centered_once = True
 
     def _build_toolbar(self):
-        t1 = QToolBar("Инструменты — 1", self)
-        t2 = QToolBar("Инструменты — 2", self)
-        t3 = QToolBar("Инструменты — 3", self)
-        t4 = QToolBar("Инструменты — 4", self)
-        for t in (t1, t2, t3, t4):
+        t1 = QToolBar("Инструменты", self)
+        t2 = QToolBar("Параметры", self)
+        for t in (t1, t2):
             t.setMovable(False)
         self.addToolBar(Qt.TopToolBarArea, t1)
         self.addToolBarBreak(Qt.TopToolBarArea)
         self.addToolBar(Qt.TopToolBarArea, t2)
-        self.addToolBarBreak(Qt.TopToolBarArea)
-        self.addToolBar(Qt.TopToolBarArea, t3)
-        self.addToolBarBreak(Qt.TopToolBarArea)
-        self.addToolBar(Qt.TopToolBarArea, t4)
-        self.tb_rows = (t1, t2, t3, t4)
+        self.tb_rows = (t1, t2)
+        t3 = QMenu("Файл", self)
+        t4 = QMenu("Правка и вид", self)
+        tool_menus = {title: QMenu(title, self)
+                      for title in ("Выбор", "Рисование", "Фигуры", "Обработка")}
 
         def add_action(bar: QToolBar, text, cb, shortcut=None, checkable=False):
             act = QAction(text, self)
@@ -3282,6 +3539,7 @@ class EditorWindow(QMainWindow):
             if shortcut:
                 act.setShortcut(shortcut)
             bar.addAction(act)
+            self.addAction(act)
             return act
 
         self.group_actions: List[QAction] = []
@@ -3293,7 +3551,11 @@ class EditorWindow(QMainWindow):
                 act.setChecked(True)
                 self.view.set_tool(t)
 
-            act = add_action(bar, label, cb, shortcut, checkable=True)
+            group = ("Выбор" if t == Tool.PAN else
+                     "Рисование" if t in (Tool.PEN, Tool.HIGHLIGHT, Tool.TEXT, Tool.STEP) else
+                     "Фигуры" if t in (Tool.RECT, Tool.ELLIPSE, Tool.ARROW) else
+                     "Обработка")
+            act = add_action(tool_menus[group], label, cb, shortcut, checkable=True)
             self.group_actions.append(act)
             return act
 
@@ -3322,6 +3584,19 @@ class EditorWindow(QMainWindow):
         saved_tool = self.view.tool
         restored_action = _tool_action_map.get(saved_tool, a_pen)
         restored_action.trigger()
+        for group_name, group_menu in tool_menus.items():
+            button = QToolButton(self)
+            button.setText(group_name)
+            button.setMenu(group_menu)
+            button.setPopupMode(QToolButton.InstantPopup)
+            t1.addWidget(button)
+        for name, menu in (("Файл", t3), ("Правка и вид", t4)):
+            button = QToolButton(self)
+            button.setText(name)
+            button.setMenu(menu)
+            button.setPopupMode(QToolButton.InstantPopup)
+            button.setToolTip("Все команды и прежние сочетания клавиш доступны в меню")
+            t1.addWidget(button)
         t1.addSeparator()
         self.line_caption = QLabel(" Линия")
         self.line_caption.setStyleSheet("color: #c8c8c8;")
@@ -3388,13 +3663,25 @@ class EditorWindow(QMainWindow):
         add_action(t3, "📋 Вставить как картинку", self.insert_sticker_from_clipboard, "Ctrl+Shift+V")
         add_action(t3, "⎆ Зафиксировать", self.flatten_selection, "Return")
         add_action(t3, "⌧ Удалить объект", self.delete_selection, "Del")
-        add_action(t3, "📋 Вставить из буфера (заменить)", self.open_from_clipboard, "Ctrl+V")
+        add_action(t3, "📋 Вставить из буфера", self.paste_from_clipboard, "Ctrl+V")
         add_action(t3, "💾 Сохранить", self.save_quick, "Ctrl+S")
         add_action(t3, "💾 Сохранить как…", self.save_as, "Ctrl+Shift+S")
         add_action(t3, "📦 Проект", self.save_project, "Ctrl+Alt+S")
         add_action(t3, "📦 Проект как…", self.save_project_as, "Ctrl+Alt+Shift+S")
         add_action(t3, "📂 Открыть проект", self.open_project, "Ctrl+Shift+O")
         add_action(t3, "✏ Изменить текст", self.view.edit_selected_text, "Ctrl+Alt+T")
+        add_action(t4, "⚙ Свойства объекта", self.edit_object_properties, "Alt+Return")
+        add_action(t4, "📋 Копировать объект", self.copy_to_clipboard)
+        add_action(t4, "📋 Вставить объект", self.paste_from_clipboard)
+        alignment = t4.addMenu("Выравнивание")
+        for title, mode in (
+            ("По левому краю", "left"), ("По правому краю", "right"),
+            ("По верхнему краю", "top"), ("По нижнему краю", "bottom"),
+            ("По горизонтальному центру", "hcenter"),
+            ("По вертикальному центру", "vcenter"),
+        ):
+            add_action(alignment, title,
+                       lambda checked=False, m=mode: self.view.align_selected_objects(m))
         add_action(t3, "📁 Показать в папке", self.reveal_last_saved, "Ctrl+Shift+E")
         add_action(t3, "📋 Копировать", self.copy_to_clipboard, "Ctrl+C")
         add_action(t4, "↶ Отменить", self.view.undo, "Ctrl+Z")
@@ -3407,7 +3694,7 @@ class EditorWindow(QMainWindow):
         add_action(t4, "⟲ Сброс шагов", lambda: setattr(self.view, "step_counter", 1))
         self.tip_label = QLabel(" Подсказки: Ctrl+Колесо — зум, Средняя кнопка — панорама")
         self.tip_label.setStyleSheet("color: gray;")
-        t4.addWidget(self.tip_label)
+        t1.setToolTip(self.tip_label.text())
 
     def _update_alpha_label(self, v:int):
         pct = int(round(v/255*100))
@@ -3431,6 +3718,17 @@ class EditorWindow(QMainWindow):
         sc_inc = QShortcut(QKeySequence("]"), self)
         sc_inc.setContext(Qt.ShortcutContext.ApplicationShortcut)
         sc_inc.activated.connect(lambda: self._bump_thickness(1))
+
+        for shortcut, dx, dy in (
+            ("Left", -1, 0), ("Right", 1, 0),
+            ("Up", 0, -1), ("Down", 0, 1),
+            ("Shift+Left", -10, 0), ("Shift+Right", 10, 0),
+            ("Shift+Up", 0, -10), ("Shift+Down", 0, 10),
+        ):
+            key = QShortcut(QKeySequence(shortcut), self)
+            key.setContext(Qt.WidgetWithChildrenShortcut)
+            key.activated.connect(
+                lambda x=dx, y=dy: self.view.nudge_selected_objects(x, y))
 
 
     def closeEvent(self, e):
