@@ -2401,6 +2401,16 @@ def _clipboard_set_format_bytes_from_open(fmt: int, data: bytes) -> None:
         kernel32.GlobalFree(h_mem)
         _raise_last_error("SetClipboardData failed")
 
+_clipboard_guard_local = threading.local()
+
+
+def _clipboard_mark_expected_sequence() -> None:
+    guard = getattr(_clipboard_guard_local, "current", None)
+    if guard is not None:
+        guard["expected"] = int(user32.GetClipboardSequenceNumber())
+        guard["modified"] = True
+
+
 def _clipboard_set_text(text: str, timings: Timings) -> None:
     _open_clipboard_with_retry(timings)
     try:
@@ -2409,12 +2419,15 @@ def _clipboard_set_text(text: str, timings: Timings) -> None:
         _clipboard_set_format_bytes_from_open(CF_UNICODETEXT, (text + "\0").encode("utf-16le"))
     finally:
         user32.CloseClipboard()
+    _clipboard_mark_expected_sequence()
 
 def _wait_for_new_clipboard_text(old_seq: int, timings: Timings) -> Optional[str]:
     deadline = time.monotonic() + timings.copy_poll_timeout_seconds
     while time.monotonic() < deadline:
         if int(user32.GetClipboardSequenceNumber()) != old_seq:
-            return _clipboard_get_text(timings)
+            text = _clipboard_get_text(timings)
+            _clipboard_mark_expected_sequence()
+            return text
         time.sleep(timings.copy_poll_interval_seconds)
     return None
 
@@ -2468,6 +2481,18 @@ def _clipboard_format_name(fmt: int) -> str:
     n = user32.GetClipboardFormatNameW(fmt, buf, len(buf))
     return buf.value if n > 0 else ""
 
+class ClipboardSnapshotUnsafe(RuntimeError):
+    pass
+
+
+def _clipboard_snapshot_can_skip(fmt: int, name: str, present: frozenset[int]) -> bool:
+    if fmt in (CF_TEXT, CF_OEMTEXT) and CF_UNICODETEXT in present:
+        return True
+    if fmt == CF_BITMAP and (CF_DIB in present or CF_DIBV5 in present):
+        return True
+    return False
+
+
 def _clipboard_take_snapshot(timings: Timings) -> ClipboardSnapshot:
     _open_clipboard_with_retry(timings)
     try:
@@ -2484,56 +2509,87 @@ def _clipboard_take_snapshot(timings: Timings) -> ClipboardSnapshot:
         saved: list[tuple[int, bytes]] = []
         total = 0
         for index, fmt in enumerate(formats):
-            if _snapshot_format_is_skipped(fmt, _clipboard_format_name(fmt), present):
+            name = _clipboard_format_name(fmt)
+            if _clipboard_snapshot_can_skip(fmt, name, present):
                 continue
+            if _snapshot_format_is_skipped(fmt, name, present):
+                raise ClipboardSnapshotUnsafe(
+                    f"Небезопасно заменять буфер: непереносимый формат {fmt} ({name})")
             if time.monotonic() > deadline:
-                logging.info("clipboard snapshot: дедлайн, не сохранено форматов: %d", len(formats) - index)
-                break
+                raise ClipboardSnapshotUnsafe("Превышен лимит времени сохранения буфера")
             try:
                 data = _clipboard_read_bytes_from_open(fmt)
-            except OSError:
-                logging.debug("clipboard snapshot: format %d unreadable", fmt, exc_info=True)
-                continue
+            except OSError as exc:
+                raise ClipboardSnapshotUnsafe(f"Не удалось сохранить формат {fmt}") from exc
             if not data:
-                continue
+                raise ClipboardSnapshotUnsafe(f"Пустой или недоступный формат {fmt}")
             if total + len(data) > timings.clipboard_snapshot_max_bytes:
-                logging.info("clipboard snapshot: формат %d (%d байт) не влез в бюджет", fmt, len(data))
-                continue
+                raise ClipboardSnapshotUnsafe("Снимок буфера превышает лимит памяти")
             saved.append((fmt, data))
             total += len(data)
         return ClipboardSnapshot(tuple(saved))
     finally:
         user32.CloseClipboard()
 
-def _clipboard_restore_snapshot(snapshot: ClipboardSnapshot, timings: Timings) -> None:
-    """Возвращает буфер в состояние снапшота (пустой снапшот — пустой буфер)."""
-    _open_clipboard_with_retry(timings)
+def _clipboard_allocate_bytes(data: bytes) -> int:
+    h_mem = kernel32.GlobalAlloc(GMEM_MOVEABLE, len(data))
+    if not h_mem:
+        _raise_last_error("GlobalAlloc failed")
+    ptr = kernel32.GlobalLock(h_mem)
+    if not ptr:
+        kernel32.GlobalFree(h_mem)
+        _raise_last_error("GlobalLock failed")
     try:
-        if not user32.EmptyClipboard():
-            _raise_last_error("EmptyClipboard failed")
-        for fmt, data in snapshot.formats:
-            try:
-                _clipboard_set_format_bytes_from_open(fmt, data)
-            except OSError:
-                logging.debug("clipboard restore: format %d failed", fmt, exc_info=True)
+        ctypes.memmove(ptr, data, len(data))
     finally:
-        user32.CloseClipboard()
+        kernel32.GlobalUnlock(h_mem)
+    return int(h_mem)
+
+
+def _clipboard_restore_snapshot(snapshot: ClipboardSnapshot, timings: Timings,
+                                expected_seq: Optional[int] = None) -> bool:
+    """Восстанавливает только наш буфер; чужие новые копирования не трогает."""
+    if expected_seq is not None and int(user32.GetClipboardSequenceNumber()) != expected_seq:
+        return False
+    allocated: list[tuple[int, int]] = []
+    try:
+        for fmt, data in snapshot.formats:
+            allocated.append((fmt, _clipboard_allocate_bytes(data)))
+        _open_clipboard_with_retry(timings)
+        try:
+            if expected_seq is not None and int(user32.GetClipboardSequenceNumber()) != expected_seq:
+                return False
+            if not user32.EmptyClipboard():
+                _raise_last_error("EmptyClipboard failed")
+            for fmt, handle in allocated:
+                if not user32.SetClipboardData(fmt, handle):
+                    _raise_last_error("SetClipboardData failed in restore")
+                allocated = [(f, h) for f, h in allocated if h != handle]
+            return True
+        finally:
+            user32.CloseClipboard()
+    finally:
+        for _, handle in allocated:
+            kernel32.GlobalFree(handle)
+
 
 @contextmanager
-def _clipboard_guard(timings: Timings) -> Generator[Optional[ClipboardSnapshot], None, None]:
-    snapshot: Optional[ClipboardSnapshot] = None
-    try:
-        snapshot = _clipboard_take_snapshot(timings)
-    except OSError:
-        logging.debug("clipboard_guard: failed to take snapshot", exc_info=True)
+def _clipboard_guard(timings: Timings) -> Generator[ClipboardSnapshot, None, None]:
+    """При неполном снимке не выполняем операции и не уничтожаем чужие данные."""
+    snapshot = _clipboard_take_snapshot(timings)
+    previous = getattr(_clipboard_guard_local, "current", None)
+    state = {"expected": int(user32.GetClipboardSequenceNumber()), "modified": False}
+    _clipboard_guard_local.current = state
     try:
         yield snapshot
     finally:
-        if snapshot is not None:
+        _clipboard_guard_local.current = previous
+        if state["modified"]:
             try:
-                _clipboard_restore_snapshot(snapshot, timings)
+                if not _clipboard_restore_snapshot(snapshot, timings, expected_seq=state["expected"]):
+                    logging.info("Буфер изменён другим приложением — восстановление отменено")
             except OSError:
-                logging.debug("clipboard_guard: failed to restore snapshot", exc_info=True)
+                logging.exception("Не удалось восстановить исходный буфер")
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Image / DIB helpers
