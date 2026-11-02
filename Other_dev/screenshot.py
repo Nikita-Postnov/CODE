@@ -3032,7 +3032,9 @@ class EditorWindow(QMainWindow):
         sb.addPermanentWidget(self._sb_right)
 
     def _on_dirty_changed(self, dirty: bool) -> None:
-        name = self._last_save_path.name if self._last_save_path is not None else "Без имени"
+        name = (self._last_save_path.name if self._last_save_path is not None else
+                self._last_project_path.name if self._last_project_path is not None
+                else "Без имени")
         mark = " *" if dirty else ""
         self.setWindowTitle(f"{name}{mark} — Screenshot Editor")
 
@@ -3103,6 +3105,24 @@ class EditorWindow(QMainWindow):
             result = result.with_name(result.name + EDITABLE_PROJECT_EXTENSION)
         return self._save_project_to(result)
 
+    @classmethod
+    def from_project(cls, path: Path) -> "EditorWindow":
+        bg, ov, items, counter = load_editable_project(path)
+        editor = cls(bg)
+        try:
+            editor.view.bg_img = bg
+            editor.view.ov_img = ov
+            editor.view.step_counter = counter
+            editor.view._restore_scene(items)
+            editor.view._refresh()
+            editor.view.mark_clean()
+            editor._last_project_path = Path(path)
+            editor._on_dirty_changed(False)
+            return editor
+        except Exception:
+            editor.close()
+            raise
+
     def open_project(self) -> bool:
         path, _ = QFileDialog.getOpenFileName(
             self, "Открыть редактируемый проект",
@@ -3111,26 +3131,10 @@ class EditorWindow(QMainWindow):
         if not path:
             return False
         try:
-            bg, ov, items, counter = load_editable_project(Path(path))
-        except (OSError, ValueError, TypeError, RuntimeError, zipfile.BadZipFile,
-                json.JSONDecodeError, base64.binascii.Error) as exc:
+            new_editor = EditorWindow.from_project(Path(path))
+        except Exception as exc:
             log.exception("Не удалось открыть проект: %s", path)
             QMessageBox.warning(self, "Ошибка проекта", str(exc))
-            return False
-        new_editor = EditorWindow(bg)
-        try:
-            new_editor.view.bg_img = bg
-            new_editor.view.ov_img = ov
-            new_editor.view.step_counter = counter
-            new_editor.view._restore_scene(items)
-            new_editor.view._refresh()
-            new_editor.view.mark_clean()
-            new_editor._last_project_path = Path(path)
-            new_editor._on_dirty_changed(False)
-        except Exception:
-            new_editor.close()
-            log.exception("Не удалось восстановить элементы проекта: %s", path)
-            QMessageBox.warning(self, "Ошибка проекта", "Не удалось восстановить элементы.")
             return False
         new_editor.show()
         new_editor.activateWindow()
@@ -4098,6 +4102,9 @@ class Launcher(QMainWindow):
         btn_open = QPushButton("Открыть изображение…")
         btn_open.clicked.connect(self._open_image)
         v.addWidget(btn_open)
+        btn_project = QPushButton("Открыть редактируемый проект…")
+        btn_project.clicked.connect(self._open_project)
+        v.addWidget(btn_project)
         btn_history = QPushButton("История скриншотов")
         btn_history.clicked.connect(self.open_history)
         v.addWidget(btn_history)
@@ -4183,6 +4190,7 @@ class Launcher(QMainWindow):
         m = QMenu(self)
         self.act_tray_shot = m.addAction("Сделать скриншот", self.make_shot)
         self.act_tray_window = m.addAction("Снимок отдельного окна", self.make_window_shot)
+        self.act_tray_project = m.addAction("Открыть редактируемый проект", self._open_project)
         self.act_tray_history = m.addAction("История скриншотов", self.open_history)
         self.act_tray_quick_actions = m.addAction("Быстрые действия после снимка")
         self.act_tray_quick_actions.setCheckable(True)
@@ -4357,6 +4365,22 @@ class Launcher(QMainWindow):
             else:
                 self._open_editor_image(img)
         self.hide()
+
+    def _open_project(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Открыть редактируемый проект", "",
+            "Проект NP_Screenshot (*.npshot)")
+        if not path:
+            return
+        try:
+            editor = EditorWindow.from_project(Path(path))
+        except Exception as exc:
+            log.exception("Не удалось открыть проект: %s", path)
+            QMessageBox.warning(self, "Ошибка проекта", str(exc))
+            return
+        editor.show()
+        editor.activateWindow()
+        self._add_editor(editor)
 
     def _open_image(self):
         path, _ = QFileDialog.getOpenFileName(
