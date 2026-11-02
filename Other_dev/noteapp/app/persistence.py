@@ -282,6 +282,13 @@ class NotePersistenceMixin:
     def _save_payload_to_folder(self, note_folder: Path, payload: dict, keep_backups: int = 10) -> Path:
         note_folder.mkdir(parents=True, exist_ok=True)
         note_path = note_folder / "note.json"
+        if note_path.exists():
+            try:
+                with open(note_path, "r", encoding="utf-8") as handle:
+                    if json.load(handle) == payload:
+                        return note_path
+            except (OSError, ValueError, TypeError):
+                pass
         self._make_backup_if_exists(note_path, keep=keep_backups)
         self._atomic_write_json(note_path, payload)
         self._write_note_cache_from_payload(note_path, payload)
