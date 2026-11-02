@@ -243,6 +243,7 @@ _TRAY_MENU_TOGGLE_DISABLED_HERE: Final[int] = 1005
 _TRAY_MENU_OPEN_DISABLED_LIST: Final[int] = 1006
 _TRAY_MENU_OPEN_SETTINGS: Final[int] = 1007
 _TRAY_MENU_OPEN_APP_SETTINGS: Final[int] = 1008
+_TRAY_MENU_OPEN_LAYOUT_WORDS: Final[int] = 1009
 
 _CLIPBOARD_POLL_TIMER_ID: Final[int] = 1  # только fallback, если listener не встал
 
@@ -603,6 +604,7 @@ class Settings:
     #           и автозакрытие скобок в IDE);
     # "type"  — набором через KEYEVENTF_UNICODE (буфер не трогается при замене).
     replace_method: ReplaceMethod = "paste"
+    auto_layout_correction: bool = False
 
 
 _HOTKEY_MOD_NAMES: Final[dict[str, int]] = {
@@ -687,6 +689,7 @@ def _settings_to_dict(settings: Settings) -> dict:
         "clipboard_history_max_items": settings.clipboard_history_max_items,
         "clipboard_history_max_total_mb": settings.clipboard_history_max_total_bytes // 1_000_000,
         "replace_method": settings.replace_method,
+        "auto_layout_correction": settings.auto_layout_correction,
     }
 
 
@@ -740,6 +743,10 @@ def _settings_from_dict(data: object) -> tuple[Settings, list[str]]:
         "clipboard_history_max_total_mb",
         defaults.clipboard_history_max_total_bytes // 1_000_000, 10, 4000, int,
     )
+    auto_layout = data.get("auto_layout_correction", False)
+    if not isinstance(auto_layout, bool):
+        warnings.append("settings: auto_layout_correction должен быть true/false")
+        auto_layout = False
     settings = Settings(
         hotkeys=Hotkeys(**hk_values),
         select_word_chord=chord,
@@ -751,6 +758,7 @@ def _settings_from_dict(data: object) -> tuple[Settings, list[str]]:
         ),
         clipboard_history_max_total_bytes=int(max_total_mb) * 1_000_000,
         replace_method=method,
+        auto_layout_correction=auto_layout,
     )
     return settings, warnings
 
@@ -802,12 +810,14 @@ _RULES_FILE_NAME: Final[str] = "punto_like_rules.json"
 _DICTIONARY_FILE_NAME: Final[str] = "punto_like_dictionary.txt"
 _DISABLED_APPS_FILE_NAME: Final[str] = "punto_like_disabled_apps.txt"
 _SETTINGS_FILE_NAME: Final[str] = "punto_like_settings.json"
+_LAYOUT_WORDS_FILE_NAME: Final[str] = "punto_like_layout_words.txt"
 
 DATA_DIR: Final[Path] = Path(__file__).resolve().parent / "Data"
 
 _rules_lock = threading.RLock()
 _rules_config: RulesConfig = RulesConfig()
 _settings: Settings = Settings()
+_layout_words: frozenset[str] = frozenset()
 
 
 def _ensure_data_dir() -> None:
@@ -850,6 +860,33 @@ def _disabled_apps_path() -> Path:
 
 def _settings_path() -> Path:
     return DATA_DIR / _SETTINGS_FILE_NAME
+
+
+def _layout_words_path() -> Path:
+    return DATA_DIR / _LAYOUT_WORDS_FILE_NAME
+
+
+def _load_layout_words() -> frozenset[str]:
+    path = _layout_words_path()
+    if not path.exists():
+        _atomic_write_text(path,
+            "# Слова для осторожного исправления раскладки. По одному слову на строку.\n"
+            "# Работает только при auto_layout_correction=true в настройках.\n"
+            "привет\nспасибо\nздравствуйте\nпожалуйста\n")
+    result: set[str] = set()
+    for line in path.read_text(encoding="utf-8").splitlines():
+        word = line.strip().lower()
+        if 4 <= len(word) <= 32 and word.isalpha():
+            result.add(word)
+    return frozenset(result)
+
+
+def _reload_layout_words() -> None:
+    global _layout_words
+    try:
+        _layout_words = _load_layout_words()
+    except (OSError, UnicodeError):
+        logging.warning("Не удалось обновить словарь раскладки", exc_info=True)
 
 
 def _load_settings() -> Settings:
@@ -3249,6 +3286,37 @@ def _prepare_clipboard_picker(target_hwnd: int) -> None:
 
 # ── Автозамена в Edit/RichEdit ────────────────────────────────────────────────
 
+def _candidate_layout_correction(raw: str, words: frozenset[str]) -> Optional[str]:
+    """Исправляем только известные слова, не меняем короткие/смешанные токены."""
+    if not (4 <= len(raw) <= 32 and raw.isalpha()):
+        return None
+    if raw.lower() in words:
+        return None
+    kind = {_layout_kind_for_char(char) for char in raw}
+    if kind not in ({"en"}, {"ru"}):
+        return None
+    converted = convert_keyboard_layout(raw)
+    if converted.lower() not in words or converted.lower() == raw.lower():
+        return None
+    return converted
+
+
+def _try_auto_layout_in_edit(hwnd: object, full_text: str, end: int, caret: int) -> bool:
+    if not _settings.auto_layout_correction or not _layout_words:
+        return False
+    start = end
+    while start > 0 and full_text[start - 1].isalpha() and end - start < 32:
+        start -= 1
+    raw = full_text[start:end]
+    corrected = _candidate_layout_correction(raw, _layout_words)
+    if corrected is None:
+        return False
+    if _replace_range_in_edit_safely(hwnd, start, end, raw, corrected, caret):
+        _switch_layout_toward_text(corrected)
+        return True
+    return False
+
+
 def _apply_rules_in_edit(hwnd: object, after_space: bool) -> None:
     """Применяет правила к тексту перед кареткой в стандартном Edit/RichEdit.
 
@@ -3273,12 +3341,14 @@ def _apply_rules_in_edit(hwnd: object, after_space: bool) -> None:
 
     cfg = _get_rules_snapshot()
     max_trigger_len = _compute_max_trigger_len(cfg)
-    if max_trigger_len <= 0:
-        return
-
     window_start = max(0, look_end - max_trigger_len)
-    match = _match_or_block(cfg, full_text[window_start:look_end], full_text, window_start)
-    if match is None or match is _BLOCK_SENTINEL:
+    match = (_match_or_block(cfg, full_text[window_start:look_end], full_text, window_start)
+             if max_trigger_len > 0 else None)
+    if match is _BLOCK_SENTINEL:
+        return
+    if match is None:
+        if after_space:
+            _try_auto_layout_in_edit(hwnd, full_text, look_end, caret)
         return
 
     replace_start = look_end - len(match.trigger)
@@ -3783,6 +3853,7 @@ def _show_tray_menu(hwnd: int) -> None:
     # Пользователь мог отредактировать файлы руками — перечитываем (дёшево).
     _run_guarded("reload disabled apps", _reload_disabled_apps)
     _run_guarded("reload dictionary", _reload_dictionary)
+    _run_guarded("reload layout words", _reload_layout_words)
 
     # Foreground сейчас уже Shell_TrayWnd — берём последнее реальное окно.
     origin_hwnd = _resolve_real_foreground_hwnd()
@@ -3800,6 +3871,7 @@ def _show_tray_menu(hwnd: int) -> None:
         add(_TRAY_MENU_OPEN_DICT, "Открыть словарь")
         add(_TRAY_MENU_OPEN_SETTINGS, "Настройки правил/словарь…")
         add(_TRAY_MENU_OPEN_APP_SETTINGS, "Открыть файл настроек (хоткеи, лимиты)")
+        add(_TRAY_MENU_OPEN_LAYOUT_WORDS, "Словарь исправления раскладки")
         add(0, None, MF_SEPARATOR)
         add(_TRAY_MENU_TOGGLE_ACTIVE_WINDOW, "Работать только в текущем окне",
             MF_STRING | (MF_CHECKED if _active_window_only else 0))
@@ -3832,6 +3904,8 @@ def _show_tray_menu(hwnd: int) -> None:
         _ui.call(_open_rules_editor_window)
     elif cmd == _TRAY_MENU_OPEN_APP_SETTINGS:
         _open_file_async(_settings_path(), _load_settings)
+    elif cmd == _TRAY_MENU_OPEN_LAYOUT_WORDS:
+        _open_file_async(_layout_words_path(), _load_layout_words)
     elif cmd == _TRAY_MENU_TOGGLE_ACTIVE_WINDOW:
         if not _active_window_only:
             _allowed_hwnd = origin_hwnd
@@ -4469,6 +4543,7 @@ def run_app() -> None:
     _timings = Timings()
     _reload_rules()
     _reload_disabled_apps()
+    _reload_layout_words()
     _main_thread_id = int(kernel32.GetCurrentThreadId())
     _ensure_thread_message_queue()  # чтобы PostThreadMessageW из трея не потерялся
 
