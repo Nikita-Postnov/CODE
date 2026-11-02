@@ -1,12 +1,16 @@
 
 from __future__ import annotations
 import ctypes
+import json
 import logging
+import os
+import re
+import shutil
 import subprocess
 import sys
 import time
 import traceback
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, fields, replace
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from ctypes import wintypes
@@ -31,6 +35,10 @@ if sys.platform != "win32":
 
 def _relaunch_under_own_exe(exe_name: str = "NP_LangIndicator") -> None:
     if sys.platform != "win32" or getattr(sys, "frozen", False):
+        return
+    # Choice уже умеет запускать NP_LangIndicator.exe и управляет этим
+    # процессом. Самовольный повторный запуск потерял бы связь с лаунчером.
+    if os.environ.get("CHOICE_PID"):
         return
     current = Path(sys.executable)
     if current.stem.lower() == exe_name.lower():
@@ -267,6 +275,9 @@ class AppConfig:
     popup_height: int = 100
     popup_font_size: int = 42
     popup_duration_ms: int = 700
+    popup_enabled: bool = True
+    popup_on_focus_change: bool = False
+    indicators_visible: bool = True
     popup_normal_alpha: int = 255
     popup_fullscreen_alpha: int = 255
 
@@ -306,7 +317,126 @@ class AppConfig:
     tray_icon_padding_ratio: float = 0.06
 
 
-CONFIG = AppConfig()
+
+# Настройки хранятся рядом со скриптом, чтобы папка Launcher оставалась
+# переносимой при запуске с другого диска или флешки.
+CONFIG_FILE = DATA_DIR / "language_indicator_settings.json"
+_BOOL_SETTINGS = frozenset({
+    "taskbar_primary_only", "treat_maximized_as_fullscreen",
+    "popup_enabled", "popup_on_focus_change", "indicators_visible",
+})
+_COLOR_SETTINGS = frozenset({
+    "ru_text_color", "en_text_color", "unknown_text_color",
+    "ru_popup_bg", "en_popup_bg", "unknown_popup_bg",
+    "popup_text_color", "small_bg_color",
+    "tray_icon_bg_color", "tray_icon_border_color",
+})
+_INT_RANGES = {
+    "small_width": (25, 160), "small_height": (18, 80),
+    "small_right_offset": (0, 250), "small_bottom_offset": (0, 250),
+    "small_font_size": (8, 44),
+    "taskbar_gap_px": (0, 100),
+    "taskbar_fallback_offset_right": (0, 500),
+    "taskbar_fallback_height": (24, 120),
+    "normal_alpha": (0, 255), "fullscreen_alpha": (0, 255),
+    "popup_width": (80, 500), "popup_height": (50, 300),
+    "popup_font_size": (18, 120), "popup_duration_ms": (100, 6000),
+    "popup_normal_alpha": (0, 255), "popup_fullscreen_alpha": (0, 255),
+    "update_interval_ms": (50, 2000),
+    "topmost_reinforce_interval_ms": (0, 60000),
+    "fullscreen_tolerance_px": (0, 60),
+    "tray_icon_font_size": (8, 64),
+}
+_FLOAT_RANGES = {"tray_icon_padding_ratio": (0.0, 0.4)}
+
+
+def _read_config_dict(path: Path) -> dict:
+    data = json.loads(path.read_text(encoding="utf-8-sig"))
+    if not isinstance(data, dict):
+        raise ValueError("Ожидался JSON-объект с настройками")
+    return data
+
+
+def _parse_config(data: dict) -> AppConfig:
+    defaults = AppConfig()
+    allowed = {item.name for item in fields(AppConfig)}
+    parsed = {}
+    for key, value in data.items():
+        if key not in allowed:
+            logging.warning("Language Indicator: неизвестная настройка %s", key)
+            continue
+        valid = False
+        if key in _BOOL_SETTINGS:
+            valid = isinstance(value, bool)
+        elif key in _COLOR_SETTINGS:
+            valid = isinstance(value, str) and re.fullmatch(r"#[0-9a-fA-F]{6}", value) is not None
+        elif key in _INT_RANGES:
+            lo, hi = _INT_RANGES[key]
+            valid = type(value) is int and lo <= value <= hi
+        elif key in _FLOAT_RANGES:
+            lo, hi = _FLOAT_RANGES[key]
+            valid = type(value) in (float, int) and lo <= value <= hi
+        elif key == "placement_mode":
+            valid = value in ("taskbar", "corners")
+        elif key == "tray_title":
+            valid = isinstance(value, str) and 1 <= len(value) <= 60
+        if valid:
+            parsed[key] = value
+        else:
+            logging.warning("Language Indicator: недопустимое значение %s=%r, по умолчанию %r",
+                            key, value, getattr(defaults, key))
+    return replace(defaults, **parsed)
+
+
+def _save_config(config: AppConfig) -> bool:
+    """Атомарное сохранение: старая корректная версия в .bak."""
+    tmp = CONFIG_FILE.with_suffix(".json.tmp")
+    backup = CONFIG_FILE.with_suffix(".json.bak")
+    try:
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        with tmp.open("w", encoding="utf-8", newline="\n") as fh:
+            json.dump(asdict(config), fh, indent=2, ensure_ascii=False)
+            fh.write("\n")
+            fh.flush()
+            os.fsync(fh.fileno())
+        if CONFIG_FILE.is_file():
+            try:
+                _read_config_dict(CONFIG_FILE)
+                shutil.copy2(CONFIG_FILE, backup)
+            except (ValueError, OSError, UnicodeError):
+                logging.warning("Language Indicator: некорректные текущие настройки не сохранены как резервные")
+        os.replace(tmp, CONFIG_FILE)
+        return True
+    except (OSError, TypeError, ValueError):
+        logging.exception("Language Indicator: не удалось сохранить настройки %s", CONFIG_FILE)
+        return False
+    finally:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def _load_config() -> AppConfig:
+    backup = CONFIG_FILE.with_suffix(".json.bak")
+    for path in (CONFIG_FILE, backup):
+        if not path.is_file():
+            continue
+        try:
+            parsed = _parse_config(_read_config_dict(path))
+            if path == backup:
+                logging.warning("Language Indicator: настройки восстановлены из %s", backup)
+            logging.info("Language Indicator: настройки загружены из %s", path)
+            return parsed
+        except (ValueError, OSError, UnicodeError, TypeError):
+            logging.exception("Language Indicator: не удалось прочитать настройки %s", path)
+    defaults = AppConfig()
+    if not CONFIG_FILE.exists():
+        _save_config(defaults)
+    return defaults
+
+
+CONFIG = _load_config()
 
 
 # ============================================================
