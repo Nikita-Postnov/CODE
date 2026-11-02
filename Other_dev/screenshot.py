@@ -3372,6 +3372,9 @@ class Launcher(QMainWindow):
         _setup_logging()
         self._editors: List[EditorWindow] = []
         self._real_quit = False
+        self._delayed_capture_timer = QTimer(self)
+        self._delayed_capture_timer.setSingleShot(True)
+        self._delayed_capture_timer.timeout.connect(self._finish_delayed_capture)
         self._init_tray()
         self._install_global_hotkey()
         act_f8 = QAction(self)
@@ -3403,6 +3406,15 @@ class Launcher(QMainWindow):
         self.tray.setToolTip("NPCore Скриншоты")
         m = QMenu(self)
         self.act_tray_shot = m.addAction("Сделать скриншот", self.make_shot)
+        delayed_menu = m.addMenu("Снимок с задержкой")
+        for seconds in (3, 5, 10):
+            delayed_menu.addAction(
+                f"Через {seconds} секунд",
+                lambda checked=False, s=seconds: self.capture_delayed(s),
+            )
+        self.act_tray_cancel_delayed = m.addAction(
+            "Отменить отложенный снимок", self.cancel_delayed_capture)
+        self.act_tray_cancel_delayed.setVisible(False)
         self.act_tray_rec = m.addAction("Запись экрана", self.start_recording)
         self.act_tray_ocr = m.addAction("Распознать текст", self.make_ocr)
         self.act_tray_stop = m.addAction("⏹ Остановить запись", self._stop_recording)
@@ -3448,6 +3460,34 @@ class Launcher(QMainWindow):
         self.showNormal()
         self.activateWindow()
 
+    def capture_delayed(self, seconds: int) -> None:
+        """Отложенный захват полезен для открытых меню, хинтов и всплывающих окон."""
+        if seconds not in (3, 5, 10):
+            raise ValueError("Поддерживается задержка 3, 5 или 10 секунд")
+        if _capture_in_progress:
+            return
+        self.hide()
+        self._delayed_capture_timer.start(seconds * 1000)
+        if hasattr(self, "act_tray_cancel_delayed"):
+            self.act_tray_cancel_delayed.setVisible(True)
+        if hasattr(self, "tray"):
+            self.tray.showMessage(
+                "Скриншот с задержкой",
+                f"Выделение области начнётся через {seconds} с. "
+                "Отмена — через меню значка в трее.",
+                QSystemTrayIcon.Information, 2200,
+            )
+
+    def cancel_delayed_capture(self) -> None:
+        self._delayed_capture_timer.stop()
+        if hasattr(self, "act_tray_cancel_delayed"):
+            self.act_tray_cancel_delayed.setVisible(False)
+
+    def _finish_delayed_capture(self) -> None:
+        if hasattr(self, "act_tray_cancel_delayed"):
+            self.act_tray_cancel_delayed.setVisible(False)
+        self._capture(SelectionOverlay.MODE_SHOT)
+
     def hotkey_capture(self, mode: str = SelectionOverlay.MODE_SHOT):
         """PrintScreen: сразу выделение области (режим можно сменить на запись/текст)."""
         # Из обработчика нативного события запускать вложенный цикл нельзя —
@@ -3469,6 +3509,7 @@ class Launcher(QMainWindow):
             app.removeNativeEventFilter(hotkey)
         if hasattr(app, "_global_hotkey_filter"):
             setattr(app, "_global_hotkey_filter", None)
+        self.cancel_delayed_capture()
         self._real_quit = True
         QApplication.instance().quit()
 
