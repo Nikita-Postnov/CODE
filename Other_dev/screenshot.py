@@ -2949,6 +2949,7 @@ class EditorWindow(QMainWindow):
         self._add_apps_menu()
         self.setWindowIcon(_load_app_icon())
         self._last_save_path: Optional[Path] = None
+        self._last_project_path: Optional[Path] = None
         self._init_status_bar()
         self.view.set_status_hook(self._on_view_status)
         self.installEventFilter(self)
@@ -3071,7 +3072,70 @@ class EditorWindow(QMainWindow):
         """Новая картинка в этом же окне: Ctrl+S больше не перезапишет файл прошлой картинки."""
         self.view.set_image(img)
         self._last_save_path = None
+        self._last_project_path = None
         self._on_dirty_changed(self.view.is_dirty())
+
+    def _save_project_to(self, path: Path) -> bool:
+        if not save_editable_project(path, self.view):
+            QMessageBox.warning(self, "Ошибка", "Не удалось сохранить проект. Исходные данные не изменены.")
+            return False
+        self._last_project_path = path
+        self.view.mark_clean()
+        self._on_dirty_changed(False)
+        self.statusBar().showMessage(f"Проект сохранён: {path}", 5000)
+        return True
+
+    def save_project(self) -> bool:
+        if self._last_project_path is not None:
+            return self._save_project_to(self._last_project_path)
+        return self.save_project_as()
+
+    def save_project_as(self) -> bool:
+        proposed = (self._last_project_path or
+                    self._default_save_name().with_suffix(EDITABLE_PROJECT_EXTENSION))
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Сохранить редактируемый проект", str(proposed),
+            "Проект NP_Screenshot (*.npshot)")
+        if not path:
+            return False
+        result = Path(path)
+        if result.suffix.lower() != EDITABLE_PROJECT_EXTENSION:
+            result = result.with_name(result.name + EDITABLE_PROJECT_EXTENSION)
+        return self._save_project_to(result)
+
+    def open_project(self) -> bool:
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Открыть редактируемый проект",
+            str(self._last_project_path.parent) if self._last_project_path else "",
+            "Проект NP_Screenshot (*.npshot)")
+        if not path:
+            return False
+        try:
+            bg, ov, items, counter = load_editable_project(Path(path))
+        except (OSError, ValueError, TypeError, RuntimeError, zipfile.BadZipFile,
+                json.JSONDecodeError, base64.binascii.Error) as exc:
+            log.exception("Не удалось открыть проект: %s", path)
+            QMessageBox.warning(self, "Ошибка проекта", str(exc))
+            return False
+        new_editor = EditorWindow(bg)
+        try:
+            new_editor.view.bg_img = bg
+            new_editor.view.ov_img = ov
+            new_editor.view.step_counter = counter
+            new_editor.view._restore_scene(items)
+            new_editor.view._refresh()
+            new_editor.view.mark_clean()
+            new_editor._last_project_path = Path(path)
+            new_editor._on_dirty_changed(False)
+        except Exception:
+            new_editor.close()
+            log.exception("Не удалось восстановить элементы проекта: %s", path)
+            QMessageBox.warning(self, "Ошибка проекта", "Не удалось восстановить элементы.")
+            return False
+        new_editor.show()
+        new_editor.activateWindow()
+        _register_editor_in_launcher(new_editor)
+        return True
 
     def save_quick(self) -> bool:
         if self._last_save_path is None:
@@ -3320,6 +3384,10 @@ class EditorWindow(QMainWindow):
         add_action(t3, "📋 Вставить из буфера (заменить)", self.open_from_clipboard, "Ctrl+V")
         add_action(t3, "💾 Сохранить", self.save_quick, "Ctrl+S")
         add_action(t3, "💾 Сохранить как…", self.save_as, "Ctrl+Shift+S")
+        add_action(t3, "📦 Проект", self.save_project, "Ctrl+Alt+S")
+        add_action(t3, "📦 Проект как…", self.save_project_as, "Ctrl+Alt+Shift+S")
+        add_action(t3, "📂 Открыть проект", self.open_project, "Ctrl+Shift+O")
+        add_action(t3, "✏ Изменить текст", self.view.edit_selected_text, "Ctrl+Alt+T")
         add_action(t3, "📁 Показать в папке", self.reveal_last_saved, "Ctrl+Shift+E")
         add_action(t3, "📋 Копировать", self.copy_to_clipboard, "Ctrl+C")
         add_action(t4, "↶ Отменить", self.view.undo, "Ctrl+Z")
