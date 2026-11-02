@@ -146,6 +146,23 @@ class ProjectTests(unittest.TestCase):
         self.assertEqual(new[0].view.bg_img.pixelColor(0, 0).name(), "#3070c0")
         self.assertEqual(editor.view.bg_img.pixelColor(0, 0).name(), "#abcdef")
 
+    def test_project_opens_from_launcher_and_restores_project_name(self):
+        self.populate_shapes()
+        project = self.folder / "saved_project.npshot"
+        self.assertTrue(shot.save_editable_project(project, self.view))
+        with patch.object(shot.Launcher, "_install_global_hotkey"):
+            launcher = shot.Launcher()
+        self.addCleanup(lambda: (setattr(launcher, "_real_quit", True), launcher.close()))
+        with patch.object(shot.QFileDialog, "getOpenFileName",
+                          return_value=(str(project), "")):
+            launcher._open_project()
+        self.assertEqual(len(launcher._editors), 1)
+        editor = launcher._editors[0]
+        self.assertEqual(editor._last_project_path, project)
+        self.assertIn("saved_project.npshot", editor.windowTitle())
+        self.assertEqual(len(editor.view._snapshot_scene()), 4)
+        editor.close()
+
     def test_editor_corrupt_project_does_not_mutate_current(self):
         file = self.folder / "corrupt.npshot"
         file.write_bytes(b"x")
