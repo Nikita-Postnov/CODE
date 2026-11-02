@@ -536,7 +536,6 @@ class NotesApp(NotePersistenceMixin, PluginsMixin, RemindersMixin, TrayMixin, Au
         self._sc_import = QShortcut(QKeySequence("Ctrl+Shift+I"), self)
         self._sc_import.activated.connect(self.import_note)
         self.text_edit.textChanged.connect(self._schedule_autosave)
-        self.text_edit.textChanged.connect(self.on_text_changed_autosave)
 
         self._layout_counter_timer = QTimer(self)
         self._layout_counter_timer.setSingleShot(True)
@@ -627,7 +626,7 @@ class NotesApp(NotePersistenceMixin, PluginsMixin, RemindersMixin, TrayMixin, Au
         self.dock_history = None
         self.dock_buttons = None
         self.password_manager_field = QLineEdit()
-        self.password_manager_field.setPlaceholderText(pm_label)
+        self.password_manager_field.setPlaceholderText(pm_label + " (внимание: хранится без шифрования)")
         self.password_manager_row = QWidget()
         _pm_row_layout = QHBoxLayout(self.password_manager_row)
         _pm_row_layout.setContentsMargins(0, 0, 0, 0)
@@ -1226,7 +1225,7 @@ class NotesApp(NotePersistenceMixin, PluginsMixin, RemindersMixin, TrayMixin, Au
         self.TRASH_DIR.mkdir(parents=True, exist_ok=True)
 
         if trash_dir.exists():
-            shutil.rmtree(trash_dir)
+            raise FileExistsError("В корзине уже есть заметка с тем же идентификатором")
         if note_dir.exists():
             shutil.move(note_dir, trash_dir)
 
@@ -1925,31 +1924,14 @@ class NotesApp(NotePersistenceMixin, PluginsMixin, RemindersMixin, TrayMixin, Au
                     plain_text = self._html_to_plain_text(html_content)
                 except Exception:
                     plain_text = ""
-                if not hasattr(self, "_note_save_locks"):
-                    self._note_save_locks = {}
-                lock = self._note_save_locks.get(previous_note.uuid)
-                if lock is None:
-                    lock = threading.Lock()
-                    self._note_save_locks[previous_note.uuid] = lock
                 note_snapshot = previous_note.to_dict()
                 if not previous_note.reminder:
                     note_snapshot.pop("reminder", None)
                 note_snapshot["content"] = html_content
                 note_snapshot["content_txt"] = plain_text
-
-                def _bg_save(snapshot: dict, title: str, uuid_: str, ts: str | QDateTime | None) -> None:
-                    with lock:
-                        try:
-                            note_folder = NOTES_DIR / safe_folder_name(title, uuid_, ts)
-                            self._save_payload_to_folder(note_folder, snapshot, keep_backups=10)
-                        except Exception:
-                            logging.exception("Background save failed (uuid=%s)", uuid_)
-
-                threading.Thread(
-                    target=_bg_save,
-                    args=(note_snapshot, previous_note.title, previous_note.uuid, previous_note.timestamp),
-                    daemon=True,
-                ).start()
+                note_folder = NOTES_DIR / safe_folder_name(
+                    previous_note.title, previous_note.uuid, previous_note.timestamp)
+                self._save_payload_to_folder(note_folder, note_snapshot, keep_backups=10)
             self.current_note = note
             self.tags_label.setText(f"Теги: {', '.join(note.tags) if note and note.tags else 'нет'}")
             if hasattr(self, "settings"):
