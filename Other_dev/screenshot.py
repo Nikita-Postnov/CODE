@@ -61,6 +61,7 @@ from PySide6.QtGui import (
     QWheelEvent,
     QClipboard,
     QIcon,
+    QImageReader,
     QDesktopServices,
 )
 from PySide6.QtWidgets import (
@@ -3571,10 +3572,12 @@ def capture_region_interactive() -> Optional[QImage]:
 class ScreenshotQuickActionsDialog(QDialog):
     """Необязательная небольшая панель после захвата без открытия редактора."""
 
-    def __init__(self, image: QImage, launcher: "Launcher"):
+    def __init__(self, image: QImage, launcher: "Launcher",
+                 history_path: Optional[Path] = None):
         super().__init__(None)
         self.image = image.copy()
         self.launcher = launcher
+        self.history_path = history_path
         self.setWindowTitle("Снимок готов — быстрые действия")
         self.setWindowIcon(_load_app_icon())
         self.setAttribute(Qt.WA_DeleteOnClose, True)
@@ -3624,8 +3627,9 @@ class ScreenshotQuickActionsDialog(QDialog):
         self.close()
 
     def to_history(self) -> None:
-        saved = archive_screenshot(self.image)
-        if saved is None:
+        if self.history_path is None or not self.history_path.is_file():
+            self.history_path = archive_screenshot(self.image)
+        if self.history_path is None:
             QMessageBox.warning(self, "Ошибка", "Не удалось добавить снимок в историю.")
             return
         self.launcher.open_history()
@@ -3675,11 +3679,15 @@ class ScreenshotHistoryDialog(QDialog):
         self.items.clear()
         paths = screenshot_history_files()
         for path in paths:
-            pix = QPixmap(str(path))
-            if pix.isNull():
+            reader = QImageReader(str(path))
+            source_size = reader.size()
+            if source_size.isValid():
+                source_size.scale(QSize(152, 100), Qt.KeepAspectRatio)
+                reader.setScaledSize(source_size)
+            preview = reader.read()
+            if preview.isNull():
                 continue
-            icon = QIcon(pix.scaled(
-                QSize(152, 100), Qt.KeepAspectRatio, Qt.SmoothTransformation))
+            icon = QIcon(QPixmap.fromImage(preview))
             entry = QListWidgetItem(icon, path.stem.replace("Screenshot_", ""))
             entry.setToolTip(path.name)
             entry.setData(Qt.UserRole, str(path))
@@ -4023,12 +4031,13 @@ class Launcher(QMainWindow):
         log.info("capture: result %s", None if img is None else f"{img.width()}x{img.height()}")
         if img is not None:
             QApplication.clipboard().setImage(img, QClipboard.Clipboard)
+            saved = None
             if self._capture_preferences.get("history_enabled", False):
                 saved = archive_screenshot(img)
                 if saved is None:
                     log.error("Снимок создан, но не удалось сохранить его в историю")
             if self._capture_preferences.get("quick_actions", False):
-                panel = ScreenshotQuickActionsDialog(img, self)
+                panel = ScreenshotQuickActionsDialog(img, self, history_path=saved)
                 self._quick_panel = panel
                 panel.destroyed.connect(lambda _object=None: setattr(self, "_quick_panel", None))
                 panel.show()
