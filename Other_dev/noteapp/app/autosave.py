@@ -26,9 +26,9 @@ class AutosaveMixin:
             return
 
         try:
-            self.autosave_timer.start(0)
+            self.autosave_timer.start(self._get_autosave_debounce_ms())
         except Exception:
-            pass
+            logging.exception("Не удалось запланировать автосохранение")
 
     def _get_autosave_debounce_ms(self) -> int:
         try:
@@ -96,16 +96,9 @@ class AutosaveMixin:
         except Exception:
             pass
 
-        if self.autosave_enabled:
-            try:
-                self.text_edit.textChanged.connect(self.on_text_changed_autosave)
-            except Exception:
-                pass
-        else:
-            try:
-                self._autosave_timer.stop()
-            except Exception:
-                pass
+        if not self.autosave_enabled:
+            self.autosave_timer.stop()
+            self._autosave_timer.stop()
 
     def on_text_changed_autosave(self):
         if not getattr(self, "autosave_enabled", False):
