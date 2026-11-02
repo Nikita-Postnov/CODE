@@ -1784,7 +1784,7 @@ class LanguageIndicatorApp:
         targets = merge_screen_targets(self.qt_app)
         self._all_targets = targets
 
-        if CONFIG.placement_mode == "taskbar" and CONFIG.taskbar_primary_only:
+        if CONFIG.taskbar_primary_only:
             primary = self.qt_app.primaryScreen()
             if primary is None:
                 return targets[:1]
@@ -1942,7 +1942,8 @@ class LanguageIndicatorApp:
 
         if not self.is_visible:
             self.last_lang = lang
-            self.popup.hide()
+            if self.popup.isVisible():
+                self.popup.hide()
             return
 
         relayout = self.should_force_topmost_now()
