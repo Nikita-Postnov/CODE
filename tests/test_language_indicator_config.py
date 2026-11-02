@@ -121,6 +121,28 @@ class IntegrationSourceTests(unittest.TestCase):
                      "choose_color", "change_settings"):
             self.assertIn(item, CODE)
 
+    @unittest.skipUnless(sys.platform == "win32", "Windows tray test")
+    def test_windows_tray_menu_constructs(self):
+        import importlib.util
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        spec = importlib.util.spec_from_file_location("np_language_indicator_menu", SOURCE)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = module
+        self.addCleanup(sys.modules.pop, spec.name, None)
+        spec.loader.exec_module(module)
+        from PyQt6.QtWidgets import QApplication
+        app = QApplication.instance() or QApplication([])
+        self.addCleanup(app.quit)
+        controller = module.LanguageIndicatorApp.__new__(module.LanguageIndicatorApp)
+        menu = controller.create_tray_menu()
+        self.assertIn("Настройки", [action.text() for action in menu.actions()])
+        settings = next(action.menu() for action in menu.actions()
+                        if action.text() == "Настройки")
+        self.assertIsNotNone(settings)
+        self.assertGreaterEqual(len(settings.actions()), 8)
+        self.assertTrue(any(action.isCheckable() and action.isChecked()
+                            for action in settings.actions()))
+
     @unittest.skipUnless(sys.platform == "win32", "Windows import smoke test")
     def test_windows_module_import(self):
         import importlib.util
