@@ -142,6 +142,12 @@ class IntegrationSourceTests(unittest.TestCase):
         self.assertGreaterEqual(len(settings.actions()), 8)
         self.assertTrue(any(action.isCheckable() and action.isChecked()
                             for action in settings.actions()))
+        placement = next(action.menu() for action in settings.actions()
+                         if action.text() == "Расположение индикатора")
+        self.assertEqual([action.text() for action in placement.actions()],
+                         ["На панели задач", "В правом нижнем углу"])
+        self.assertFalse(any("В углах экранов" in action.text()
+                             for action in placement.actions()))
 
     @unittest.skipUnless(sys.platform == "win32", "Windows import smoke test")
     def test_windows_module_import(self):

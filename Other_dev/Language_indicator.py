@@ -1614,7 +1614,7 @@ class LanguageIndicatorApp:
         placement_menu = settings_menu.addMenu("Расположение индикатора")
         placement_group = QActionGroup(placement_menu)
         placement_group.setExclusive(True)
-        for name, value in (("На панели задач", "taskbar"), ("В углах экранов", "corners")):
+        for name, value in (("На панели задач", "taskbar"), ("В правом нижнем углу", "corners")):
             action = QAction(name, placement_menu)
             action.setCheckable(True)
             action.setChecked(CONFIG.placement_mode == value)
