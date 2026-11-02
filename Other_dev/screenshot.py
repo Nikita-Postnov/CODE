@@ -2430,6 +2430,16 @@ class CanvasView(QGraphicsView):
             if self.tool == Tool.ERASER:
                 self.viewport().update()
 
+    def mouseDoubleClickEvent(self, e: QMouseEvent):
+        if e.button() == Qt.LeftButton:
+            scene_pos = self.mapToScene(e.position().toPoint())
+            target = self._hit_resizable_item(scene_pos)
+            if isinstance(target, EditableTextItem):
+                self.edit_selected_text(target)
+                e.accept()
+                return
+        super().mouseDoubleClickEvent(e)
+
     def mousePressEvent(self, e: QMouseEvent):
         if e.button() == Qt.LeftButton:
             scene_pos = self.mapToScene(e.position().toPoint())
@@ -3031,15 +3041,13 @@ class CanvasView(QGraphicsView):
 
         self._refresh()
 
-    def edit_selected_text(self) -> bool:
-        items = [it for it in self._scene.selectedItems()
-                 if isinstance(it, EditableTextItem)]
-        if not items:
-            items = [it for it in self._active_shape_items()
+    def edit_selected_text(self, item: Optional[EditableTextItem] = None) -> bool:
+        if item is None:
+            items = [it for it in self.selected_objects()
                      if isinstance(it, EditableTextItem)]
-        if not items:
-            return False
-        item = items[0]
+            if not items:
+                return False
+            item = items[0]
         text, ok = QInputDialog.getText(self, "Изменить текст", "Надпись:",
                                         text=item.text)
         if not ok or not text or text == item.text:
@@ -3352,11 +3360,77 @@ class EditorWindow(QMainWindow):
         return True
 
     def copy_to_clipboard(self) -> bool:
-        ok = self.view.copy_to_clipboard()
-        self.statusBar().showMessage(
-            "Скопировано в буфер обмена" if ok else "Не удалось скопировать", 2000
-        )
+        if self.view.selected_objects():
+            ok = self.view.copy_selected_objects()
+            message = "Объект скопирован" if ok else "Не удалось скопировать объект"
+        else:
+            ok = self.view.copy_to_clipboard()
+            message = "Скопировано в буфер обмена" if ok else "Не удалось скопировать"
+        self.statusBar().showMessage(message, 2000)
         return ok
+
+    def paste_from_clipboard(self) -> None:
+        mime = QApplication.clipboard().mimeData(QClipboard.Clipboard)
+        if mime is not None and mime.hasFormat("application/x-np-screenshot-objects+json"):
+            if not self.view.paste_selected_objects():
+                QMessageBox.warning(self, "Вставка", "Не удалось вставить объекты из буфера.")
+            return
+        self.open_from_clipboard()
+
+    def edit_object_properties(self) -> bool:
+        chosen = self.view.selected_objects()
+        if len(chosen) != 1:
+            QMessageBox.information(self, "Свойства", "Выдели один объект инструментом «Переместиться».")
+            return False
+        item = chosen[0]
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Свойства объекта")
+        layout = QFormLayout(dialog)
+        if isinstance(item, EditableTextItem):
+            color = QColor(item.text_color)
+        elif isinstance(item, ResizableArrowItem):
+            color = QColor(item._color)
+        elif isinstance(item, ResizableRectItem):
+            color = (QColor(item._brush) if item._pen.style() == Qt.NoPen and
+                     item._brush != Qt.NoBrush else QColor(item._pen.color()))
+        else:
+            color = QColor()
+        color_holder = {"value": color}
+        color_button = QPushButton("Выбрать цвет", dialog)
+        color_button.setEnabled(color.isValid())
+        color_button.setToolTip(color.name() if color.isValid() else "Не применимо к стикеру")
+        def pick():
+            next_color = QColorDialog.getColor(color_holder["value"], dialog, "Цвет объекта")
+            if next_color.isValid():
+                color_holder["value"] = next_color
+                color_button.setToolTip(next_color.name())
+        color_button.clicked.connect(pick)
+        layout.addRow("Цвет", color_button)
+        width_box = None
+        if isinstance(item, ResizableArrowItem) or (
+                isinstance(item, ResizableRectItem) and
+                not isinstance(item, EditableTextItem) and item._pen.style() != Qt.NoPen):
+            width_box = QSpinBox(dialog)
+            width_box.setRange(1, 200)
+            width_box.setValue(int(item._width) if isinstance(item, ResizableArrowItem)
+                               else max(1, int(item._pen.widthF())))
+            layout.addRow("Толщина линии, px", width_box)
+        font_box = None
+        if isinstance(item, EditableTextItem):
+            font_box = QSpinBox(dialog)
+            font_box.setRange(5, 300)
+            font_box.setValue(int(item.font_size))
+            layout.addRow("Размер текста, pt", font_box)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel, dialog)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addRow(buttons)
+        if dialog.exec() != QDialog.Accepted:
+            return False
+        return self.view.apply_selected_properties(
+            color_holder["value"] if color.isValid() else None,
+            width_box.value() if width_box is not None else None,
+            font_box.value() if font_box is not None else None)
 
     def _bump_thickness(self, delta: int) -> None:
         new_val = max(1, min(200, int(self.view.thickness) + int(delta)))
