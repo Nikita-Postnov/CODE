@@ -158,7 +158,10 @@ class NotePersistenceMixin:
 
         def _read_json(path: Path) -> dict:
             with open(path, "r", encoding="utf-8") as f:
-                return json.load(f)
+                payload = json.load(f)
+            if not isinstance(payload, dict) or not isinstance(payload.get("title"), str):
+                raise ValueError("Некорректная структура заметки")
+            return payload
 
         try:
             note_mtime = note_path.stat().st_mtime
