@@ -2196,6 +2196,7 @@ class CanvasView(QGraphicsView):
         current = self._item_state(item)
         if color is None and line_width is None and font_size is None:
             return False
+        was_dirty = self.is_dirty()
         self.push_undo()
         if isinstance(item, EditableTextItem):
             if color is not None:
@@ -2206,6 +2207,7 @@ class CanvasView(QGraphicsView):
             if color is not None:
                 item._color = QColor(color)
             if line_width is not None:
+                item.prepareGeometryChange()
                 item._width = line_width
         elif isinstance(item, ResizableRectItem):
             if color is not None:
@@ -2216,10 +2218,11 @@ class CanvasView(QGraphicsView):
                     fill.setAlpha(QColor(item._brush).alpha())
                     item._brush = fill
             if line_width is not None and item._pen.style() != Qt.NoPen:
+                item.prepareGeometryChange()
                 item._pen.setWidthF(line_width)
         if self._item_state(item) == current:
             self.undo_stack.pop()
-            self._set_dirty(bool(self.undo_stack))
+            self._set_dirty(was_dirty)
             return False
         item.update()
         self.viewport().update()
