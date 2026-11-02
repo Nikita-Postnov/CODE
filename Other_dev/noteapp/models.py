@@ -36,6 +36,7 @@ class Note:
         self.history = history if history is not None else []
         self.history_index = len(self.history) - 1 if self.history else -1
         self.reminder_repeat = reminder_repeat
+        self.reminder_anchor_day = None
         self.pinned = pinned
         self.password_manager = password_manager
         self.custom_fields = custom_fields if custom_fields is not None else []
@@ -55,6 +56,7 @@ class Note:
             "timestamp": self.timestamp,
             "reminder": self.reminder,
             "reminder_repeat": self.reminder_repeat,
+            "reminder_anchor_day": self.reminder_anchor_day,
             "uuid": self.uuid,
             "password_manager": self.password_manager,
             "password_manager_visible": bool(self.password_manager_visible),
@@ -78,6 +80,8 @@ class Note:
             reminder_repeat=data.get("reminder_repeat", None),
             ignored_words=list(data.get("ignored_words") or []),
         )
+        anchor = data.get("reminder_anchor_day")
+        note.reminder_anchor_day = anchor if isinstance(anchor, int) and 1 <= anchor <= 31 else None
         note.pinned = data.get("pinned", False)
         # Индекс истории держим в границах: битый или устаревший индекс
         # давал IndexError при отмене/повторе.
