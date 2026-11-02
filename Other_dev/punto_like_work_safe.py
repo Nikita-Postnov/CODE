@@ -2496,6 +2496,7 @@ _SNAPSHOT_SKIP_FORMAT_NAMES: Final[frozenset[str]] = frozenset({
 @dataclass(frozen=True)
 class ClipboardSnapshot:
     formats: tuple[tuple[int, bytes], ...] = ()
+    sequence: Optional[int] = None
 
     @property
     def total_bytes(self) -> int:
@@ -2563,6 +2564,7 @@ def _clipboard_take_snapshot(timings: Timings) -> ClipboardSnapshot:
             formats.append(fmt)
         present = frozenset(formats)
 
+        clipboard_sequence = int(user32.GetClipboardSequenceNumber())
         deadline = time.monotonic() + timings.clipboard_snapshot_deadline_seconds
         saved: list[tuple[int, bytes]] = []
         total = 0
@@ -2578,7 +2580,7 @@ def _clipboard_take_snapshot(timings: Timings) -> ClipboardSnapshot:
             _clipboard_snapshot_require_data(fmt, data, total, timings.clipboard_snapshot_max_bytes)
             saved.append((fmt, data))
             total += len(data)
-        return ClipboardSnapshot(tuple(saved))
+        return ClipboardSnapshot(tuple(saved), clipboard_sequence)
     finally:
         user32.CloseClipboard()
 
@@ -2628,8 +2630,11 @@ def _clipboard_restore_snapshot(snapshot: ClipboardSnapshot, timings: Timings,
 def _clipboard_guard(timings: Timings) -> Generator[ClipboardSnapshot, None, None]:
     """При неполном снимке не выполняем операции и не уничтожаем чужие данные."""
     snapshot = _clipboard_take_snapshot(timings)
+    current_sequence = int(user32.GetClipboardSequenceNumber())
+    if snapshot.sequence is not None and current_sequence != snapshot.sequence:
+        raise ClipboardSnapshotUnsafe("Буфер изменился во время подготовки снимка")
     previous = getattr(_clipboard_guard_local, "current", None)
-    state = {"expected": int(user32.GetClipboardSequenceNumber()), "modified": False}
+    state = {"expected": current_sequence, "modified": False}
     _clipboard_guard_local.current = state
     try:
         yield snapshot
