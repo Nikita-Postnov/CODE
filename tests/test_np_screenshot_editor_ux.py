@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtCore import QPoint, QPointF, QRectF, Qt
-from PySide6.QtGui import QColor, QImage, QPen, QPixmap
+from PySide6.QtGui import QColor, QCloseEvent, QImage, QPen, QPixmap
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QToolBar, QToolButton
 
@@ -182,6 +182,55 @@ class EditorToolbarTests(unittest.TestCase):
     def setUp(self):
         self.editor = shot.EditorWindow(example_image())
         self.addCleanup(lambda: (self.editor.view.mark_clean(), self.editor.close()))
+
+    def test_confirmation_dialog_has_only_russian_buttons(self):
+        cases = (
+            (
+                shot.QMessageBox.Save | shot.QMessageBox.Discard | shot.QMessageBox.Cancel,
+                shot.QMessageBox.Cancel,
+                {
+                    shot.QMessageBox.Save: "Сохранить",
+                    shot.QMessageBox.Discard: "Не сохранять",
+                    shot.QMessageBox.Cancel: "Отмена",
+                },
+            ),
+            (
+                shot.QMessageBox.Yes | shot.QMessageBox.No,
+                shot.QMessageBox.No,
+                {
+                    shot.QMessageBox.Yes: "Да",
+                    shot.QMessageBox.No: "Нет",
+                },
+            ),
+        )
+        for standard_buttons, default, expected in cases:
+            inspected = {}
+
+            def inspect(dialog):
+                inspected["labels"] = {
+                    standard: dialog.button(standard).text()
+                    for standard in expected
+                }
+                inspected["default"] = dialog.defaultButton().text()
+                return default
+
+            with patch.object(shot.QMessageBox, "exec", new=inspect):
+                result = shot._question_ru(
+                    self.editor, "Подтверждение", "Проверка", standard_buttons, default
+                )
+            self.assertEqual(result, default)
+            self.assertEqual(inspected["labels"], expected)
+            self.assertEqual(inspected["default"], expected[default])
+
+    def test_cancel_unsaved_close_keeps_editor_dirty(self):
+        self.editor.view._set_dirty(True)
+        close_event = QCloseEvent()
+        with patch.object(shot, "_question_ru",
+                          return_value=shot.QMessageBox.Cancel) as question:
+            self.editor.closeEvent(close_event)
+        self.assertFalse(close_event.isAccepted())
+        self.assertTrue(self.editor.view.is_dirty())
+        self.assertEqual(question.call_count, 1)
 
     def test_exactly_two_toolbar_rows_and_menus_keep_all_tools(self):
         self.assertEqual(len(self.editor.tb_rows), 2)

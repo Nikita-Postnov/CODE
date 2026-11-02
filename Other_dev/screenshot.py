@@ -102,6 +102,23 @@ from PySide6.QtWidgets import (
 log = logging.getLogger(__name__)
 
 
+def _question_ru(parent, title, message, buttons, default):
+    dialog = QMessageBox(QMessageBox.Question, title, message, buttons, parent)
+    captions = {
+        QMessageBox.Save: "Сохранить",
+        QMessageBox.Discard: "Не сохранять",
+        QMessageBox.Cancel: "Отмена",
+        QMessageBox.Yes: "Да",
+        QMessageBox.No: "Нет",
+    }
+    for standard_button, caption in captions.items():
+        button = dialog.button(standard_button)
+        if button is not None:
+            button.setText(caption)
+    dialog.setDefaultButton(default)
+    return dialog.exec()
+
+
 def _is_launcher_dir(p: Path) -> bool:
     # Choice.pyw — portable-лаунчер (может быть без Choice.exe, если вместо него Choice.bat)
     return any((p / n).exists() for n in ("launcher_config.json", "Choice.exe", "Choice.pyw"))
@@ -3427,6 +3444,8 @@ class EditorWindow(QMainWindow):
             font_box.setValue(int(item.font_size))
             layout.addRow("Размер текста, pt", font_box)
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel, dialog)
+        buttons.button(QDialogButtonBox.Ok).setText("ОК")
+        buttons.button(QDialogButtonBox.Cancel).setText("Отмена")
         buttons.accepted.connect(dialog.accept)
         buttons.rejected.connect(dialog.reject)
         layout.addRow(buttons)
@@ -3733,7 +3752,7 @@ class EditorWindow(QMainWindow):
 
     def closeEvent(self, e):
         if self.view.is_dirty():
-            res = QMessageBox.question(
+            res = _question_ru(
                 self,
                 "Несохранённые изменения",
                 "Есть несохранённые изменения. Сохранить перед закрытием?",
@@ -4350,7 +4369,7 @@ class ScreenshotHistoryDialog(QDialog):
         path = self._selected_path()
         if path is None:
             return
-        if QMessageBox.question(
+        if _question_ru(
                 self, "Удалить снимок",
                 "Удалить этот файл из истории без возможности восстановления?\n"
                 + path.name,
@@ -6302,7 +6321,7 @@ class VideoEditorWindow(QMainWindow):
         self._stop_play()
         proc = self._export_proc
         if proc is not None and proc.state() != QProcess.NotRunning:
-            res = QMessageBox.question(
+            res = _question_ru(
                 self, "Экспорт",
                 "Видео ещё обрабатывается. Прервать обработку и закрыть редактор?",
                 QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
