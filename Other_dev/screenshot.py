@@ -13,6 +13,7 @@ import threading
 import time
 import tempfile
 import traceback
+import uuid
 from array import array
 from ctypes import wintypes
 from enum import Enum, auto
@@ -60,6 +61,7 @@ from PySide6.QtGui import (
     QWheelEvent,
     QClipboard,
     QIcon,
+    QDesktopServices,
 )
 from PySide6.QtWidgets import (
     QApplication,
@@ -83,6 +85,11 @@ from PySide6.QtWidgets import (
     QMenu,
     QSizePolicy,
     QComboBox,
+    QDialog,
+    QListWidget,
+    QListWidgetItem,
+    QAbstractItemView,
+    QCheckBox,
 )
 
 log = logging.getLogger(__name__)
@@ -125,6 +132,77 @@ DATA_DIR = ROOT_DIR / "Data"
 NOTES_DIR = ROOT_DIR / "Notes"
 PASSWORDS_DIR = ROOT_DIR / "Passwords"
 SCREENSHOT_STATE_PATH = DATA_DIR / "screenshot_editor_state.json"
+SCREENSHOT_HISTORY_DIR = DATA_DIR / "ScreenshotHistory"
+SCREENSHOT_HISTORY_SETTINGS = DATA_DIR / "screenshot_history_settings.json"
+SCREENSHOT_HISTORY_DISPLAY_LIMIT = 150
+
+
+def load_capture_preferences() -> dict:
+    defaults = {"quick_actions": False, "history_enabled": False}
+    try:
+        data = json.loads(SCREENSHOT_HISTORY_SETTINGS.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return defaults
+    if not isinstance(data, dict):
+        return defaults
+    return {name: data.get(name) is True for name in defaults}
+
+
+def save_capture_preferences(preferences: dict) -> bool:
+    payload = {name: preferences.get(name) is True
+               for name in ("quick_actions", "history_enabled")}
+    path = SCREENSHOT_HISTORY_SETTINGS
+    temporary = None
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, temporary = tempfile.mkstemp(prefix=".capture_prefs_", suffix=".tmp",
+                                        dir=str(path.parent))
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=False, indent=2)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+        temporary = None
+        return True
+    except (OSError, ValueError, TypeError):
+        log.exception("Не удалось сохранить настройки захвата")
+        return False
+    finally:
+        if temporary is not None:
+            try:
+                Path(temporary).unlink(missing_ok=True)
+            except OSError:
+                log.debug("Не удалось удалить временные настройки", exc_info=True)
+
+
+def archive_screenshot(image: QImage) -> Optional[Path]:
+    """Сохраняем оригинал снимка в портативной истории, не удаляя старые записи."""
+    if image.isNull():
+        return None
+    try:
+        SCREENSHOT_HISTORY_DIR.mkdir(parents=True, exist_ok=True)
+        filename = ("Screenshot_" + time.strftime("%Y%m%d_%H%M%S")
+                    + "_" + uuid.uuid4().hex[:12] + ".png")
+        destination = SCREENSHOT_HISTORY_DIR / filename
+        if save_image_atomically(image, destination, "PNG"):
+            return destination
+    except (OSError, RuntimeError):
+        log.exception("Не удалось записать историю снимков")
+    return None
+
+
+def screenshot_history_files(limit: int = SCREENSHOT_HISTORY_DISPLAY_LIMIT) -> List[Path]:
+    if limit <= 0 or not SCREENSHOT_HISTORY_DIR.is_dir():
+        return []
+    try:
+        files = [p for p in SCREENSHOT_HISTORY_DIR.iterdir()
+                 if p.is_file() and p.suffix.lower() == ".png"
+                 and not p.is_symlink()]
+        files.sort(key=lambda p: (p.stat().st_mtime_ns, p.name), reverse=True)
+        return files[:limit]
+    except OSError:
+        log.exception("Не удалось получить историю скриншотов")
+        return []
 
 
 def save_image_atomically(image: QImage, path: Path, image_format: str, quality: int = -1) -> bool:
