@@ -6,7 +6,8 @@ import sys
 import tempfile
 import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import patch, Mock
+from types import SimpleNamespace
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtGui import QImage, QColor
@@ -129,6 +130,41 @@ class DelayedCaptureTests(unittest.TestCase):
             self.launcher.capture_delayed(-1)
         with self.assertRaises(ValueError):
             self.launcher.capture_delayed(120)
+
+
+class StartupNotificationsTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QApplication.instance() or QApplication([])
+
+    def _invoke_hotkey_setup(self, registered):
+        tray = SimpleNamespace(setToolTip=Mock(), showMessage=Mock())
+        fake = SimpleNamespace(
+            tray=tray, act_tray_shot=SimpleNamespace(setText=Mock()),
+            act_tray_ocr=SimpleNamespace(setText=Mock()),
+            hotkey_capture=Mock(),
+        )
+        hotkey = SimpleNamespace(
+            registered=registered, main_key="PrintScreen",
+            ocr_key="Shift+PrintScreen", description="PrintScreen",
+            report=["ok"],
+        )
+        with patch.object(shot.sys, "platform", "win32"), \
+             patch.object(shot, "_WinHotkey", return_value=hotkey):
+            shot.Launcher._install_global_hotkey(fake)
+        return tray, fake
+
+    def test_successful_startup_does_not_generate_windows_notification(self):
+        tray, fake = self._invoke_hotkey_setup(True)
+        tray.showMessage.assert_not_called()
+        tray.setToolTip.assert_called_once()
+        fake.act_tray_shot.setText.assert_called_once()
+        fake.act_tray_ocr.setText.assert_called_once()
+
+    def test_hotkey_registration_failure_still_warns_user(self):
+        tray, _fake = self._invoke_hotkey_setup(False)
+        tray.showMessage.assert_called_once()
+        self.assertIn("PrintScreen занят", tray.showMessage.call_args.args[1])
 
 
 if __name__ == "__main__":
