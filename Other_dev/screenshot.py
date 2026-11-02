@@ -2145,7 +2145,7 @@ class CanvasView(QGraphicsView):
             local = QRectF(item._a, item._b).normalized()
         else:
             local = item._rect
-        return item.mapRectToScene(local).boundingRect()
+        return item.mapRectToScene(local)
 
     def align_selected_objects(self, mode: str) -> bool:
         chosen = self.selected_objects()
