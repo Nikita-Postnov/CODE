@@ -107,6 +107,18 @@ class ClipboardTests(unittest.TestCase):
                     self.fail("Guard must refuse operation when snapshot is incomplete")
         restore.assert_not_called()
 
+    def test_snapshot_sequence_change_aborts_before_user_action(self):
+        snapshot = punto.ClipboardSnapshot(((punto.CF_UNICODETEXT, b"A\\x00"),), sequence=12)
+        api = Mock()
+        api.GetClipboardSequenceNumber.return_value = 13
+        with patch.object(punto, "_clipboard_take_snapshot", return_value=snapshot), \
+             patch.object(punto, "user32", api), \
+             patch.object(punto, "_clipboard_restore_snapshot") as restore:
+            with self.assertRaises(punto.ClipboardSnapshotUnsafe):
+                with punto._clipboard_guard(punto.Timings()):
+                    self.fail("Must not operate on a changed clipboard")
+        restore.assert_not_called()
+
     def test_guard_does_not_restore_on_read_only_operation(self):
         snapshot = punto.ClipboardSnapshot(((punto.CF_UNICODETEXT, b"A\x00\x00\x00"),))
         api = Mock()
