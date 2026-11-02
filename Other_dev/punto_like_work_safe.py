@@ -4589,9 +4589,10 @@ def _retry_preferred_hotkeys() -> None:
         if active is not None and active[1] == preferred:
             continue
         temporary_id = _HOTKEY_RECOVERY_ID_OFFSET + logical_id
-        ctypes.set_last_error(0)
+        if hasattr(ctypes, "set_last_error"):
+            ctypes.set_last_error(0)
         if not user32.RegisterHotKey(None, temporary_id, preferred[0] | MOD_NOREPEAT, preferred[1]):
-            err = ctypes.get_last_error()
+            err = ctypes.get_last_error() if hasattr(ctypes, "get_last_error") else 0
             if err != ERROR_HOTKEY_ALREADY_REGISTERED:
                 logging.warning("Hotkey retry %s: RegisterHotKey error=%d",
                                 _hotkey_names.get(logical_id), err)
