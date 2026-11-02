@@ -3208,6 +3208,7 @@ def _transform_run_before_caret(timings: Timings, transform: Callable[[str], str
 
     start, caret = sel
     original = _read_edit_full_text(hwnd_focus)
+    candidate = None
     if original and caret <= len(original):
         candidate = _transform_run_before_caret_text(original, caret, transform)
         if candidate is None:
@@ -3224,9 +3225,25 @@ def _transform_run_before_caret(timings: Timings, transform: Callable[[str], str
         if result is not None:
             if result[1] == 0:
                 _sendmsg_ok(hwnd_focus, EM_SETSEL, start, caret)
-            logging.info("before-caret: direct Edit replacement completed (class=%s, length=%d)",
-                         _get_class_name(hwnd_focus), len(result[0]))
-            return result[0]
+            # SendMessageTimeoutW сообщает о доставке EM_REPLACESEL, но не
+            # гарантирует, что приложение действительно изменило содержимое.
+            # Не объявляем успех без проверки фактического результата.
+            actual = _read_edit_full_text(hwnd_focus)
+            if candidate is not None:
+                part_start, part_end, expected_fragment = candidate
+                expected = (original[:part_start] + expected_fragment
+                            + original[part_end:])
+                if actual == expected:
+                    logging.info("before-caret: verified native replacement (class=%s, length=%d)",
+                                 _get_class_name(hwnd_focus), len(result[0]))
+                    return result[0]
+                if actual != original:
+                    logging.warning("before-caret: Edit content changed unexpectedly; no fallback to prevent overwrite")
+                    return None
+            elif actual and actual != original:
+                logging.info("before-caret: native replacement verified by changed text")
+                return result[0]
+            logging.warning("before-caret: EM_REPLACESEL returned success without verified text change")
 
     # Восстановление позиции обязательно перед Shift+Home из fallback.
     _sendmsg_ok(hwnd_focus, EM_SETSEL, caret, caret)
@@ -3254,7 +3271,11 @@ def toggle_case_before_caret_text(timings: Timings) -> None:
 
     Повторные нажатия идут по циклу F9: «abc» → «Abc» → «ABC» → «abc».
     """
-    _transform_run_before_caret(timings, toggle_case_selected_fragment)
+    converted = _transform_run_before_caret(timings, toggle_case_selected_fragment)
+    if converted is None:
+        logging.info("Ctrl+F9: no text converted (caret/focus/clipboard/application restrictions)")
+    else:
+        logging.info("Ctrl+F9: converted before caret (length=%d)", len(converted))
 
 
 def undo_last_change(timings: Timings) -> None:
