@@ -13,6 +13,7 @@ import threading
 import time
 import tempfile
 import traceback
+import uuid
 from array import array
 from ctypes import wintypes
 from enum import Enum, auto
@@ -60,6 +61,8 @@ from PySide6.QtGui import (
     QWheelEvent,
     QClipboard,
     QIcon,
+    QImageReader,
+    QDesktopServices,
 )
 from PySide6.QtWidgets import (
     QApplication,
@@ -83,6 +86,11 @@ from PySide6.QtWidgets import (
     QMenu,
     QSizePolicy,
     QComboBox,
+    QDialog,
+    QListWidget,
+    QListWidgetItem,
+    QAbstractItemView,
+    QCheckBox,
 )
 
 log = logging.getLogger(__name__)
@@ -125,6 +133,77 @@ DATA_DIR = ROOT_DIR / "Data"
 NOTES_DIR = ROOT_DIR / "Notes"
 PASSWORDS_DIR = ROOT_DIR / "Passwords"
 SCREENSHOT_STATE_PATH = DATA_DIR / "screenshot_editor_state.json"
+SCREENSHOT_HISTORY_DIR = DATA_DIR / "ScreenshotHistory"
+SCREENSHOT_HISTORY_SETTINGS = DATA_DIR / "screenshot_history_settings.json"
+SCREENSHOT_HISTORY_DISPLAY_LIMIT = 150
+
+
+def load_capture_preferences() -> dict:
+    defaults = {"quick_actions": False, "history_enabled": False}
+    try:
+        data = json.loads(SCREENSHOT_HISTORY_SETTINGS.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return defaults
+    if not isinstance(data, dict):
+        return defaults
+    return {name: data.get(name) is True for name in defaults}
+
+
+def save_capture_preferences(preferences: dict) -> bool:
+    payload = {name: preferences.get(name) is True
+               for name in ("quick_actions", "history_enabled")}
+    path = SCREENSHOT_HISTORY_SETTINGS
+    temporary = None
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, temporary = tempfile.mkstemp(prefix=".capture_prefs_", suffix=".tmp",
+                                        dir=str(path.parent))
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=False, indent=2)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+        temporary = None
+        return True
+    except (OSError, ValueError, TypeError):
+        log.exception("Не удалось сохранить настройки захвата")
+        return False
+    finally:
+        if temporary is not None:
+            try:
+                Path(temporary).unlink(missing_ok=True)
+            except OSError:
+                log.debug("Не удалось удалить временные настройки", exc_info=True)
+
+
+def archive_screenshot(image: QImage) -> Optional[Path]:
+    """Сохраняем оригинал снимка в портативной истории, не удаляя старые записи."""
+    if image.isNull():
+        return None
+    try:
+        SCREENSHOT_HISTORY_DIR.mkdir(parents=True, exist_ok=True)
+        filename = ("Screenshot_" + time.strftime("%Y%m%d_%H%M%S")
+                    + "_" + uuid.uuid4().hex[:12] + ".png")
+        destination = SCREENSHOT_HISTORY_DIR / filename
+        if save_image_atomically(image, destination, "PNG"):
+            return destination
+    except (OSError, RuntimeError):
+        log.exception("Не удалось записать историю снимков")
+    return None
+
+
+def screenshot_history_files(limit: int = SCREENSHOT_HISTORY_DISPLAY_LIMIT) -> List[Path]:
+    if limit <= 0 or not SCREENSHOT_HISTORY_DIR.is_dir():
+        return []
+    try:
+        files = [p for p in SCREENSHOT_HISTORY_DIR.iterdir()
+                 if p.is_file() and p.suffix.lower() == ".png"
+                 and not p.is_symlink()]
+        files.sort(key=lambda p: (p.stat().st_mtime_ns, p.name), reverse=True)
+        return files[:limit]
+    except OSError:
+        log.exception("Не удалось получить историю скриншотов")
+        return []
 
 
 def save_image_atomically(image: QImage, path: Path, image_format: str, quality: int = -1) -> bool:
@@ -3489,6 +3568,191 @@ def capture_region_interactive() -> Optional[QImage]:
     return img
 
 
+
+class ScreenshotQuickActionsDialog(QDialog):
+    """Необязательная небольшая панель после захвата без открытия редактора."""
+
+    def __init__(self, image: QImage, launcher: "Launcher",
+                 history_path: Optional[Path] = None):
+        super().__init__(None)
+        self.image = image.copy()
+        self.launcher = launcher
+        self.history_path = history_path
+        self.setWindowTitle("Снимок готов — быстрые действия")
+        self.setWindowIcon(_load_app_icon())
+        self.setAttribute(Qt.WA_DeleteOnClose, True)
+        self.resize(440, 310)
+        layout = QVBoxLayout(self)
+        title = QLabel("Снимок скопирован в буфер обмена", self)
+        title.setWordWrap(True)
+        layout.addWidget(title)
+        preview = QLabel(self)
+        preview.setAlignment(Qt.AlignCenter)
+        preview.setMinimumHeight(150)
+        thumb = QPixmap.fromImage(self.image).scaled(
+            QSize(410, 175), Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        preview.setPixmap(thumb)
+        layout.addWidget(preview)
+        buttons = QHBoxLayout()
+        for label, handler in (
+            ("Копировать", self.copy_image),
+            ("Сохранить", self.save_image),
+            ("Редактор", self.edit_image),
+            ("В историю", self.to_history),
+        ):
+            button = QPushButton(label, self)
+            button.clicked.connect(handler)
+            buttons.addWidget(button)
+        layout.addLayout(buttons)
+
+    def copy_image(self) -> None:
+        QApplication.clipboard().setImage(self.image, QClipboard.Clipboard)
+        self.close()
+
+    def save_image(self) -> None:
+        directory = QStandardPaths.writableLocation(QStandardPaths.PicturesLocation)
+        suggested = str(Path(directory or str(Path.home())) /
+                        ("Screenshot_" + time.strftime("%Y%m%d_%H%M%S") + ".png"))
+        filename, _ = QFileDialog.getSaveFileName(
+            self, "Сохранить снимок", suggested, "PNG (*.png)")
+        if not filename:
+            return
+        if not save_image_atomically(self.image, Path(filename), "PNG"):
+            QMessageBox.warning(self, "Ошибка", "Не удалось сохранить снимок.")
+            return
+        self.close()
+
+    def edit_image(self) -> None:
+        self.launcher._open_editor_image(self.image)
+        self.close()
+
+    def to_history(self) -> None:
+        if self.history_path is None or not self.history_path.is_file():
+            self.history_path = archive_screenshot(self.image)
+        if self.history_path is None:
+            QMessageBox.warning(self, "Ошибка", "Не удалось добавить снимок в историю.")
+            return
+        self.launcher.open_history()
+        self.close()
+
+
+class ScreenshotHistoryDialog(QDialog):
+    """Просмотр истории. Удаление происходит только после явного подтверждения."""
+
+    def __init__(self, launcher: "Launcher"):
+        super().__init__(None)
+        self.launcher = launcher
+        self.setWindowTitle("История скриншотов")
+        self.setWindowIcon(_load_app_icon())
+        self.resize(850, 540)
+        layout = QVBoxLayout(self)
+        description = QLabel(
+            "Снимки хранятся в Data/ScreenshotHistory. "
+            "Автосохранение в историю включается отдельно в трее.", self)
+        description.setWordWrap(True)
+        layout.addWidget(description)
+        self.items = QListWidget(self)
+        self.items.setViewMode(QListWidget.IconMode)
+        self.items.setResizeMode(QListWidget.Adjust)
+        self.items.setMovement(QListWidget.Static)
+        self.items.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.items.setIconSize(QSize(152, 100))
+        self.items.setGridSize(QSize(180, 144))
+        self.items.setSpacing(8)
+        self.items.itemDoubleClicked.connect(lambda _item: self.open_selected())
+        layout.addWidget(self.items, 1)
+        actions = QHBoxLayout()
+        for title, handler in (
+            ("Открыть в редакторе", self.open_selected),
+            ("Копировать", self.copy_selected),
+            ("Удалить", self.delete_selected),
+            ("Открыть папку", self.open_folder),
+            ("Обновить", self.refresh),
+        ):
+            button = QPushButton(title, self)
+            button.clicked.connect(handler)
+            actions.addWidget(button)
+        layout.addLayout(actions)
+        self.refresh()
+
+    def refresh(self) -> None:
+        self.items.clear()
+        paths = screenshot_history_files()
+        for path in paths:
+            reader = QImageReader(str(path))
+            source_size = reader.size()
+            if source_size.isValid():
+                source_size.scale(QSize(152, 100), Qt.KeepAspectRatio)
+                reader.setScaledSize(source_size)
+            preview = reader.read()
+            if preview.isNull():
+                continue
+            icon = QIcon(QPixmap.fromImage(preview))
+            entry = QListWidgetItem(icon, path.stem.replace("Screenshot_", ""))
+            entry.setToolTip(path.name)
+            entry.setData(Qt.UserRole, str(path))
+            self.items.addItem(entry)
+        if self.items.count() > 0:
+            self.items.setCurrentRow(0)
+
+    def _selected_path(self) -> Optional[Path]:
+        item = self.items.currentItem()
+        if item is None:
+            return None
+        path = Path(str(item.data(Qt.UserRole)))
+        try:
+            if (path.is_symlink() or
+                    path.parent.resolve() != SCREENSHOT_HISTORY_DIR.resolve() or
+                    not path.is_file() or path.suffix.lower() != ".png"):
+                return None
+        except OSError:
+            return None
+        return path
+
+    def open_selected(self) -> None:
+        path = self._selected_path()
+        if path is None:
+            return
+        image = QImage(str(path))
+        if image.isNull():
+            QMessageBox.warning(self, "История", "Не удалось открыть снимок.")
+            return
+        self.launcher._open_editor_image(image)
+
+    def copy_selected(self) -> None:
+        path = self._selected_path()
+        if path is None:
+            return
+        image = QImage(str(path))
+        if image.isNull():
+            QMessageBox.warning(self, "История", "Не удалось прочитать снимок.")
+            return
+        QApplication.clipboard().setImage(image, QClipboard.Clipboard)
+
+    def delete_selected(self) -> None:
+        path = self._selected_path()
+        if path is None:
+            return
+        if QMessageBox.question(
+                self, "Удалить снимок",
+                "Удалить этот файл из истории без возможности восстановления?\n"
+                + path.name,
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No) != QMessageBox.Yes:
+            return
+        try:
+            path.unlink()
+        except OSError:
+            log.exception("Не удалось удалить снимок из истории: %s", path)
+            QMessageBox.warning(self, "Ошибка", "Не удалось удалить снимок.")
+            return
+        self.refresh()
+
+    def open_folder(self) -> None:
+        SCREENSHOT_HISTORY_DIR.mkdir(parents=True, exist_ok=True)
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(SCREENSHOT_HISTORY_DIR.resolve())))
+
+
 class Launcher(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -3522,6 +3786,9 @@ class Launcher(QMainWindow):
         btn_open = QPushButton("Открыть изображение…")
         btn_open.clicked.connect(self._open_image)
         v.addWidget(btn_open)
+        btn_history = QPushButton("История скриншотов")
+        btn_history.clicked.connect(self.open_history)
+        v.addWidget(btn_history)
         info = QLabel(
             "Инструменты: Переместиться (H), Перо (P), Маркер (M), Прямоуг. (R), Овал (O), "
             "Стрелка (A), Текст (T), Блюр (B), Пиксели (X), Обрезать (C), Редация (D), "
@@ -3534,6 +3801,9 @@ class Launcher(QMainWindow):
         v.addStretch(1)
         _setup_logging()
         self._editors: List[EditorWindow] = []
+        self._capture_preferences = load_capture_preferences()
+        self._quick_panel: Optional[ScreenshotQuickActionsDialog] = None
+        self._history_dialog: Optional[ScreenshotHistoryDialog] = None
         self._real_quit = False
         self._delayed_capture_timer = QTimer(self)
         self._delayed_capture_timer.setSingleShot(True)
@@ -3562,6 +3832,37 @@ class Launcher(QMainWindow):
         self._editors = [w for w in self._editors if w is not ed]
         self._update_tray_menu()
 
+    def _open_editor_image(self, image: QImage) -> None:
+        editor = EditorWindow(image.copy())
+        editor.show()
+        editor.activateWindow()
+        self._add_editor(editor)
+
+    def open_history(self) -> None:
+        dialog = self._history_dialog
+        if dialog is None:
+            dialog = ScreenshotHistoryDialog(self)
+            self._history_dialog = dialog
+        else:
+            dialog.refresh()
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+
+    def _set_capture_preference(self, name: str, enabled: bool) -> None:
+        if name not in ("quick_actions", "history_enabled"):
+            return
+        previous = self._capture_preferences.copy()
+        self._capture_preferences[name] = bool(enabled)
+        if not save_capture_preferences(self._capture_preferences):
+            self._capture_preferences = previous
+            action = getattr(self, "act_tray_" + name, None)
+            if action is not None:
+                action.blockSignals(True)
+                action.setChecked(previous[name])
+                action.blockSignals(False)
+            QMessageBox.warning(self, "Настройки", "Не удалось сохранить настройки скриншотера.")
+
     def _init_tray(self):
         if not QSystemTrayIcon.isSystemTrayAvailable():
             return
@@ -3570,6 +3871,17 @@ class Launcher(QMainWindow):
         m = QMenu(self)
         self.act_tray_shot = m.addAction("Сделать скриншот", self.make_shot)
         self.act_tray_window = m.addAction("Снимок отдельного окна", self.make_window_shot)
+        self.act_tray_history = m.addAction("История скриншотов", self.open_history)
+        self.act_tray_quick_actions = m.addAction("Быстрые действия после снимка")
+        self.act_tray_quick_actions.setCheckable(True)
+        self.act_tray_quick_actions.setChecked(self._capture_preferences["quick_actions"])
+        self.act_tray_quick_actions.toggled.connect(
+            lambda enabled: self._set_capture_preference("quick_actions", enabled))
+        self.act_tray_history_enabled = m.addAction("Автоматически сохранять снимки в историю")
+        self.act_tray_history_enabled.setCheckable(True)
+        self.act_tray_history_enabled.setChecked(self._capture_preferences["history_enabled"])
+        self.act_tray_history_enabled.toggled.connect(
+            lambda enabled: self._set_capture_preference("history_enabled", enabled))
         delayed_menu = m.addMenu("Снимок с задержкой")
         for seconds in (3, 5, 10):
             delayed_menu.addAction(
@@ -3719,10 +4031,19 @@ class Launcher(QMainWindow):
         log.info("capture: result %s", None if img is None else f"{img.width()}x{img.height()}")
         if img is not None:
             QApplication.clipboard().setImage(img, QClipboard.Clipboard)
-            ed = EditorWindow(img)
-            ed.show()
-            ed.activateWindow()
-            self._add_editor(ed)
+            saved = None
+            if self._capture_preferences.get("history_enabled", False):
+                saved = archive_screenshot(img)
+                if saved is None:
+                    log.error("Снимок создан, но не удалось сохранить его в историю")
+            if self._capture_preferences.get("quick_actions", False):
+                panel = ScreenshotQuickActionsDialog(img, self, history_path=saved)
+                self._quick_panel = panel
+                panel.destroyed.connect(lambda _object=None: setattr(self, "_quick_panel", None))
+                panel.show()
+                panel.activateWindow()
+            else:
+                self._open_editor_image(img)
         self.hide()
 
     def _open_image(self):
