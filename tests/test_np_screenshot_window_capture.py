@@ -113,7 +113,8 @@ class WindowModeGuiTests(unittest.TestCase):
                 overlay.dispose()
 
     def test_tray_and_launcher_window_actions_are_present(self):
-        with patch.object(shot.Launcher, "_install_global_hotkey"):
+        with patch.object(shot.Launcher, "_install_global_hotkey"), \
+             patch.object(shot.QSystemTrayIcon, "isSystemTrayAvailable", return_value=True):
             launcher = shot.Launcher()
         try:
             self.assertEqual(launcher.act_tray_window.text(), "Снимок отдельного окна")
