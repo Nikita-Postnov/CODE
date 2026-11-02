@@ -3194,12 +3194,12 @@ def _transform_run_before_caret(timings: Timings, transform: Callable[[str], str
     Некоторые современные RichEdit-контролы принимают EM_GETSEL, но отказываются
     выполнять EM_SETSEL / EM_REPLACESEL. Нельзя считать это успешной командой.
     """
-    foreground = _hwnd_value(user32.GetForegroundWindow())
     hwnd_focus = _get_focused_control_hwnd()
     if hwnd_focus and _is_password_edit(hwnd_focus):
         logging.info("before-caret: skipped protected password control")
         return None
 
+    foreground = _hwnd_value(user32.GetForegroundWindow())
     sel = _edit_get_sel(hwnd_focus)
     if sel is None:
         logging.info("before-caret: no Edit selection available (class=%s); clipboard fallback",
