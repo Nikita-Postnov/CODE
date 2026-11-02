@@ -85,25 +85,27 @@ class ConfigTests(unittest.TestCase):
 
 class ClipboardTests(unittest.TestCase):
     def test_snapshot_rejects_unsaved_formats_instead_of_erasing_them(self):
-        timings = punto.Timings()
-        api = Mock()
-        api.EnumClipboardFormats.side_effect = [punto.CF_UNICODETEXT, 0]
-        with patch.object(punto, "user32", api), \
-             patch.object(punto, "_open_clipboard_with_retry"), \
-             patch.object(punto, "_clipboard_read_bytes_from_open",
-                          side_effect=OSError("clipboard inaccessible")):
-            with self.assertRaises(punto.ClipboardSnapshotUnsafe):
-                punto._clipboard_take_snapshot(timings)
-        api.CloseClipboard.assert_called_once()
+        unsupported = punto.CF_ENHMETAFILE
+        self.assertFalse(punto._clipboard_snapshot_can_skip(unsupported, "", frozenset({unsupported})))
+        with self.assertRaises(punto.ClipboardSnapshotUnsafe):
+            punto._clipboard_snapshot_validate_format(unsupported, "", frozenset({unsupported}))
 
-    def test_snapshot_rejects_deadline_and_excessive_bytes(self):
-        timings = punto.Timings(clipboard_snapshot_deadline_seconds=0)
-        api = Mock()
-        api.EnumClipboardFormats.side_effect = [punto.CF_UNICODETEXT, 0]
-        with patch.object(punto, "user32", api), \
-             patch.object(punto, "_open_clipboard_with_retry"):
+    def test_snapshot_deadline_and_memory_limits(self):
+        with self.assertRaises(punto.ClipboardSnapshotUnsafe):
+            punto._clipboard_snapshot_require_deadline(-1.0)
+        with self.assertRaises(punto.ClipboardSnapshotUnsafe):
+            punto._clipboard_snapshot_require_data(punto.CF_UNICODETEXT, b"hello", 10, 12)
+        with self.assertRaises(punto.ClipboardSnapshotUnsafe):
+            punto._clipboard_snapshot_require_data(punto.CF_UNICODETEXT, b"", 0, 100)
+
+    def test_failed_snapshot_does_not_modify_clipboard(self):
+        with patch.object(punto, "_clipboard_take_snapshot",
+                          side_effect=punto.ClipboardSnapshotUnsafe("unsafe")), \
+             patch.object(punto, "_clipboard_restore_snapshot") as restore:
             with self.assertRaises(punto.ClipboardSnapshotUnsafe):
-                punto._clipboard_take_snapshot(timings)
+                with punto._clipboard_guard(punto.Timings()):
+                    self.fail("Guard must refuse operation when snapshot is incomplete")
+        restore.assert_not_called()
 
     def test_guard_does_not_restore_on_read_only_operation(self):
         snapshot = punto.ClipboardSnapshot(((punto.CF_UNICODETEXT, b"A\x00\x00\x00"),))
