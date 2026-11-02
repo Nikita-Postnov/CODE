@@ -8,6 +8,7 @@ on:
       - "tests/test_np_screenshot_reliability.py"
       - "tests/test_np_screenshot_window_capture.py"
       - "tests/test_np_screenshot_history.py"
+      - "tests/test_np_screenshot_projects.py"
       - ".github/workflows/np-screenshot-reliability.yml"
   pull_request:
     branches: [main]
@@ -16,6 +17,7 @@ on:
       - "tests/test_np_screenshot_reliability.py"
       - "tests/test_np_screenshot_window_capture.py"
       - "tests/test_np_screenshot_history.py"
+      - "tests/test_np_screenshot_projects.py"
       - ".github/workflows/np-screenshot-reliability.yml"
 
 jobs:
