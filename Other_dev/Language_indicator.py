@@ -1850,8 +1850,8 @@ class LanguageIndicatorApp:
 
             widget.set_alpha(CONFIG.normal_alpha)
             if not self.is_visible:
-            widget.hide()
-        self.widgets.append((screen, widget))
+                widget.hide()
+            self.widgets.append((screen, widget))
 
         self.safe_update_state(force_no_popup=True)
         self.reinforce_indicators_deferred()
