@@ -4485,7 +4485,11 @@ def _emit_choice_health() -> None:
         return
     try:
         required = (_HK_CONVERT_BEFORE_CARET, _HK_TOGGLE_CASE_BEFORE_CARET)
-        hotkeys = all(hotkey in _active_hotkeys for hotkey in required)
+        hotkeys = all(
+            hotkey in _active_hotkeys
+            and _active_hotkeys[hotkey][1] == _desired_hotkeys.get(hotkey)
+            for hotkey in required
+        )
         worker_ok = bool(_worker._thread and _worker._thread.is_alive())
         idle_ok = bool(_idle._thread and _idle._thread.is_alive())
         hooks_ok = bool(_hook_handle and _mouse_hook_handle)
@@ -4494,7 +4498,7 @@ def _emit_choice_health() -> None:
         ok = bool(hotkeys and worker_ok and idle_ok and hooks_ok)
         reasons = []
         if not hotkeys:
-            reasons.append("Ctrl+Insert или Ctrl+F9 не зарегистрированы")
+            reasons.append("Основное сочетание горячей клавиши занято или не зарегистрировано")
         if not worker_ok:
             reasons.append("Фоновый обработчик не отвечает")
         if not idle_ok:
@@ -4502,7 +4506,7 @@ def _emit_choice_health() -> None:
         if not hooks_ok:
             reasons.append("Клавиатурный или мышиный хук отсутствует")
         data = {"key": key, "ts": time.time(), "ok": ok,
-                "detail": "Хуки и основные горячие клавиши активны" if ok else "; ".join(reasons)}
+                "detail": "Хуки, настроенные горячие клавиши и фоновые потоки активны" if ok else "; ".join(reasons)}
         path = Path(target)
         path.parent.mkdir(parents=True, exist_ok=True)
         temporary = path.with_name(path.name + "." + str(os.getpid()) + ".tmp")
