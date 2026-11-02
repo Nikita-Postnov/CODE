@@ -137,6 +137,15 @@ class HistoryGuiTests(unittest.TestCase):
         self.assertEqual(len(shot.screenshot_history_files()), 1)
         launcher.open_history.assert_called_once()
 
+    def test_quick_actions_do_not_duplicate_an_already_archived_capture(self):
+        launcher = Mock()
+        image = sample_image()
+        original = shot.archive_screenshot(image)
+        panel = shot.ScreenshotQuickActionsDialog(image, launcher, history_path=original)
+        panel.to_history()
+        self.assertEqual(shot.screenshot_history_files(), [original])
+        launcher.open_history.assert_called_once()
+
 
 class CaptureRoutingTests(unittest.TestCase):
     @classmethod
