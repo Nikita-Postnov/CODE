@@ -3714,6 +3714,17 @@ class EditorWindow(QMainWindow):
         sc_inc.setContext(Qt.ShortcutContext.ApplicationShortcut)
         sc_inc.activated.connect(lambda: self._bump_thickness(1))
 
+        for shortcut, dx, dy in (
+            ("Left", -1, 0), ("Right", 1, 0),
+            ("Up", 0, -1), ("Down", 0, 1),
+            ("Shift+Left", -10, 0), ("Shift+Right", 10, 0),
+            ("Shift+Up", 0, -10), ("Shift+Down", 0, 10),
+        ):
+            key = QShortcut(QKeySequence(shortcut), self)
+            key.setContext(Qt.WidgetWithChildrenShortcut)
+            key.activated.connect(
+                lambda x=dx, y=dy: self.view.nudge_selected_objects(x, y))
+
 
     def closeEvent(self, e):
         if self.view.is_dirty():
