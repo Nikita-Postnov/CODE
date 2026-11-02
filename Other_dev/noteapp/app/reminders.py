@@ -62,15 +62,18 @@ def next_reminder_datetime(due: datetime, now: datetime, repeat: str) -> datetim
             due += timedelta(days=1)
         return due
     if repeat == "monthly":
-        candidate = due
+        year, month = due.year, due.month
         original_day = due.day
-        while candidate <= now:
-            year, month = candidate.year, candidate.month + 1
+        while True:
+            month += 1
             if month > 12:
                 year += 1
                 month = 1
-            candidate = candidate.replace(year=year, month=month, day=min(original_day, monthrange(year, month)[1]))
-        return candidate
+            candidate = due.replace(
+                year=year, month=month,
+                day=min(original_day, monthrange(year, month)[1]))
+            if candidate > now:
+                return candidate
     return None
 
 
@@ -234,12 +237,11 @@ class RemindersMixin:
             "Каждый месяц",
         ]
         repeat_combo.addItems(options)
-        if getattr(self.current_note, "reminder_repeat", None) in options:
-            repeat_combo.setCurrentText(
-                self.current_note.reminder_repeat or "Однократно"
-            )
-        else:
-            repeat_combo.setCurrentIndex(0)
+        code = normalize_reminder_repeat(getattr(self.current_note, "reminder_repeat", None))
+        labels = {"": "Однократно", "workdays": "По будням",
+                  "daily": "Каждый день", "weekly": "Каждую неделю",
+                  "monthly": "Каждый месяц"}
+        repeat_combo.setCurrentText(labels.get(code, "Однократно"))
         layout.addRow("Повторять:", repeat_combo)
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         buttons.accepted.connect(dialog.accept)
