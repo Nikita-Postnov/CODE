@@ -297,6 +297,7 @@ class NotesApp(NotePersistenceMixin, PluginsMixin, RemindersMixin, TrayMixin, Au
         self.update_search_filter_items()
         if not hasattr(self, "reminder_timer") or self.reminder_timer is None:
             self.setup_reminder_timer()
+        QTimer.singleShot(0, self.check_reminders)
 
 
     def _install_dialog_probe(self) -> None:
