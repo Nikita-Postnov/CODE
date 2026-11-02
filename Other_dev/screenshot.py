@@ -3501,7 +3501,7 @@ class Launcher(QMainWindow):
         title = QLabel(
             "<b>Скриншоты</b><br>"
             "PrintScreen — выделить область. Режим (снимок / запись экрана / текст) — "
-            "панель сверху или Tab; отмена — ПКМ или Esc.<br>"
+            "панель сверху или Tab; захват окна — режим «Окно»; отмена — ПКМ или Esc.<br>"
             "Shift+PrintScreen — сразу распознать текст в буфер обмена.<br>"
             "В редакторе: Ctrl+S — сохранить, Ctrl+C — копировать, PrintScreen — новый снимок."
         )
@@ -3510,6 +3510,9 @@ class Launcher(QMainWindow):
         btn = QPushButton("Сделать скриншот")
         btn.clicked.connect(self.make_shot)
         v.addWidget(btn)
+        btn_window = QPushButton("Снимок отдельного окна")
+        btn_window.clicked.connect(self.make_window_shot)
+        v.addWidget(btn_window)
         btn_rec = QPushButton("Запись экрана")
         btn_rec.clicked.connect(self.start_recording)
         v.addWidget(btn_rec)
@@ -3566,6 +3569,7 @@ class Launcher(QMainWindow):
         self.tray.setToolTip("NPCore Скриншоты")
         m = QMenu(self)
         self.act_tray_shot = m.addAction("Сделать скриншот", self.make_shot)
+        self.act_tray_window = m.addAction("Снимок отдельного окна", self.make_window_shot)
         delayed_menu = m.addMenu("Снимок с задержкой")
         for seconds in (3, 5, 10):
             delayed_menu.addAction(
@@ -3701,6 +3705,13 @@ class Launcher(QMainWindow):
     def make_shot(self):
         self.hide()
         QTimer.singleShot(200, lambda: self._capture(SelectionOverlay.MODE_SHOT))
+
+    def make_window_shot(self):
+        if not sys.platform.startswith("win"):
+            QMessageBox.information(self, "Захват окна", "Захват отдельного окна доступен в Windows.")
+            return
+        self.hide()
+        QTimer.singleShot(200, lambda: self._capture(SelectionOverlay.MODE_WINDOW))
 
     def _capture(self, initial_mode: str) -> None:
         log.info("capture: _capture start mode=%s", initial_mode)
