@@ -14,6 +14,7 @@ import time
 import tempfile
 import traceback
 import uuid
+import zipfile
 from array import array
 from ctypes import wintypes
 from enum import Enum, auto
@@ -38,6 +39,8 @@ from PySide6.QtCore import (
     QUrl,
     QMimeData,
     QStandardPaths,
+    QBuffer,
+    QIODevice,
     Signal,
 )
 from PySide6.QtGui import (
@@ -231,6 +234,164 @@ def save_image_atomically(image: QImage, path: Path, image_format: str, quality:
                 Path(temporary).unlink(missing_ok=True)
             except OSError:
                 log.warning("Cannot remove temporary screenshot: %s", temporary)
+
+
+EDITABLE_PROJECT_EXTENSION = ".npshot"
+EDITABLE_PROJECT_VERSION = 1
+PROJECT_MAX_IMAGE_PIXELS = 60_000_000
+PROJECT_MAX_SCENE_ITEMS = 2000
+PROJECT_MAX_ARCHIVE_ENTRY_BYTES = 80_000_000
+
+
+def _project_png_bytes(image: QImage) -> bytes:
+    if image.isNull() or image.width() * image.height() > PROJECT_MAX_IMAGE_PIXELS:
+        raise ValueError("Недопустимый размер изображения проекта")
+    buffer = QBuffer()
+    if not buffer.open(QIODevice.OpenModeFlag.WriteOnly):
+        raise OSError("Не удалось создать буфер проекта")
+    if not image.save(buffer, "PNG"):
+        raise OSError("Не удалось закодировать слой проекта")
+    raw = bytes(buffer.data())
+    buffer.close()
+    if len(raw) > PROJECT_MAX_ARCHIVE_ENTRY_BYTES:
+        raise ValueError("Слишком большой слой проекта")
+    return raw
+
+
+def _validate_project_records(records: list) -> list:
+    if not isinstance(records, list) or len(records) > PROJECT_MAX_SCENE_ITEMS:
+        raise ValueError("Превышено допустимое количество элементов")
+    checked = []
+    for rec in records:
+        if not isinstance(rec, dict) or rec.get("type") not in (
+                "rect", "ellipse", "arrow", "sticker", "text"):
+            raise ValueError("Неизвестный тип элемента проекта")
+        typ = rec["type"]
+        keys = ("pos", "z") + (
+            ("a", "b", "color", "width") if typ == "arrow"
+            else ("rect", "pen", "brush") if typ in ("rect", "ellipse")
+            else ("rect", "pix") if typ == "sticker"
+            else ("rect", "text", "font_size", "color")
+        )
+        if not all(key in rec for key in keys):
+            raise ValueError("Отсутствуют обязательные поля элемента")
+        for field, count in (("pos", 2), ("rect", 4), ("a", 2), ("b", 2)):
+            if field not in rec:
+                continue
+            values = rec[field]
+            if not isinstance(values, (tuple, list)) or len(values) != count:
+                raise ValueError("Неправильная геометрия проекта")
+            if any(not isinstance(v, (int, float)) or not math.isfinite(v)
+                   or abs(v) > 1_000_000 for v in values):
+                raise ValueError("Недопустимые координаты элемента")
+        if not isinstance(rec["z"], (int, float)) or not math.isfinite(rec["z"]):
+            raise ValueError("Недопустимый порядок элементов")
+        if typ in ("rect", "ellipse"):
+            pen = rec["pen"]
+            if (not isinstance(pen, (list, tuple)) or len(pen) != 2 or
+                    not isinstance(pen[0], int) or
+                    not isinstance(pen[1], (int, float)) or
+                    not math.isfinite(pen[1]) or not 0 <= pen[1] <= 200):
+                raise ValueError("Неверные параметры линии")
+            if rec["brush"] is not None and not isinstance(rec["brush"], int):
+                raise ValueError("Неверная заливка")
+        if typ == "arrow" and (not isinstance(rec["color"], int)
+                               or not isinstance(rec["width"], int)
+                               or not 1 <= rec["width"] <= 200):
+            raise ValueError("Неверная стрелка")
+        if typ == "text" and (not isinstance(rec["text"], str) or
+                              len(rec["text"]) > 100_000 or
+                              not isinstance(rec["font_size"], int) or
+                              not 5 <= rec["font_size"] <= 300 or
+                              not isinstance(rec["color"], int)):
+            raise ValueError("Неверный текст")
+        if typ == "sticker":
+            raw = rec["pix"]
+            if not isinstance(raw, str) or len(raw) > 40_000_000:
+                raise ValueError("Слишком большой стикер")
+        checked.append(rec)
+    return checked
+
+
+def save_editable_project(path: Path, view: "CanvasView") -> bool:
+    """ZIP-проект с двумя исходными слоями и редактируемыми элементами."""
+    path = Path(path)
+    temporary = None
+    try:
+        records = []
+        for item in view._snapshot_scene():
+            record = dict(item)
+            if record["type"] == "sticker":
+                raw = _project_png_bytes(record["pix"].toImage())
+                record["pix"] = base64.b64encode(raw).decode("ascii")
+            records.append(record)
+        _validate_project_records(records)
+        manifest = {
+            "format": "NP_Screenshot", "version": EDITABLE_PROJECT_VERSION,
+            "step_counter": int(view.step_counter), "items": records,
+        }
+        json_data = json.dumps(manifest, ensure_ascii=False, allow_nan=False).encode("utf-8")
+        if len(json_data) > PROJECT_MAX_ARCHIVE_ENTRY_BYTES:
+            raise ValueError("Проект превышает допустимый размер")
+        background = _project_png_bytes(view.bg_img)
+        overlay = _project_png_bytes(view.ov_img)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, temporary = tempfile.mkstemp(prefix="." + path.stem + ".",
+                                        suffix=".tmp", dir=str(path.parent))
+        os.close(fd)
+        with zipfile.ZipFile(temporary, "w", compression=zipfile.ZIP_DEFLATED,
+                             compresslevel=3) as archive:
+            archive.writestr("project.json", json_data)
+            archive.writestr("background.png", background)
+            archive.writestr("overlay.png", overlay)
+        os.replace(temporary, path)
+        temporary = None
+        return True
+    except (OSError, ValueError, TypeError, zipfile.BadZipFile, RuntimeError):
+        log.exception("Не удалось сохранить проект: %s", path)
+        return False
+    finally:
+        if temporary is not None:
+            Path(temporary).unlink(missing_ok=True)
+
+
+def load_editable_project(path: Path) -> tuple[QImage, QImage, list, int]:
+    """Загрузка только данных: никаких pickle, исполняемых скриптов и извлечения ZIP на диск."""
+    with zipfile.ZipFile(path, "r") as archive:
+        names = archive.namelist()
+        if (len(names) != 3 or set(names) !=
+                {"project.json", "background.png", "overlay.png"}):
+            raise ValueError("Неизвестная структура проекта")
+        for item in archive.infolist():
+            if item.file_size > PROJECT_MAX_ARCHIVE_ENTRY_BYTES:
+                raise ValueError("Слишком большой файл внутри проекта")
+        manifest = json.loads(archive.read("project.json"))
+        if (not isinstance(manifest, dict) or manifest.get("format") != "NP_Screenshot"
+                or manifest.get("version") != EDITABLE_PROJECT_VERSION):
+            raise ValueError("Неподдерживаемая версия проекта")
+        scene = _validate_project_records(manifest.get("items"))
+        bg = QImage.fromData(archive.read("background.png"), "PNG")
+        ov = QImage.fromData(archive.read("overlay.png"), "PNG")
+    if (bg.isNull() or ov.isNull() or bg.size() != ov.size()
+            or bg.width() * bg.height() > PROJECT_MAX_IMAGE_PIXELS):
+        raise ValueError("Повреждённые или несовместимые слои проекта")
+    restored = []
+    for record in scene:
+        entry = dict(record)
+        if entry["type"] == "sticker":
+            raw = base64.b64decode(entry["pix"], validate=True)
+            if len(raw) > PROJECT_MAX_ARCHIVE_ENTRY_BYTES:
+                raise ValueError("Слишком большой стикер")
+            img = QImage.fromData(raw, "PNG")
+            if img.isNull() or img.width() * img.height() > PROJECT_MAX_IMAGE_PIXELS:
+                raise ValueError("Повреждённое изображение стикера")
+            entry["pix"] = QPixmap.fromImage(img)
+        restored.append(entry)
+    counter = manifest.get("step_counter", 1)
+    if not isinstance(counter, int) or not 1 <= counter <= 1_000_000:
+        raise ValueError("Некорректный счётчик шагов")
+    return (_normalized_image(bg), _normalized_image(ov), restored, counter)
+
 
 
 def qpixmap_from_qimage(img: QImage) -> QPixmap:
