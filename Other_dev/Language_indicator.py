@@ -761,14 +761,15 @@ def lang_code_from_langid(lang_id: int) -> str:
     return code
 
 
-def get_active_keyboard_lang() -> str:
+def get_active_keyboard_lang(hwnd: int | None = None) -> str:
     """
     Возвращает текущую раскладку активного окна.
 
     RU — русский, EN — любой английский primary language, не только US/UK.
     Для остальных языков — ISO-код (UK, DE…), если Windows его не знает — HEX.
     """
-    hwnd = get_foreground_hwnd()
+    if hwnd is None:
+        hwnd = get_foreground_hwnd()
     if not hwnd:
         return ""
 
@@ -1509,6 +1510,11 @@ class LanguageIndicatorApp:
         self.tray_menu.aboutToShow.connect(self.reinforce_indicators_now)
         self.tray_menu.aboutToHide.connect(self.reinforce_indicators_now)
         self.tray_menu.aboutToHide.connect(self.reinforce_indicators_deferred)
+        logging.info(
+            "Language Indicator: Choice=%s, config=%s, popup=%s, frequency=%dms, visible=%s",
+            bool(os.environ.get("CHOICE_PID")), CONFIG_FILE, CONFIG.popup_enabled,
+            CONFIG.update_interval_ms, self.is_visible,
+        )
 
         self.update_timer = QTimer()
         self.update_timer.timeout.connect(self.safe_update_state)
@@ -1820,6 +1826,8 @@ class LanguageIndicatorApp:
             logging.exception("recreate_widgets failed")
 
     def recreate_widgets(self) -> None:
+        self._last_geometry_refresh_time = 0.0
+        self._cached_fullscreen_screen = None
         for _, widget in self.widgets:
             widget.hide()
             widget.deleteLater()
@@ -1903,57 +1911,70 @@ class LanguageIndicatorApp:
             logging.exception("update_state failed")
 
     def should_force_topmost_now(self) -> bool:
-        # Раз в ~2 секунды заново выставляем topmost, чтобы плашка сама
-        # восстанавливалась, если её перекрыла панель задач (меню трея,
-        # перерисовка Explorer, выход из полноэкранного приложения и т.п.).
-        # Один SetWindowPos без перемещения/изменения размера — операция дешёвая.
-        interval_ticks = max(1, 2000 // max(1, CONFIG.update_interval_ms))
-        return self._update_tick % interval_ticks == 0
+        """Пересчёт геометрии и Z-порядка — редко, но раскладка читается быстро."""
+        now = time.monotonic()
+        interval_ms = CONFIG.topmost_reinforce_interval_ms or 2000
+        if now - self._last_geometry_refresh_time >= interval_ms / 1000:
+            self._last_geometry_refresh_time = now
+            return True
+        return False
 
     def update_state(self, force_no_popup: bool = False) -> None:
         self._update_tick += 1
-
-        lang = get_active_keyboard_lang()
+        hwnd = get_foreground_hwnd()
+        focus_changed = bool(self._last_foreground_hwnd) and hwnd != self._last_foreground_hwnd
+        lang = get_active_keyboard_lang(hwnd)
         if not lang:
+            # Нет фокуса (экран блокировки/UAC) или Windows ещё не предоставила HKL.
+            # Не дёргаем индикатор в "??" и не засоряем журнал каждые 100 мс.
+            now = time.monotonic()
+            if hwnd and now - self._last_layout_warning_time >= 60:
+                self._last_layout_warning_time = now
+                logging.warning("Language Indicator: не определена раскладка окна hwnd=0x%X", hwnd)
             lang = self.last_lang or "??"
 
+        if lang != self.last_lang and self.last_lang:
+            logging.info("Language Indicator: раскладка %s -> %s, hwnd=0x%X, смена окна=%s",
+                         self.last_lang, lang, hwnd, focus_changed)
+
         self.update_tray_icon(lang)
+        self._last_foreground_hwnd = hwnd
 
         if not self.is_visible:
             self.last_lang = lang
+            self.popup.hide()
             return
 
-        # Экран, на котором сейчас настоящее полноэкранное окно (или None).
-        # Раньше это значение вычислялось как None и не использовалось — фича
-        # затемнения в fullscreen была не подключена, из-за чего настройки
-        # fullscreen_alpha / popup_fullscreen_alpha ни на что не влияли.
-        fullscreen_screen = self.get_fullscreen_screen()
+        relayout = self.should_force_topmost_now()
+        if relayout or focus_changed:
+            self._cached_fullscreen_screen = self.get_fullscreen_screen()
+        fullscreen_screen = self._cached_fullscreen_screen
         fullscreen_name = fullscreen_screen.name() if fullscreen_screen is not None else None
-        force_topmost = self.should_force_topmost_now()
 
         for screen, widget in self.widgets:
-            if CONFIG.placement_mode == "taskbar":
-                widget.show_taskbar_at(screen, force_topmost=force_topmost)
-            else:
-                widget.show_corner_at(screen.availableGeometry(), force_topmost=force_topmost)
-
+            # WinAPI поиск панели задач и установка HWND topmost стоят дороже
+            # простой смены текста. Делаем их раз в ~2 с, не каждые 100 мс.
+            if relayout:
+                if CONFIG.placement_mode == "taskbar":
+                    widget.show_taskbar_at(screen, force_topmost=True)
+                else:
+                    widget.show_corner_at(screen.availableGeometry(), force_topmost=True)
             widget.set_lang(lang)
-
             on_fullscreen = fullscreen_name is not None and screen.name() == fullscreen_name
             widget.set_alpha(CONFIG.fullscreen_alpha if on_fullscreen else CONFIG.normal_alpha)
 
-        if self.last_lang and lang != self.last_lang and not force_no_popup:
+        should_popup = (
+            CONFIG.popup_enabled
+            and self.last_lang
+            and lang != self.last_lang
+            and not force_no_popup
+            and (CONFIG.popup_on_focus_change or not focus_changed)
+        )
+        if should_popup:
             active_screen = self.get_active_screen()
-
             if active_screen is not None:
-                active_on_fullscreen = (
-                    fullscreen_name is not None and active_screen.name() == fullscreen_name
-                )
-                popup_alpha = (
-                    CONFIG.popup_fullscreen_alpha
-                    if active_on_fullscreen
-                    else CONFIG.popup_normal_alpha
-                )
+                on_fullscreen = fullscreen_name is not None and active_screen.name() == fullscreen_name
+                popup_alpha = CONFIG.popup_fullscreen_alpha if on_fullscreen else CONFIG.popup_normal_alpha
                 self.popup.show_lang(lang, active_screen, popup_alpha)
 
         self.last_lang = lang
