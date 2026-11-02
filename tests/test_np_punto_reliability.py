@@ -527,5 +527,38 @@ class RecoveryTests(unittest.TestCase):
             self.assertTrue(forbidden.isdisjoint(candidates))
 
 
+class ChoiceHealthTests(unittest.TestCase):
+    def test_choice_health_rejects_fallback_hotkey_even_if_active(self):
+        logical_ins = punto._HK_CONVERT_BEFORE_CARET
+        logical_case = punto._HK_TOGGLE_CASE_BEFORE_CARET
+        primary = {logical_ins: (punto.MOD_CONTROL, punto.VK_INSERT),
+                   logical_case: (punto.MOD_CONTROL | punto.MOD_SHIFT, punto.VK_F9)}
+        bindings = {logical_ins: (logical_ins, (punto.MOD_ALT, punto.VK_INSERT)),
+                    logical_case: (logical_case, primary[logical_case])}
+        worker = Mock()
+        worker._thread.is_alive.return_value = True
+        worker.current_job.return_value = ("idle", 0.0)
+        idle = Mock()
+        idle._thread.is_alive.return_value = True
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "choice-health.json"
+            with patch.dict(os.environ, {"CHOICE_HEALTH_FILE": str(target), "CHOICE_HEALTH_KEY": "test-key"}), \\
+                 patch.object(punto, "_desired_hotkeys", primary), \\
+                 patch.object(punto, "_active_hotkeys", bindings), \\
+                 patch.object(punto, "_worker", worker), \\
+                 patch.object(punto, "_idle", idle), \\
+                 patch.object(punto, "_hook_handle", 1), \\
+                 patch.object(punto, "_mouse_hook_handle", 1):
+                punto._emit_choice_health()
+                result = json.loads(target.read_text(encoding="utf-8"))
+                self.assertFalse(result["ok"])
+                self.assertIn("горячей клавиши", result["detail"])
+                bindings[logical_ins] = (logical_ins, primary[logical_ins])
+                punto._emit_choice_health()
+                result = json.loads(target.read_text(encoding="utf-8"))
+                self.assertTrue(result["ok"])
+                self.assertEqual(result["key"], "test-key")
+
+
 if __name__ == "__main__":
     unittest.main()
