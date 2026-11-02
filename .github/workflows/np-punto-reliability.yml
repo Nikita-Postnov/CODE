@@ -1,0 +1,32 @@
+name: NP Punto reliability
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "Other_dev/punto_like_work_safe.py"
+      - "tests/test_np_punto_reliability.py"
+      - ".github/workflows/np-punto-reliability.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "Other_dev/punto_like_work_safe.py"
+      - "tests/test_np_punto_reliability.py"
+      - ".github/workflows/np-punto-reliability.yml"
+
+jobs:
+  punto:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Compile NP Punto
+        run: python -m py_compile Other_dev/punto_like_work_safe.py
+      - name: Validate NP Punto safety
+        run: python -m unittest -v tests/test_np_punto_reliability.py
