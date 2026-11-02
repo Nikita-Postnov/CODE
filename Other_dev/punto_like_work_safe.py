@@ -4047,6 +4047,7 @@ _worker_stuck_warned: bool = False
 
 _space_keydown_blocked: bool = False
 _space_keydown_fg_hwnd: int = 0
+_keyboard_input_revision: int = 0
 
 # ── Аккорд Ctrl+Alt+Shift → выделить слово под кареткой ──────────────────────
 # Срабатывает на ОТПУСКАНИИ, если все три модификатора (любые — левые/правые)
@@ -4166,29 +4167,33 @@ def _on_space_up(fg_hwnd: int, fg_exe: str) -> None:
     blocked, down_fg = _space_keydown_blocked, _space_keydown_fg_hwnd
     _space_keydown_blocked = False
     _space_keydown_fg_hwnd = 0
-    if blocked:
-        return  # Shift+Space и т.п.
-    if down_fg and fg_hwnd and down_fg != fg_hwnd:
-        return  # между нажатием и отпусканием сменилось окно
+    if blocked or (down_fg and fg_hwnd and down_fg != fg_hwnd):
+        return
     if fg_exe in _MEDIA_PLAYER_EXES or fg_exe in _CONSOLE_EXES:
         return
     focus = _get_focused_control_hwnd()
-    if not _is_text_input_focus(focus):
+    if not _is_text_input_focus(focus) or _worker.busy:
         return
-    # Замену делает worker, а хук ждёт её с жёстким дедлайном: следующие нажатия
-    # пользователя придут уже после замены (как было при работе прямо в хуке),
-    # но сам хук никогда не висит дольше space_job_deadline_seconds.
-    _worker.run_sync(
-        "rules-after-space",
-        lambda f=focus: _apply_rules_in_edit(f, after_space=True),
-        _timings.space_job_deadline_seconds,
-    )
+    revision = _keyboard_input_revision
+
+    def apply_if_unchanged() -> None:
+        if _is_paused or revision != _keyboard_input_revision:
+            return
+        if _hwnd_value(user32.GetForegroundWindow()) != fg_hwnd:
+            return
+        if _get_focused_control_hwnd() != focus or not _is_text_input_focus(focus):
+            return
+        _apply_rules_in_edit(focus, after_space=True)
+
+    _worker.submit("rules-after-space", apply_if_unchanged)
 
 
 def _handle_keyboard_event(msg: int, l_param: int) -> None:
+    global _keyboard_input_revision
     kb = ctypes.cast(l_param, ctypes.POINTER(KBDLLHOOKSTRUCT)).contents
     if kb.dwExtraInfo == _INJECT_TAG:
         return  # наши собственные синтетические нажатия
+    _keyboard_input_revision += 1
     if _is_paused:
         return
 
@@ -4238,6 +4243,8 @@ def _mouse_hook_proc(n_code: int, w_param: int, l_param: int) -> int:
     _touch_hook_liveness()
     if n_code == HC_ACTION and int(w_param) in _MOUSE_BUTTON_DOWN_MESSAGES:
         try:
+            global _keyboard_input_revision
+            _keyboard_input_revision += 1
             _idle.cancel()
         except Exception:
             logging.debug("mouse hook callback error", exc_info=True)
