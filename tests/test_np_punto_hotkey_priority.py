@@ -1,7 +1,10 @@
 """Очередь приоритетных сочетаний NP Punto и защита исходного поля ввода."""
 import importlib.util
+import json
+import os
 from pathlib import Path
 import sys
+import tempfile
 import threading
 import time
 import unittest
@@ -174,6 +177,37 @@ class HotkeyContextTests(unittest.TestCase):
             self.assertTrue(punto._on_hotkey(punto._HK_CONVERT_BEFORE_CARET))
             self.assertTrue(punto._on_hotkey(punto._HK_TOGGLE_CASE_BEFORE_CARET))
         self.assertEqual(calls, ["convert-before-caret", "toggle-case-before-caret"])
+
+
+class ChoiceHealthTests(unittest.TestCase):
+    def test_paused_keyboard_handler_is_not_reported_operational(self):
+        ins = punto._HK_CONVERT_BEFORE_CARET
+        case = punto._HK_TOGGLE_CASE_BEFORE_CARET
+        keys = {
+            ins: (punto.MOD_CONTROL, punto.VK_INSERT),
+            case: (punto.MOD_CONTROL, punto.VK_F9),
+        }
+        active = {ident: (ident, hotkey) for ident, hotkey in keys.items()}
+        worker = Mock()
+        worker._thread.is_alive.return_value = True
+        worker.current_job.return_value = ("", 0.0)
+        idle = Mock()
+        idle._thread.is_alive.return_value = True
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "punto-health.json"
+            with patch.dict(os.environ, {
+                "CHOICE_HEALTH_FILE": str(target), "CHOICE_HEALTH_KEY": "test-key",
+            }), patch.object(punto, "_desired_hotkeys", keys), \
+                 patch.object(punto, "_active_hotkeys", active), \
+                 patch.object(punto, "_worker", worker), \
+                 patch.object(punto, "_idle", idle), \
+                 patch.object(punto, "_hook_handle", 1), \
+                 patch.object(punto, "_mouse_hook_handle", 1), \
+                 patch.object(punto, "_is_paused", True):
+                punto._emit_choice_health()
+            result = json.loads(target.read_text(encoding="utf-8"))
+            self.assertFalse(result["ok"])
+            self.assertIn("на паузе", result["detail"])
 
 
 if __name__ == "__main__":
