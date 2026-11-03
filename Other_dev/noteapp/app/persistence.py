@@ -170,10 +170,15 @@ class NotePersistenceMixin:
 
         if note_mtime is not None and cache_path.exists():
             try:
-                cached = _read_json(cache_path)
-                if cached.get("_note_mtime") == note_mtime and isinstance(cached.get("note"), dict):
-                    return cached.get("note")
-            except Exception:
+                #НП: cache содержит обёртку с полями _note_mtime и note,
+                #НП: а не заметку с title на верхнем уровне.
+                with open(cache_path, "r", encoding="utf-8") as cache_file:
+                    cached = json.load(cache_file)
+                if isinstance(cached, dict) and cached.get("_note_mtime") == note_mtime:
+                    cached_note = cached.get("note")
+                    if isinstance(cached_note, dict) and isinstance(cached_note.get("title"), str):
+                        return cached_note
+            except (OSError, ValueError, TypeError):
                 pass
 
         try:
