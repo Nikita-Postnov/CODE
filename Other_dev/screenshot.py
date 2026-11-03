@@ -723,9 +723,10 @@ class SelectionOverlay:
     попадает затемнение, а открытые меню и подсказки остаются на кадре.
     frozen=False: живой рабочий стол под слоем.
 
-    switchable=True: сверху экрана панель «Скриншот | Запись экрана»; режим
-    переключается кликом по ней или клавишей Tab. В режиме записи под слоем
-    живой рабочий стол, выбранный режим — в атрибуте mode ("shot" / "record").
+    switchable=True: сверху две группы переключателей — действие
+    («Скриншот», «Запись экрана», «Текст») и объект («Область», «Окно»).
+    Tab переключает действие, Shift+Tab — объект. Режимы совместимы
+    с прежними вызовами через атрибут mode ("shot", "window", "record" и др.).
 
     ЛКМ — выделить, ПКМ или Esc — отмена. Клик без перетаскивания (в режиме
     frozen или switchable) берёт весь монитор под курсором.
@@ -740,13 +741,21 @@ class SelectionOverlay:
     MODE_RECORD = "record"
     MODE_RECORD_WINDOW = "record_window"
     MODE_OCR = "ocr"
+    MODE_OCR_WINDOW = "ocr_window"
     MODE_WINDOW = "window"
-    _MODES = (MODE_SHOT, MODE_WINDOW, MODE_RECORD, MODE_RECORD_WINDOW, MODE_OCR)
-    _MODE_LABELS = {
-        MODE_SHOT: "📷  Скриншот", MODE_WINDOW: "▣  Окно",
-        MODE_RECORD: "⏺  Запись экрана",
-        MODE_RECORD_WINDOW: "⏺  Запись окна",
-        MODE_OCR: "🔤  Текст",
+    _MODES = (MODE_SHOT, MODE_WINDOW, MODE_RECORD, MODE_RECORD_WINDOW,
+              MODE_OCR, MODE_OCR_WINDOW)
+    _ACTIONS = (MODE_SHOT, MODE_RECORD, MODE_OCR)
+    _TARGETS = ("area", "window")
+    _BAR_BUTTONS = (
+        "kind:shot", "kind:record", "kind:ocr", "target:area", "target:window",
+    )
+    _BAR_LABELS = {
+        "kind:shot": "📷  Скриншот",
+        "kind:record": "⏺  Запись экрана",
+        "kind:ocr": "🔤  Текст",
+        "target:area": "▧  Область",
+        "target:window": "▣  Окно",
     }
 
     class _Pane(QWidget):
