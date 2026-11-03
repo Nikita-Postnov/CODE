@@ -7,8 +7,9 @@
   локальные WinAPI-вызовы и постановка задач в очередь. Поэтому ввод в системе
   не тормозит, а Windows не снимает хук по LowLevelHooksTimeout.
 * worker — единственный поток, который выполняет действия: конвертацию,
-  автозамену, работу с буфером обмена, вставку из истории. Задачи идут строго
-  по очереди, поэтому отдельный мьютекс «busy» больше не нужен.
+  автозамену, работу с буфером обмена, вставку из истории. Очередь приоритетная:
+  ручные хоткеи выполняются раньше фонового захвата истории буфера, но все
+  операции с буфером остаются последовательными, без гонок.
 * idle — планировщик отложенной автозамены (один поток вместо threading.Timer
   на каждое нажатие клавиши).
 * tray — окно трея, его меню, слушатель буфера обмена (WM_CLIPBOARDUPDATE)
@@ -29,6 +30,7 @@ import gc
 import json
 import logging
 import operator
+import itertools
 import os
 import shutil
 import struct
@@ -41,7 +43,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
-from queue import Queue as _Queue, Empty as _QueueEmpty, Full as _QueueFull
+from queue import Queue as _Queue, PriorityQueue as _PriorityQueue, Empty as _QueueEmpty, Full as _QueueFull
 from typing import Callable, Final, Generator, Literal, Optional
 from ctypes import wintypes
 
@@ -1165,7 +1167,8 @@ class _JobWorker:
 
     def __init__(self, name: str, max_queue: int = 128) -> None:
         self._name = name
-        self._q: _Queue[Optional[tuple[str, Callable[[], None], Optional[_SyncTicket]]]] = _Queue(maxsize=max_queue)
+        self._q: _PriorityQueue[tuple[int, int, Optional[tuple[str, Callable[[], None], Optional[_SyncTicket]]]]] = _PriorityQueue(maxsize=max_queue)
+        self._sequence = itertools.count()
         self._thread: Optional[threading.Thread] = None
         self._job_started_at: float = 0.0
         self._job_name: str = ""
@@ -1186,9 +1189,10 @@ class _JobWorker:
             return "", 0.0
         return name, time.monotonic() - started
 
-    def submit(self, name: str, fn: Callable[[], None]) -> bool:
+    def submit(self, name: str, fn: Callable[[], None], *, priority: int = 5) -> bool:
+        """Меньший priority — раньше. Сохраняем FIFO внутри уровня приоритета."""
         try:
-            self._q.put_nowait((name, fn, None))
+            self._q.put_nowait((priority, next(self._sequence), (name, fn, None)))
             return True
         except _QueueFull:
             logging.warning("%s: очередь заполнена, задача %s отброшена", self._name, name)
@@ -1205,7 +1209,7 @@ class _JobWorker:
             return False
         ticket = _SyncTicket()
         try:
-            self._q.put_nowait((name, fn, ticket))
+            self._q.put_nowait((0, next(self._sequence), (name, fn, ticket)))
         except _QueueFull:
             return False
         if ticket.done.wait(timeout):
@@ -1219,7 +1223,7 @@ class _JobWorker:
         if thread is None:
             return
         try:
-            self._q.put(None, timeout=0.5)
+            self._q.put((100, next(self._sequence), None), timeout=0.5)
         except _QueueFull:
             pass
         thread.join(timeout)
@@ -1228,7 +1232,7 @@ class _JobWorker:
     def _run(self) -> None:
         _ensure_thread_message_queue()
         while True:
-            item = self._q.get()
+            _priority, _serial, item = self._q.get()
             if item is None:
                 break
             name, fn, ticket = item
@@ -3026,6 +3030,8 @@ def _clipboard_history_snapshot() -> list[ClipboardItem]:
         return list(_clipboard_history)
 
 def _clipboard_capture_job() -> None:
+    #НП: Снимаем флаг до чтения, чтобы следующее изменение буфера
+    #НП: во время захвата гарантированно поставило повторную задачу.
     _capture_pending.clear()
     if not _is_paused:
         _capture_clipboard_to_history(_timings)
@@ -3040,7 +3046,7 @@ def _request_clipboard_capture() -> None:
     if _is_paused or _capture_pending.is_set():
         return
     _capture_pending.set()
-    if not _worker.submit("clipboard-capture", _clipboard_capture_job):
+    if not _worker.submit("clipboard-capture", _clipboard_capture_job, priority=10):
         _capture_pending.clear()
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -4379,7 +4385,8 @@ def _handle_keyboard_event(msg: int, l_param: int) -> None:
 
     if _settings.select_word_chord and _swc_on_key_event(vk, is_keydown, is_keyup):
         logging.info("chord Ctrl+Alt+Shift -> select word under caret")
-        _worker.submit("select-word-chord", lambda: select_word_under_caret(_timings))
+        _worker.submit("select-word-chord", lambda: select_word_under_caret(_timings),
+                       priority=0)
 
     if is_keydown:
         _on_key_down(vk, fg_hwnd)
@@ -4495,8 +4502,10 @@ def _emit_choice_health() -> None:
         hooks_ok = bool(_hook_handle and _mouse_hook_handle)
         busy_name, busy_for = _worker.current_job()
         worker_ok = worker_ok and busy_for < _WORKER_STUCK_WARN_SECONDS
-        ok = bool(hotkeys and worker_ok and idle_ok and hooks_ok)
+        ok = bool(hotkeys and worker_ok and idle_ok and hooks_ok and not _is_paused)
         reasons = []
+        if _is_paused:
+            reasons.append("NP Punto на паузе — горячие клавиши не выполняются")
         if not hotkeys:
             reasons.append("Основное сочетание горячей клавиши занято или не зарегистрировано")
         if not worker_ok:
@@ -4769,6 +4778,43 @@ def _toggle_pause() -> None:
     logging.info("PAUSED" if _is_paused else "RESUMED")
 
 
+_HOTKEY_ACTION_MAX_WAIT_SECONDS: Final[float] = 3.0
+
+
+def _queue_hotkey_action(name: str, action: Callable[[], None]) -> bool:
+    """Приоритет ручной команды, привязка к исходному foreground и фокусу.
+
+    Если операция дошла до worker после переключения поля/окна, выполнять её
+    уже небезопасно: вместо изменения чужого текста пишем причину в журнал.
+    """
+    target_hwnd = _hwnd_value(user32.GetForegroundWindow())
+    focus_hwnd = _get_focused_control_hwnd()
+    enqueued_at = time.monotonic()
+
+    def guarded() -> None:
+        lag = time.monotonic() - enqueued_at
+        if _is_paused:
+            logging.info("Hotkey skipped: %s — paused after keypress", name)
+            return
+        if lag > _HOTKEY_ACTION_MAX_WAIT_SECONDS:
+            logging.warning("Hotkey skipped: %s — worker delay %.2f s", name, lag)
+            return
+        current_hwnd = _hwnd_value(user32.GetForegroundWindow())
+        if target_hwnd and current_hwnd != target_hwnd:
+            logging.info("Hotkey skipped: %s — foreground changed", name)
+            return
+        if focus_hwnd and _get_focused_control_hwnd() != focus_hwnd:
+            logging.info("Hotkey skipped: %s — focus changed", name)
+            return
+        logging.info("Hotkey executing: %s (queue delay %.3f s)", name, lag)
+        action()
+
+    accepted = _worker.submit(name, guarded, priority=0)
+    if not accepted:
+        logging.warning("Hotkey rejected: %s — worker queue full", name)
+    return accepted
+
+
 def _on_hotkey(hotkey_id: int) -> bool:
     """Обрабатывает WM_HOTKEY на главном потоке. False — пора выходить."""
     if hotkey_id == _HK_EXIT:
@@ -4777,31 +4823,32 @@ def _on_hotkey(hotkey_id: int) -> bool:
         _toggle_pause()
         return True
     if _is_paused:
+        logging.info("Hotkey ignored: id=%d — paused", hotkey_id)
         return True
 
     timings = _timings
     if hotkey_id == _HK_CLIPBOARD_PICKER:
         # Окно, в которое потом вставлять, запоминаем сейчас — до открытия Tk.
         target = _hwnd_value(user32.GetForegroundWindow())
-        _worker.submit("clipboard-picker", lambda: _prepare_clipboard_picker(target))
+        _worker.submit("clipboard-picker", lambda: _prepare_clipboard_picker(target),
+                       priority=0)
     elif hotkey_id == _HK_RULES_EDITOR:
         _ui.call(_open_rules_editor_window)
     elif hotkey_id == _HK_CONVERT_SELECTED:
         _idle.cancel()
-        _worker.submit("convert-selected", lambda: convert_selected_text(timings))
+        _queue_hotkey_action("convert-selected", lambda: convert_selected_text(timings))
     elif hotkey_id == _HK_CONVERT_BEFORE_CARET:
         _idle.cancel()
-        if not _worker.submit("convert-before-caret", lambda: convert_before_caret_text(timings)):
-            logging.warning("Ctrl+Ins: worker queue full, action not accepted")
+        _queue_hotkey_action("convert-before-caret", lambda: convert_before_caret_text(timings))
     elif hotkey_id == _HK_TOGGLE_CASE:
         _idle.cancel()
-        _worker.submit("toggle-case", lambda: toggle_case_selected_text(timings))
+        _queue_hotkey_action("toggle-case", lambda: toggle_case_selected_text(timings))
     elif hotkey_id == _HK_TOGGLE_CASE_BEFORE_CARET:
         _idle.cancel()
-        _worker.submit("toggle-case-before-caret", lambda: toggle_case_before_caret_text(timings))
+        _queue_hotkey_action("toggle-case-before-caret", lambda: toggle_case_before_caret_text(timings))
     elif hotkey_id == _HK_UNDO:
         _idle.cancel()
-        _worker.submit("undo-last-change", lambda: undo_last_change(timings))
+        _queue_hotkey_action("undo-last-change", lambda: undo_last_change(timings))
     return True
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -4845,7 +4892,7 @@ def run_app() -> None:
         _worker.start()
         _idle.start()
         _start_tray_thread()
-        _worker.submit("clipboard-capture-initial", lambda: _capture_clipboard_to_history(_timings, force=True))
+        _worker.submit("clipboard-capture-initial", lambda: _capture_clipboard_to_history(_timings, force=True), priority=10)
         _install_keyboard_hook()
         _install_mouse_hook()
         _last_hook_event_time = time.monotonic()

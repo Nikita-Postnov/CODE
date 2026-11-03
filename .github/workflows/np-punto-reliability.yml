@@ -6,12 +6,14 @@ on:
     paths:
       - "Other_dev/punto_like_work_safe.py"
       - "tests/test_np_punto_reliability.py"
+      - "tests/test_np_punto_hotkey_priority.py"
       - ".github/workflows/np-punto-reliability.yml"
   pull_request:
     branches: [main]
     paths:
       - "Other_dev/punto_like_work_safe.py"
       - "tests/test_np_punto_reliability.py"
+      - "tests/test_np_punto_hotkey_priority.py"
       - ".github/workflows/np-punto-reliability.yml"
 
 jobs:
@@ -29,4 +31,4 @@ jobs:
       - name: Compile NP Punto
         run: python -m py_compile Other_dev/punto_like_work_safe.py
       - name: Validate NP Punto safety
-        run: python -m unittest -v tests/test_np_punto_reliability.py
+        run: python -m unittest -v tests.test_np_punto_reliability tests.test_np_punto_hotkey_priority
