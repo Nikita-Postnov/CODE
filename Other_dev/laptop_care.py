@@ -97,7 +97,9 @@ else:
 
 # ── корень Launcher: та же логика, что в Screenshot.py / noteapp/config.py ──
 def _is_launcher_dir(p: Path) -> bool:
-    return any((p / n).exists() for n in ("launcher_config.json", "Choice.exe", "Choice.pyw"))
+    return any((p / n).is_file() for n in (
+        "launcher_config.json", "Choice.exe", "Choice.pyw", "Choice.bat",
+    ))
 
 
 def _not_data_dir(p: Path) -> Path:
@@ -122,7 +124,7 @@ def launcher_root() -> Path:
 
 ROOT = launcher_root()
 RUNTIME_DIR = ROOT / "Runtime"
-UNDER_LAUNCHER = (ROOT / "Choice.exe").exists() or (ROOT / "Choice.pyw").exists()
+UNDER_LAUNCHER = _is_launcher_dir(ROOT)
 BASE_DIR = ROOT
 DATA_DIR = Path(os.environ.get("LAPTOPCARE_DATA") or ROOT / "Data" / APP_NAME)
 
@@ -334,12 +336,23 @@ class Settings:
         self.save()
 
     def save(self) -> None:
+        #НП: Сохраняем атомарно; даже при внезапном завершении старый JSON цел.
+        tmp = self.path.with_name(f".{self.path.name}.{uuid.uuid4().hex}.tmp")
         try:
-            tmp = self.path.with_suffix(".tmp")
-            tmp.write_text(json.dumps(self.data, ensure_ascii=False, indent=2), "utf-8")
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            payload = json.dumps(self.data, ensure_ascii=False, indent=2).encode("utf-8")
+            with tmp.open("wb") as out:
+                out.write(payload)
+                out.flush()
+                os.fsync(out.fileno())
             os.replace(tmp, self.path)
         except Exception:
             log.exception("Не удалось сохранить настройки")
+        finally:
+            try:
+                tmp.unlink(missing_ok=True)
+            except OSError:
+                pass
 
 
 def default_dev_roots() -> list[str]:
