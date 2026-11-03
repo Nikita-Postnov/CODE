@@ -723,9 +723,10 @@ class SelectionOverlay:
     попадает затемнение, а открытые меню и подсказки остаются на кадре.
     frozen=False: живой рабочий стол под слоем.
 
-    switchable=True: сверху экрана панель «Скриншот | Запись экрана»; режим
-    переключается кликом по ней или клавишей Tab. В режиме записи под слоем
-    живой рабочий стол, выбранный режим — в атрибуте mode ("shot" / "record").
+    switchable=True: сверху две группы переключателей — действие
+    («Скриншот», «Запись экрана», «Текст») и объект («Область», «Окно»).
+    Tab переключает действие, Shift+Tab — объект. Режимы совместимы
+    с прежними вызовами через атрибут mode ("shot", "window", "record" и др.).
 
     ЛКМ — выделить, ПКМ или Esc — отмена. Клик без перетаскивания (в режиме
     frozen или switchable) берёт весь монитор под курсором.
@@ -740,13 +741,21 @@ class SelectionOverlay:
     MODE_RECORD = "record"
     MODE_RECORD_WINDOW = "record_window"
     MODE_OCR = "ocr"
+    MODE_OCR_WINDOW = "ocr_window"
     MODE_WINDOW = "window"
-    _MODES = (MODE_SHOT, MODE_WINDOW, MODE_RECORD, MODE_RECORD_WINDOW, MODE_OCR)
-    _MODE_LABELS = {
-        MODE_SHOT: "📷  Скриншот", MODE_WINDOW: "▣  Окно",
-        MODE_RECORD: "⏺  Запись экрана",
-        MODE_RECORD_WINDOW: "⏺  Запись окна",
-        MODE_OCR: "🔤  Текст",
+    _MODES = (MODE_SHOT, MODE_WINDOW, MODE_RECORD, MODE_RECORD_WINDOW,
+              MODE_OCR, MODE_OCR_WINDOW)
+    _ACTIONS = (MODE_SHOT, MODE_RECORD, MODE_OCR)
+    _TARGETS = ("area", "window")
+    _BAR_BUTTONS = (
+        "kind:shot", "kind:record", "kind:ocr", "target:area", "target:window",
+    )
+    _BAR_LABELS = {
+        "kind:shot": "📷  Скриншот",
+        "kind:record": "⏺  Запись экрана",
+        "kind:ocr": "🔤  Текст",
+        "target:area": "▧  Область",
+        "target:window": "▣  Окно",
     }
 
     class _Pane(QWidget):
@@ -772,26 +781,49 @@ class SelectionOverlay:
 
         # ── панель режимов ──
         def _bar_layout(self) -> Tuple[QRect, List[Tuple[str, QRect]], QRect]:
-            """(вся панель, [(режим, кнопка)…], строка подсказки)."""
+            """Кнопки действия и объекта в двух подписанных группах."""
             fm = QFontMetrics(self._bar_font)
             fm_hint = QFontMetrics(self._hint_font)
-            pad_x, pad_y, gap, margin = 16, 7, 4, 6
-            labels = SelectionOverlay._MODE_LABELS
-            modes = SelectionOverlay._MODES
-            widths = [fm.horizontalAdvance(labels[m]) + 2 * pad_x for m in modes]
+            pad_x, pad_y, gap, margin, group_gap = 14, 7, 4, 8, 20
+            groups = (
+                SelectionOverlay._BAR_BUTTONS[:3],
+                SelectionOverlay._BAR_BUTTONS[3:],
+            )
+            labels = SelectionOverlay._BAR_LABELS
             h_btn = fm.height() + 2 * pad_y
+            widths = {
+                key: fm.horizontalAdvance(labels[key]) + 2 * pad_x
+                for group in groups for key in group
+            }
+            groups_width = [
+                sum(widths[key] for key in group) + gap * (len(group) - 1)
+                for group in groups
+            ]
+            buttons_w = sum(groups_width) + group_gap
             hint = self.mgr.bar_hint()
-            buttons_w = sum(widths) + gap * (len(widths) - 1)
             inner_w = max(buttons_w, fm_hint.horizontalAdvance(hint) + 8)
-            bar = QRect(0, 0, inner_w + 2 * margin, h_btn + fm_hint.height() + 3 * margin)
+            header_h = fm_hint.height() + 2
+            bar_h = header_h + h_btn + fm_hint.height() + 3 * margin
+            bar = QRect(0, 0, inner_w + 2 * margin, bar_h)
             bar.moveTopLeft(QPoint((self.width() - bar.width()) // 2, 16))
             x = bar.left() + margin + (inner_w - buttons_w) // 2
+            button_top = bar.top() + margin + header_h
             buttons: List[Tuple[str, QRect]] = []
-            for m, w in zip(modes, widths):
-                buttons.append((m, QRect(x, bar.top() + margin, w, h_btn)))
-                x += w + gap
-            top = buttons[0][1].bottom() + margin // 2 + 1
-            hint_rect = QRect(bar.left() + margin, top, inner_w, fm_hint.height() + 2)
+            for group_index, group in enumerate(groups):
+                for index, key in enumerate(group):
+                    w = widths[key]
+                    buttons.append((key, QRect(x, button_top, w, h_btn)))
+                    x += w
+                    if index + 1 < len(group):
+                        x += gap
+                if group_index + 1 < len(groups):
+                    x += group_gap
+            hint_rect = QRect(
+                bar.left() + margin,
+                button_top + h_btn + margin // 2,
+                inner_w,
+                fm_hint.height() + 2,
+            )
             return bar, buttons, hint_rect
 
         def _bar_visible(self) -> bool:
@@ -804,37 +836,55 @@ class SelectionOverlay:
             p.setBrush(QColor(32, 33, 36, 235))
             p.drawRoundedRect(bar, 10, 10)
             p.setFont(self._bar_font)
-            for mode, rect in buttons:
-                active = self.mgr.mode == mode
-                enabled = self.mgr.mode_enabled(mode)
-                bg = QColor(26, 115, 232) if active else QColor(60, 64, 67)
+            current_kind = self.mgr.capture_kind()
+            current_target = self.mgr.capture_target()
+            for key, rect in buttons:
+                selected = (
+                    (key == f"kind:{current_kind}")
+                    or (key == f"target:{current_target}")
+                )
+                enabled = self.mgr.capture_button_enabled(key)
+                bg = QColor(26, 115, 232) if selected else QColor(60, 64, 67)
                 if not enabled:
                     bg = QColor(48, 50, 53)
                 p.setPen(Qt.NoPen)
                 p.setBrush(bg)
                 p.drawRoundedRect(rect, 7, 7)
                 p.setPen(QColor(255, 255, 255) if enabled else QColor(130, 130, 130))
-                p.drawText(rect, Qt.AlignCenter, SelectionOverlay._MODE_LABELS[mode])
+                p.drawText(rect, Qt.AlignCenter, SelectionOverlay._BAR_LABELS[key])
+
             p.setFont(self._hint_font)
+            p.setPen(QColor(185, 192, 206))
+            action_buttons = [rect for key, rect in buttons if key.startswith("kind:")]
+            target_buttons = [rect for key, rect in buttons if key.startswith("target:")]
+            for caption, group in (("ДЕЙСТВИЕ", action_buttons),
+                                   ("ОБЪЕКТ", target_buttons)):
+                area = QRect(group[0].left(), bar.top() + 4,
+                             group[-1].right() - group[0].left() + 1,
+                             self._hint_font.pointSize() + 8)
+                p.drawText(area, Qt.AlignCenter, caption)
             p.setPen(QColor(200, 200, 200))
             p.drawText(hint_rect, Qt.AlignCenter, self.mgr.bar_hint())
             p.setRenderHint(QPainter.Antialiasing, False)
 
         def _bar_hit(self, pos: QPoint) -> Optional[str]:
-            """Режим — клик по кнопке, 'bar' — по панели, None — мимо."""
+            """Возвращает кнопку действия/объекта или 'bar' для пустой панели."""
             if not self._bar_visible():
                 return None
             bar, buttons, _hint = self._bar_layout()
-            for mode, rect in buttons:
+            for key, rect in buttons:
                 if rect.contains(pos):
-                    return mode
+                    return key
             return "bar" if bar.contains(pos) else None
 
         # ── события ──
         def event(self, e):
-            # Tab перехватываем до обработки фокуса: он переключает режим.
+            #НП: Tab меняет действие, Shift+Tab — объект (область/окно).
             if e.type() == QEvent.KeyPress and e.key() in (Qt.Key_Tab, Qt.Key_Backtab):
-                self.mgr.toggle_mode()
+                if e.key() == Qt.Key_Backtab or e.modifiers() & Qt.ShiftModifier:
+                    self.mgr.toggle_target()
+                else:
+                    self.mgr.toggle_mode()
                 return True
             return super().event(e)
 
@@ -842,12 +892,11 @@ class SelectionOverlay:
             if e.button() == Qt.LeftButton:
                 hit = self._bar_hit(e.position().toPoint())
                 if hit is not None:
-                    if hit in SelectionOverlay._MODES:
-                        self.mgr.set_mode(hit)
+                    if hit in SelectionOverlay._BAR_BUTTONS:
+                        self.mgr.choose_bar_button(hit)
                     return
                 g = e.globalPosition().toPoint()
-                if self.mgr.mode in (SelectionOverlay.MODE_WINDOW,
-                                     SelectionOverlay.MODE_RECORD_WINDOW):
+                if self.mgr.capture_target() == "window":
                     self.mgr._on_pick_window(g)
                     return
                 self.mgr._on_press(g)
@@ -863,8 +912,7 @@ class SelectionOverlay:
                 for p in self.mgr._panes:
                     p.update()
             else:
-                if self.mgr.mode in (SelectionOverlay.MODE_WINDOW,
-                                     SelectionOverlay.MODE_RECORD_WINDOW):
+                if self.mgr.capture_target() == "window":
                     self.mgr._on_window_hover(e.globalPosition().toPoint())
                 if self.has_bar:
                     over_bar = self._bar_hit(e.position().toPoint()) is not None
@@ -885,8 +933,7 @@ class SelectionOverlay:
             r_global: Optional[QRect] = None
             r_local = QRect()
             inter = QRect()
-            if self.mgr.mode in (SelectionOverlay.MODE_WINDOW,
-                                 SelectionOverlay.MODE_RECORD_WINDOW):
+            if self.mgr.capture_target() == "window":
                 r_global = self.mgr._hover_window_g
             elif self.mgr._origin_g is not None and self.mgr._current_g is not None:
                 r_global = QRect(self.mgr._origin_g, self.mgr._current_g).normalized()
@@ -894,7 +941,7 @@ class SelectionOverlay:
                 r_local = r_global.translated(-self.geometry().topLeft())
                 inter = r_local.intersected(self.rect())
 
-            if self._frozen is not None and self.mgr.mode != SelectionOverlay.MODE_RECORD:
+            if self._frozen is not None and self.mgr.capture_kind() != "record":
                 p.drawPixmap(self.rect(), self._frozen)
                 dim = QRegion(self.rect())
                 if not inter.isEmpty():
@@ -922,20 +969,18 @@ class SelectionOverlay:
                 p.drawLine(sr.left(), r_local.bottom(), sr.right(), r_local.bottom())
                 p.setPen(QPen(QColor(0, 0, 0, 200), 1))  # 1px, снаружи
                 p.drawRect(r_local.adjusted(-1, -1, 1, 1))
-                ocr = self.mgr.mode == SelectionOverlay.MODE_OCR
+                ocr = self.mgr.capture_kind() == "ocr"
                 frame = QColor(234, 67, 53) if record else (QColor(52, 168, 83) if ocr else QColor(255, 255, 255))
                 p.setPen(QPen(frame, 1))
                 p.drawRect(r_local)
                 p.setBrush(Qt.NoBrush)
                 info = f"{r_global.width()} x {r_global.height()}"
                 if record:
-                    info = "⏺ " + info
+                    info = "⏺ Запись · " + info
                 elif ocr:
-                    info = "🔤 " + info
-                elif self.mgr.mode == SelectionOverlay.MODE_WINDOW:
+                    info = "🔤 Текст · " + info
+                elif self.mgr.capture_target() == "window":
                     info = "▣ Окно · " + info
-                elif self.mgr.mode == SelectionOverlay.MODE_RECORD_WINDOW:
-                    info = "⏺ Запись окна · " + info
                 metrics = p.fontMetrics()
                 label_h = metrics.height() + 8
                 label_y = r_local.top() - label_h
@@ -988,21 +1033,71 @@ class SelectionOverlay:
         self._current_g: Optional[QPoint] = None
         self.selection_made = lambda rect: None
 
-    def bar_hint(self) -> str:
-        if self.mode in (self.MODE_WINDOW, self.MODE_RECORD_WINDOW):
-            action = "записи" if self.mode == self.MODE_RECORD_WINDOW else "снимка"
-            return f"Выбери окно для {action}: наведи и нажми ЛКМ · Esc — отмена"
-        if not self.record_available:
-            reason = self._record_unavailable_reason or "запись недоступна"
-            return f"{reason} · ПКМ / Esc — отмена"
-        return "Tab — сменить режим · ПКМ / Esc — отмена"
+    @classmethod
+    def mode_for_choice(cls, kind: str, target: str) -> Optional[str]:
+        """Режим выполнения определяется независимыми действием и объектом."""
+        return {
+            ("shot", "area"): cls.MODE_SHOT,
+            ("shot", "window"): cls.MODE_WINDOW,
+            ("record", "area"): cls.MODE_RECORD,
+            ("record", "window"): cls.MODE_RECORD_WINDOW,
+            ("ocr", "area"): cls.MODE_OCR,
+            ("ocr", "window"): cls.MODE_OCR_WINDOW,
+        }.get((kind, target))
 
-    def mode_enabled(self, mode: str) -> bool:
+    def capture_kind(self) -> str:
+        if self.mode in (self.MODE_RECORD, self.MODE_RECORD_WINDOW):
+            return "record"
+        if self.mode in (self.MODE_OCR, self.MODE_OCR_WINDOW):
+            return "ocr"
+        return "shot"
+
+    def capture_target(self) -> str:
+        return ("window" if self.mode in (
+            self.MODE_WINDOW, self.MODE_RECORD_WINDOW, self.MODE_OCR_WINDOW,
+        ) else "area")
+
+    def capture_button_enabled(self, key: str) -> bool:
+        group, _, choice = key.partition(":")
+        if group == "kind" and choice in self._ACTIONS:
+            return self.mode_enabled(self.mode_for_choice(choice, self.capture_target()))
+        if group == "target" and choice in self._TARGETS:
+            return self.mode_enabled(self.mode_for_choice(self.capture_kind(), choice))
+        return False
+
+    def choose_bar_button(self, key: str) -> None:
+        group, _, value = key.partition(":")
+        if group == "kind" and value in self._ACTIONS:
+            self.set_capture_kind(value)
+        elif group == "target" and value in self._TARGETS:
+            self.set_capture_target(value)
+
+    def set_capture_kind(self, kind: str) -> None:
+        mode = self.mode_for_choice(kind, self.capture_target())
+        if mode is not None:
+            self.set_mode(mode)
+
+    def set_capture_target(self, target: str) -> None:
+        mode = self.mode_for_choice(self.capture_kind(), target)
+        if mode is not None:
+            self.set_mode(mode)
+
+    def bar_hint(self) -> str:
+        if self.capture_target() == "window":
+            action = "Наведите на окно и нажмите ЛКМ"
+        else:
+            action = "Выделите область мышью"
+        if not self.record_available:
+            warning = self._record_unavailable_reason or "Запись недоступна"
+            return f"{action} · {warning} · Esc — отмена"
+        return f"{action} · Tab — действие · Shift+Tab — объект · Esc — отмена"
+
+    def mode_enabled(self, mode: Optional[str]) -> bool:
         if mode == self.MODE_RECORD:
             return self.record_available
         if mode == self.MODE_RECORD_WINDOW:
             return self.record_available and sys.platform.startswith("win")
-        if mode == self.MODE_OCR:
+        if mode in (self.MODE_OCR, self.MODE_OCR_WINDOW):
             return sys.platform.startswith("win")
         if mode == self.MODE_WINDOW:
             return sys.platform.startswith("win")
@@ -1013,22 +1108,32 @@ class SelectionOverlay:
             return
         if mode != self.mode:
             self.mode = mode
+            self.selected_window_hwnd = None
+            self.selected_window_title = ""
             self._hover_window_g = (
                 window_at_point(QCursor.pos(), self._windows)
-                if mode in (self.MODE_WINDOW, self.MODE_RECORD_WINDOW) else None
+                if self.capture_target() == "window" else None
             )
             for p in self._panes:
                 p.update()
 
     def toggle_mode(self) -> None:
+        """Tab: меняем действие, оставляя выбор объекта неизменным."""
         if self.switchable and self._origin_g is None:
-            modes = self._MODES
-            i = modes.index(self.mode) if self.mode in modes else 0
-            for step in range(1, len(modes) + 1):
-                candidate = modes[(i + step) % len(modes)]
-                if self.mode_enabled(candidate):
-                    self.set_mode(candidate)
+            current = self.capture_kind()
+            index = self._ACTIONS.index(current)
+            for step in range(1, len(self._ACTIONS) + 1):
+                candidate = self._ACTIONS[(index + step) % len(self._ACTIONS)]
+                mode = self.mode_for_choice(candidate, self.capture_target())
+                if self.mode_enabled(mode):
+                    self.set_mode(mode)
                     return
+
+    def toggle_target(self) -> None:
+        """Shift+Tab: меняем объект, оставляя действие неизменным."""
+        if self.switchable and self._origin_g is None:
+            target = "area" if self.capture_target() == "window" else "window"
+            self.set_capture_target(target)
 
     def shots(self) -> List[Tuple[QRect, QPixmap]]:
         """Замороженные кадры экранов: (логическая геометрия экрана, снимок)."""
@@ -1038,7 +1143,7 @@ class SelectionOverlay:
         self._origin_g = self._current_g = None
         self.selected_window_hwnd = None
         self.selected_window_title = ""
-        if self.mode in (self.MODE_WINDOW, self.MODE_RECORD_WINDOW):
+        if self.capture_target() == "window":
             self._hover_window_g = window_at_point(QCursor.pos(), self._windows)
         SelectionOverlay.active = self
         bar_pane = None
@@ -4071,7 +4176,7 @@ def run_capture_flow(initial_mode: str = SelectionOverlay.MODE_SHOT, launcher=No
             _begin_recording(rect, launcher, window_hwnd=target_hwnd,
                              window_title=target_title)
         return None
-    if mode == SelectionOverlay.MODE_OCR:
+    if mode in (SelectionOverlay.MODE_OCR, SelectionOverlay.MODE_OCR_WINDOW):
         img = compose_region_from_shots(rect, shots)
         if not img.isNull():
             start_ocr(img, launcher)
@@ -4446,8 +4551,9 @@ class Launcher(QMainWindow):
         v.setContentsMargins(16, 16, 16, 16)
         title = QLabel(
             "<b>Скриншоты</b><br>"
-            "PrintScreen — выделить область. Режим (снимок / запись экрана / текст) — "
-            "панель сверху или Tab; снимок окна — «Окно», видео окна — «Запись окна»; отмена — ПКМ или Esc.<br>"
+            "PrintScreen — выбор действия (Скриншот / Запись экрана / Текст) "
+            "и объекта (Область / Окно). Tab — действие; Shift+Tab — объект; "
+            "ПКМ или Esc — отмена.<br>"
             "Shift+PrintScreen — сразу распознать текст в буфер обмена.<br>"
             "В редакторе: Ctrl+S — сохранить, Ctrl+C — копировать, PrintScreen — новый снимок."
         )
@@ -4949,6 +5055,8 @@ class _HookBridge(QObject):
             ov._cancel()
         elif vk == VK_TAB:
             ov.toggle_mode()
+        elif vk == -VK_TAB:
+            ov.toggle_target()
 
 
 class _WinHotkey(QAbstractNativeEventFilter):
@@ -5095,11 +5203,13 @@ class _WinHotkey(QAbstractNativeEventFilter):
                 if (SelectionOverlay.active is not None
                         and info.vkCode in (VK_ESCAPE, VK_TAB)
                         and not info.flags & LLKHF_INJECTED):
-                    # Слой выделения открыт: Esc — отмена, Tab — смена режима.
-                    # Глотаем и нажатие, и отпускание, чтобы клавиша не ушла в
-                    # окно под слоем.
+                    #НП: Tab — действие, Shift+Tab — объект. В низкоуровневом
+                    #НП: хуке Shift+Tab не приходит как отдельный Qt.Key_Backtab.
+                    #НП: Глотаем нажатие и отпускание, чтобы не менять чужое окно.
                     if int(w_param) in (WM_KEYDOWN, WM_SYSKEYDOWN):
-                        self._bridge.overlay_key.emit(int(info.vkCode))
+                        code = (-VK_TAB if info.vkCode == VK_TAB
+                                and self._shift_only_down() else int(info.vkCode))
+                        self._bridge.overlay_key.emit(code)
                     return 1
                 if (info.vkCode == VK_OEM_PRTSC_ALT and info.scanCode == 0
                         and not info.flags & LLKHF_INJECTED
