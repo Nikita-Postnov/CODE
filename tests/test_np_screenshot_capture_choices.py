@@ -155,14 +155,14 @@ class CaptureChoicesGuiTests(unittest.TestCase):
             ("ocr_window", "ocr"),
         ]
         for mode, expected in scenarios:
-            with self.subTest(mode=mode), \\
-                 patch.object(shot.SelectionOverlay, "__init__", init_overlay), \\
-                 patch.object(shot.SelectionOverlay, "shots", return_value=[]), \\
-                 patch.object(shot.SelectionOverlay, "dispose"), \\
-                 patch.object(shot, "_run_selection", return_value=area), \\
-                 patch.object(shot, "ffmpeg_path", return_value="ffmpeg.exe"), \\
-                 patch.object(shot, "compose_region_from_shots", return_value=img), \\
-                 patch.object(shot, "_begin_recording") as record, \\
+            with self.subTest(mode=mode), \
+                 patch.object(shot.SelectionOverlay, "__init__", init_overlay), \
+                 patch.object(shot.SelectionOverlay, "shots", return_value=[]), \
+                 patch.object(shot.SelectionOverlay, "dispose"), \
+                 patch.object(shot, "_run_selection", return_value=area), \
+                 patch.object(shot, "ffmpeg_path", return_value="ffmpeg.exe"), \
+                 patch.object(shot, "compose_region_from_shots", return_value=img), \
+                 patch.object(shot, "_begin_recording") as record, \
                  patch.object(shot, "start_ocr") as ocr:
                 result = shot.run_capture_flow(mode)
                 if expected == "image":
