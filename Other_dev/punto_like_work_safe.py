@@ -7,8 +7,9 @@
   локальные WinAPI-вызовы и постановка задач в очередь. Поэтому ввод в системе
   не тормозит, а Windows не снимает хук по LowLevelHooksTimeout.
 * worker — единственный поток, который выполняет действия: конвертацию,
-  автозамену, работу с буфером обмена, вставку из истории. Задачи идут строго
-  по очереди, поэтому отдельный мьютекс «busy» больше не нужен.
+  автозамену, работу с буфером обмена, вставку из истории. Очередь приоритетная:
+  ручные хоткеи выполняются раньше фонового захвата истории буфера, но все
+  операции с буфером остаются последовательными, без гонок.
 * idle — планировщик отложенной автозамены (один поток вместо threading.Timer
   на каждое нажатие клавиши).
 * tray — окно трея, его меню, слушатель буфера обмена (WM_CLIPBOARDUPDATE)
@@ -29,6 +30,7 @@ import gc
 import json
 import logging
 import operator
+import itertools
 import os
 import shutil
 import struct
@@ -41,7 +43,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
-from queue import Queue as _Queue, Empty as _QueueEmpty, Full as _QueueFull
+from queue import PriorityQueue as _PriorityQueue, Empty as _QueueEmpty, Full as _QueueFull
 from typing import Callable, Final, Generator, Literal, Optional
 from ctypes import wintypes
 
@@ -1165,7 +1167,8 @@ class _JobWorker:
 
     def __init__(self, name: str, max_queue: int = 128) -> None:
         self._name = name
-        self._q: _Queue[Optional[tuple[str, Callable[[], None], Optional[_SyncTicket]]]] = _Queue(maxsize=max_queue)
+        self._q: _PriorityQueue[tuple[int, int, Optional[tuple[str, Callable[[], None], Optional[_SyncTicket]]]]] = _PriorityQueue(maxsize=max_queue)
+        self._sequence = itertools.count()
         self._thread: Optional[threading.Thread] = None
         self._job_started_at: float = 0.0
         self._job_name: str = ""
@@ -1186,9 +1189,10 @@ class _JobWorker:
             return "", 0.0
         return name, time.monotonic() - started
 
-    def submit(self, name: str, fn: Callable[[], None]) -> bool:
+    def submit(self, name: str, fn: Callable[[], None], *, priority: int = 5) -> bool:
+        """Меньший priority — раньше. Сохраняем FIFO внутри уровня приоритета."""
         try:
-            self._q.put_nowait((name, fn, None))
+            self._q.put_nowait((priority, next(self._sequence), (name, fn, None)))
             return True
         except _QueueFull:
             logging.warning("%s: очередь заполнена, задача %s отброшена", self._name, name)
@@ -1205,7 +1209,7 @@ class _JobWorker:
             return False
         ticket = _SyncTicket()
         try:
-            self._q.put_nowait((name, fn, ticket))
+            self._q.put_nowait((0, next(self._sequence), (name, fn, ticket)))
         except _QueueFull:
             return False
         if ticket.done.wait(timeout):
@@ -1219,7 +1223,7 @@ class _JobWorker:
         if thread is None:
             return
         try:
-            self._q.put(None, timeout=0.5)
+            self._q.put((-1, next(self._sequence), None), timeout=0.5)
         except _QueueFull:
             pass
         thread.join(timeout)
@@ -1228,7 +1232,7 @@ class _JobWorker:
     def _run(self) -> None:
         _ensure_thread_message_queue()
         while True:
-            item = self._q.get()
+            _priority, _serial, item = self._q.get()
             if item is None:
                 break
             name, fn, ticket = item
@@ -3040,7 +3044,7 @@ def _request_clipboard_capture() -> None:
     if _is_paused or _capture_pending.is_set():
         return
     _capture_pending.set()
-    if not _worker.submit("clipboard-capture", _clipboard_capture_job):
+    if not _worker.submit("clipboard-capture", _clipboard_capture_job, priority=10):
         _capture_pending.clear()
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -4845,7 +4849,7 @@ def run_app() -> None:
         _worker.start()
         _idle.start()
         _start_tray_thread()
-        _worker.submit("clipboard-capture-initial", lambda: _capture_clipboard_to_history(_timings, force=True))
+        _worker.submit("clipboard-capture-initial", lambda: _capture_clipboard_to_history(_timings, force=True), priority=10)
         _install_keyboard_hook()
         _install_mouse_hook()
         _last_hook_event_time = time.monotonic()
