@@ -97,7 +97,9 @@ else:
 
 # ── корень Launcher: та же логика, что в Screenshot.py / noteapp/config.py ──
 def _is_launcher_dir(p: Path) -> bool:
-    return any((p / n).exists() for n in ("launcher_config.json", "Choice.exe", "Choice.pyw"))
+    return any((p / n).is_file() for n in (
+        "launcher_config.json", "Choice.exe", "Choice.pyw", "Choice.bat",
+    ))
 
 
 def _not_data_dir(p: Path) -> Path:
@@ -122,7 +124,7 @@ def launcher_root() -> Path:
 
 ROOT = launcher_root()
 RUNTIME_DIR = ROOT / "Runtime"
-UNDER_LAUNCHER = (ROOT / "Choice.exe").exists() or (ROOT / "Choice.pyw").exists()
+UNDER_LAUNCHER = _is_launcher_dir(ROOT)
 BASE_DIR = ROOT
 DATA_DIR = Path(os.environ.get("LAPTOPCARE_DATA") or ROOT / "Data" / APP_NAME)
 
@@ -334,12 +336,23 @@ class Settings:
         self.save()
 
     def save(self) -> None:
+        #НП: Сохраняем атомарно; даже при внезапном завершении старый JSON цел.
+        tmp = self.path.with_name(f".{self.path.name}.{uuid.uuid4().hex}.tmp")
         try:
-            tmp = self.path.with_suffix(".tmp")
-            tmp.write_text(json.dumps(self.data, ensure_ascii=False, indent=2), "utf-8")
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            payload = json.dumps(self.data, ensure_ascii=False, indent=2).encode("utf-8")
+            with tmp.open("wb") as out:
+                out.write(payload)
+                out.flush()
+                os.fsync(out.fileno())
             os.replace(tmp, self.path)
         except Exception:
             log.exception("Не удалось сохранить настройки")
+        finally:
+            try:
+                tmp.unlink(missing_ok=True)
+            except OSError:
+                pass
 
 
 def default_dev_roots() -> list[str]:
@@ -1260,6 +1273,8 @@ class PowerManager(QObject):
         self.has_overlay = overlay_supported()
         self.history: deque[str] = deque(maxlen=300)
         self._last_target: str | None = None
+        self._last_failed_target: str | None = None
+        self._last_failed_at = 0.0
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.tick)
         self.refresh_plans()
@@ -1309,6 +1324,8 @@ class PowerManager(QObject):
 
     def apply_settings(self) -> None:
         self._last_target = None
+        self._last_failed_target = None
+        self._last_failed_at = 0.0
         if self.settings["power_auto"]:
             self.timer.start(max(2, int(self.settings["power_interval_s"])) * 1000)
             self.tick()
@@ -1341,24 +1358,50 @@ class PowerManager(QObject):
             return
         if not target or target == self._last_target:
             return
-        self._last_target = target
+
+        #НП: После отказа Windows повторяем тот же профиль не чаще раза в 30 с.
+        #НП: Смена цели (например, сеть → батарея) применяется сразу.
+        now = time.monotonic()
+        if (target == self._last_failed_target
+                and now - self._last_failed_at < 30.0):
+            return
         try:
             self.apply_profile(target)
-            self._emit(f"{reason} → {self.profile_name(target)}")
         except Exception as e:
+            self._last_failed_target = target
+            self._last_failed_at = now
+            log.warning("Питание: не удалось применить %s: %s", target, e)
             self._emit(f"{reason}: не удалось применить «{self.profile_name(target)}»: {e}")
+            return
+
+        #НП: Запоминаем профиль только после успешного изменения параметров ОС.
+        self._last_target = target
+        self._last_failed_target = None
+        self._last_failed_at = 0.0
+        self._emit(f"{reason} → {self.profile_name(target)}")
 
     def apply_profile(self, pid: str) -> None:
+        if not isinstance(pid, str) or ":" not in pid:
+            raise ValueError("Некорректный профиль электропитания")
         kind, guid = pid.split(":", 1)
+        guid = guid.lower()
+        if _GUID_RE.fullmatch(guid) is None:
+            raise ValueError("Некорректный GUID профиля электропитания")
         if kind == "plan":
             code, out = run_cmd(["powercfg", "/setactive", guid], 30)
             if code != 0:
-                raise RuntimeError(out)
+                raise RuntimeError(out or f"powercfg завершился с кодом {code}")
         elif kind == "mode":
-            # ползунок режима работает поверх «Сбалансированной» схемы
+            if guid not in OVERLAY_MODES or not self.has_overlay:
+                raise ValueError("Этот режим электропитания не поддерживается Windows")
+            #НП: Без перехода на «Сбалансированную» ползунок может не работать.
             if any(g == BALANCED for g, _n, _a in self.plans):
-                run_cmd(["powercfg", "/setactive", BALANCED], 30)
+                code, out = run_cmd(["powercfg", "/setactive", BALANCED], 30)
+                if code != 0:
+                    raise RuntimeError(out or f"powercfg завершился с кодом {code}")
             set_overlay(guid)
+        else:
+            raise ValueError(f"Неизвестный тип профиля: {kind}")
 
     def add_hidden_plans(self) -> str:
         have = {g for g, _n, _a in self.plans}
@@ -1477,6 +1520,12 @@ def monitor_needs_process_details(
     return live_view or (journal_enabled and bool(reasons) and now - last_log >= 30)
 
 
+def monitor_poll_interval_s(live_view: bool, journal_enabled: bool, requested: int) -> int:
+    """При выключенном журнале и скрытой вкладке экономим ресурсы."""
+    interval = max(2, min(120, int(requested)))
+    return interval if live_view or journal_enabled else max(30, interval)
+
+
 class ProcMonitor(QObject):
     tick = Signal(object)
 
@@ -1485,14 +1534,23 @@ class ProcMonitor(QObject):
         self.settings = settings
         self.db_path = db_path
         self._stop = threading.Event()
+        self._wake = threading.Event()
         self._live_details = threading.Event()
         self._thread: threading.Thread | None = None
 
     def set_live_details(self, enabled: bool) -> None:
+        was_enabled = self._live_details.is_set()
         if enabled:
             self._live_details.set()
         else:
             self._live_details.clear()
+        if bool(enabled) != was_enabled:
+            self.request_refresh()
+
+    def request_refresh(self) -> None:
+        #НП: Переход на вкладку «Процессы» и изменение настроек будят монитор
+        #НП: сразу, даже если в фоне установлен увеличенный интервал ожидания.
+        self._wake.set()
 
     @property
     def running(self) -> bool:
@@ -1502,11 +1560,13 @@ class ProcMonitor(QObject):
         if psutil is None or self.running:
             return
         self._stop.clear()
+        self._wake.clear()
         self._thread = threading.Thread(target=self._run, name="procmon", daemon=True)
         self._thread.start()
 
     def stop(self) -> None:
         self._stop.set()
+        self._wake.set()
         if self._thread:
             self._thread.join(timeout=3)
 
@@ -1528,7 +1588,15 @@ class ProcMonitor(QObject):
             last_proc_t = last_t
             for p in psutil.process_iter(["cpu_percent"]):   # прогрев счётчиков CPU
                 pass
-            while not self._stop.wait(max(2, int(self.settings["mon_interval_s"]))):
+            while not self._stop.is_set():
+                interval = monitor_poll_interval_s(
+                    self._live_details.is_set(), bool(self.settings["mon_enabled"]),
+                    self.settings["mon_interval_s"],
+                )
+                self._wake.wait(interval)
+                self._wake.clear()
+                if self._stop.is_set():
+                    break
                 try:
                     now = time.time()
                     span = max(0.001, now - last_t)
@@ -2842,6 +2910,8 @@ class ProcTab(QWidget):
 
     def _set(self, key: str, value) -> None:
         self.s[key] = value
+        if key in ("mon_enabled", "mon_interval_s"):
+            self.mon.request_refresh()
 
     def install_psutil(self) -> None:
         cmd = pip_install_cmd(["psutil"])
