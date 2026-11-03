@@ -7,6 +7,7 @@ on:
       - "Other_dev/noteapp/**"
       - "Other_dev/notes_app.py"
       - "tests/test_np_notes_integrity.py"
+      - "tests/test_np_notes_hardening.py"
       - ".github/workflows/np-notes-integrity.yml"
   pull_request:
     branches: [main]
@@ -14,6 +15,7 @@ on:
       - "Other_dev/noteapp/**"
       - "Other_dev/notes_app.py"
       - "tests/test_np_notes_integrity.py"
+      - "tests/test_np_notes_hardening.py"
       - ".github/workflows/np-notes-integrity.yml"
 
 jobs:
@@ -30,5 +32,5 @@ jobs:
           python-version: "3.12"
       - name: Check Python syntax
         run: python -m compileall -q Other_dev/noteapp Other_dev/notes_app.py
-      - name: Validate backup, autosave, recurrence, plugins
-        run: python -m unittest -v tests/test_np_notes_integrity.py
+      - name: Validate backups, portability, autosave, plugins, attachments
+        run: python -m unittest -v tests.test_np_notes_integrity tests.test_np_notes_hardening
