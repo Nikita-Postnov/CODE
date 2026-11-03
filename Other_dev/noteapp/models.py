@@ -36,7 +36,6 @@ class Note:
         self.history = history if history is not None else []
         self.history_index = len(self.history) - 1 if self.history else -1
         self.reminder_repeat = reminder_repeat
-        self.reminder_pause_until = None
         self.reminder_anchor_day = None
         self.pinned = pinned
         self.password_manager = password_manager
@@ -57,7 +56,6 @@ class Note:
             "timestamp": self.timestamp,
             "reminder": self.reminder,
             "reminder_repeat": self.reminder_repeat,
-            "reminder_pause_until": self.reminder_pause_until,
             "reminder_anchor_day": self.reminder_anchor_day,
             "uuid": self.uuid,
             "password_manager": self.password_manager,
@@ -82,8 +80,6 @@ class Note:
             reminder_repeat=data.get("reminder_repeat", None),
             ignored_words=list(data.get("ignored_words") or []),
         )
-        pause_until = data.get("reminder_pause_until")
-        note.reminder_pause_until = pause_until if isinstance(pause_until, str) else None
         anchor = data.get("reminder_anchor_day")
         note.reminder_anchor_day = anchor if isinstance(anchor, int) and 1 <= anchor <= 31 else None
         note.pinned = data.get("pinned", False)

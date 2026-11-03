@@ -48,13 +48,6 @@ def parse_reminder_datetime(value: str | None) -> datetime | None:
         return None
 
 
-def reminder_pause_status(value: str | None, now: datetime) -> tuple[bool, datetime | None]:
-    pause_until = parse_reminder_datetime(value)
-    if pause_until is None or pause_until.tzinfo is not None:
-        return False, None
-    return pause_until > now, pause_until
-
-
 def next_reminder_datetime(due: datetime, now: datetime, repeat: str,
                            anchor_day: int | None = None) -> datetime | None:
     repeat = normalize_reminder_repeat(repeat)
@@ -94,10 +87,7 @@ class RemindersMixin:
         list_widget = QListWidget()
         notes_with_reminder = [n for n in self.notes if n.reminder]
         for note in notes_with_reminder:
-            paused, pause_until = reminder_pause_status(
-                getattr(note, "reminder_pause_until", None), datetime.now())
-            suffix = f" — пауза до {pause_until:%d.%m.%Y %H:%M}" if paused else ""
-            item = QListWidgetItem(f"{note.title} [{note.reminder}]{suffix}")
+            item = QListWidgetItem(f"{note.title} [{note.reminder}]")
             item.setData(Qt.UserRole, note)
             item.setCheckState(Qt.Unchecked)
             list_widget.addItem(item)
@@ -120,7 +110,6 @@ class RemindersMixin:
             if item.checkState() == Qt.Checked:
                 note.reminder = None
                 note.reminder_repeat = None
-                note.reminder_pause_until = None
                 self.save_note_to_file(note)
                 changed = True
         if changed:
@@ -140,7 +129,6 @@ class RemindersMixin:
         snooze5_btn = msg.addButton("Отложить 5 мин", QMessageBox.ActionRole)
         snooze15_btn = msg.addButton("Отложить 15 мин", QMessageBox.ActionRole)
         snooze60_btn = msg.addButton("Отложить 1 час", QMessageBox.ActionRole)
-        pause_btn = msg.addButton("Пауза до даты…", QMessageBox.ActionRole)
         msg.addButton("ОК", QMessageBox.RejectRole)
 
         msg.setWindowFlag(Qt.WindowStaysOnTopHint, True)
@@ -166,8 +154,6 @@ class RemindersMixin:
         elif clicked == snooze60_btn:
             _snooze(60)
             return True
-        elif clicked == pause_btn:
-            return self.pause_reminder_for_note(note)
         return False
 
     def check_reminders(self):
@@ -177,20 +163,6 @@ class RemindersMixin:
             due = parse_reminder_datetime(note.reminder)
             if due is None or due.tzinfo is not None or due > now:
                 continue
-            paused, pause_until = reminder_pause_status(
-                getattr(note, "reminder_pause_until", None), now)
-            if paused:
-                continue
-            if pause_until is not None:
-                note.reminder_pause_until = None
-                if normalize_reminder_repeat(note.reminder_repeat):
-                    following = next_reminder_datetime(
-                        due, now, note.reminder_repeat,
-                        getattr(note, "reminder_anchor_day", None))
-                    note.reminder = following.isoformat(timespec="seconds") if following else None
-                    self.save_note_to_file(note)
-                    changed = True
-                    continue
             if self.show_reminder_dialog(note):
                 self.save_note_to_file(note)
                 changed = True
@@ -233,7 +205,6 @@ class RemindersMixin:
         if dialog.exec() == QDialog.DialogCode.Accepted:
             dt = datetime_edit.dateTime()
             self.current_note.reminder = dt.toString(Qt.ISODate)
-            self.current_note.reminder_pause_until = None
             repeat_option = repeat_combo.currentText()
             if repeat_option == "Однократно":
                 self.current_note.reminder_repeat = None
@@ -287,7 +258,6 @@ class RemindersMixin:
         if dialog.exec() == QDialog.Accepted:
             dt = datetime_edit.dateTime()
             self.current_note.reminder = dt.toString(Qt.ISODate)
-            self.current_note.reminder_pause_until = None
             selected = repeat_combo.currentText()
             self.current_note.reminder_repeat = (
                 normalize_reminder_repeat(selected) or None
@@ -303,54 +273,9 @@ class RemindersMixin:
             self.current_note.reminder = None
             self.current_note.reminder_repeat = None
             self.current_note.reminder_anchor_day = None
-            self.current_note.reminder_pause_until = None
             self.save_note_to_file(self.current_note)
             self.refresh_notes_list()
             self.show_toast("Напоминание удалено")
-
-    def pause_reminder_for_note(self, note=None):
-        note = note or self.current_note
-        if not note or not note.reminder:
-            QMessageBox.warning(self, "Нет напоминания", "Сначала выберите заметку с напоминанием.")
-            return False
-        dialog = QDialog(self)
-        dialog.setWindowTitle("Приостановить напоминание")
-        layout = QFormLayout(dialog)
-        now = QDateTime.currentDateTime()
-        current = QDateTime.fromString(getattr(note, "reminder_pause_until", "") or "", Qt.ISODate)
-        dt_edit = QDateTimeEdit(current if current.isValid() and current > now else now.addDays(1))
-        dt_edit.setDisplayFormat("dd.MM.yyyy HH:mm")
-        dt_edit.setMinimumDateTime(now.addSecs(60))
-        dt_edit.setCalendarPopup(True)
-        layout.addRow("На паузе до:", dt_edit)
-        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        buttons.accepted.connect(dialog.accept)
-        buttons.rejected.connect(dialog.reject)
-        layout.addWidget(buttons)
-        if dialog.exec() != QDialog.Accepted:
-            return False
-        if dt_edit.dateTime() <= QDateTime.currentDateTime():
-            QMessageBox.warning(self, "Некорректная дата", "Укажите дату и время в будущем.")
-            return False
-        note.reminder_pause_until = dt_edit.dateTime().toString(Qt.ISODate)
-        self.save_note_to_file(note)
-        self.refresh_notes_list()
-        self.show_toast(f"Напоминание приостановлено до {dt_edit.dateTime().toString('dd.MM.yyyy HH:mm')}")
-        return True
-
-    def resume_reminder_for_note(self):
-        note = self.current_note
-        if not note or not note.reminder:
-            QMessageBox.warning(self, "Нет напоминания", "Сначала выберите заметку с напоминанием.")
-            return
-        if not getattr(note, "reminder_pause_until", None):
-            self.show_toast("Напоминание не приостановлено")
-            return
-        note.reminder_pause_until = None
-        self.save_note_to_file(note)
-        self.refresh_notes_list()
-        self.show_toast("Напоминание возобновлено")
-        QTimer.singleShot(0, self.check_reminders)
 
     def check_upcoming_reminders(self):
         self.check_reminders()
