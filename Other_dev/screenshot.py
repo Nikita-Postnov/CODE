@@ -1143,7 +1143,7 @@ class SelectionOverlay:
         self._origin_g = self._current_g = None
         self.selected_window_hwnd = None
         self.selected_window_title = ""
-        if self.mode in (self.MODE_WINDOW, self.MODE_RECORD_WINDOW):
+        if self.capture_target() == "window":
             self._hover_window_g = window_at_point(QCursor.pos(), self._windows)
         SelectionOverlay.active = self
         bar_pane = None
@@ -4176,7 +4176,7 @@ def run_capture_flow(initial_mode: str = SelectionOverlay.MODE_SHOT, launcher=No
             _begin_recording(rect, launcher, window_hwnd=target_hwnd,
                              window_title=target_title)
         return None
-    if mode == SelectionOverlay.MODE_OCR:
+    if mode in (SelectionOverlay.MODE_OCR, SelectionOverlay.MODE_OCR_WINDOW):
         img = compose_region_from_shots(rect, shots)
         if not img.isNull():
             start_ocr(img, launcher)
@@ -4551,8 +4551,9 @@ class Launcher(QMainWindow):
         v.setContentsMargins(16, 16, 16, 16)
         title = QLabel(
             "<b>Скриншоты</b><br>"
-            "PrintScreen — выделить область. Режим (снимок / запись экрана / текст) — "
-            "панель сверху или Tab; снимок окна — «Окно», видео окна — «Запись окна»; отмена — ПКМ или Esc.<br>"
+            "PrintScreen — выбор действия (Скриншот / Запись экрана / Текст) "
+            "и объекта (Область / Окно). Tab — действие; Shift+Tab — объект; "
+            "ПКМ или Esc — отмена.<br>"
             "Shift+PrintScreen — сразу распознать текст в буфер обмена.<br>"
             "В редакторе: Ctrl+S — сохранить, Ctrl+C — копировать, PrintScreen — новый снимок."
         )
