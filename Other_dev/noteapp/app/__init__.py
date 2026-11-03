@@ -3771,7 +3771,7 @@ class NotesApp(NotePersistenceMixin, PluginsMixin, RemindersMixin, TrayMixin, Au
                 names += f" и ещё {len(failures) - 5}"
             QMessageBox.warning(
                 self, "Не удалось прикрепить файлы",
-                f"Не удалось скопировать: {names}.\\nОригиналы файлов не изменены.",
+                f"Не удалось скопировать: {names}.\nОригиналы файлов не изменены.",
             )
 
     def closeEvent(self, event: QCloseEvent):
