@@ -4387,7 +4387,8 @@ def _handle_keyboard_event(msg: int, l_param: int) -> None:
 
     if _settings.select_word_chord and _swc_on_key_event(vk, is_keydown, is_keyup):
         logging.info("chord Ctrl+Alt+Shift -> select word under caret")
-        _worker.submit("select-word-chord", lambda: select_word_under_caret(_timings))
+        _worker.submit("select-word-chord", lambda: select_word_under_caret(_timings),
+                       priority=0)
 
     if is_keydown:
         _on_key_down(vk, fg_hwnd)
@@ -4777,6 +4778,43 @@ def _toggle_pause() -> None:
     logging.info("PAUSED" if _is_paused else "RESUMED")
 
 
+_HOTKEY_ACTION_MAX_WAIT_SECONDS: Final[float] = 3.0
+
+
+def _queue_hotkey_action(name: str, action: Callable[[], None]) -> bool:
+    """Приоритет ручной команды, привязка к исходному foreground и фокусу.
+
+    Если операция дошла до worker после переключения поля/окна, выполнять её
+    уже небезопасно: вместо изменения чужого текста пишем причину в журнал.
+    """
+    target_hwnd = _hwnd_value(user32.GetForegroundWindow())
+    focus_hwnd = _get_focused_control_hwnd()
+    enqueued_at = time.monotonic()
+
+    def guarded() -> None:
+        lag = time.monotonic() - enqueued_at
+        if _is_paused:
+            logging.info("Hotkey skipped: %s — paused after keypress", name)
+            return
+        if lag > _HOTKEY_ACTION_MAX_WAIT_SECONDS:
+            logging.warning("Hotkey skipped: %s — worker delay %.2f s", name, lag)
+            return
+        current_hwnd = _hwnd_value(user32.GetForegroundWindow())
+        if target_hwnd and current_hwnd != target_hwnd:
+            logging.info("Hotkey skipped: %s — foreground changed", name)
+            return
+        if focus_hwnd and _get_focused_control_hwnd() != focus_hwnd:
+            logging.info("Hotkey skipped: %s — focus changed", name)
+            return
+        logging.info("Hotkey executing: %s (queue delay %.3f s)", name, lag)
+        action()
+
+    accepted = _worker.submit(name, guarded, priority=0)
+    if not accepted:
+        logging.warning("Hotkey rejected: %s — worker queue full", name)
+    return accepted
+
+
 def _on_hotkey(hotkey_id: int) -> bool:
     """Обрабатывает WM_HOTKEY на главном потоке. False — пора выходить."""
     if hotkey_id == _HK_EXIT:
@@ -4785,31 +4823,32 @@ def _on_hotkey(hotkey_id: int) -> bool:
         _toggle_pause()
         return True
     if _is_paused:
+        logging.info("Hotkey ignored: id=%d — paused", hotkey_id)
         return True
 
     timings = _timings
     if hotkey_id == _HK_CLIPBOARD_PICKER:
         # Окно, в которое потом вставлять, запоминаем сейчас — до открытия Tk.
         target = _hwnd_value(user32.GetForegroundWindow())
-        _worker.submit("clipboard-picker", lambda: _prepare_clipboard_picker(target))
+        _worker.submit("clipboard-picker", lambda: _prepare_clipboard_picker(target),
+                       priority=0)
     elif hotkey_id == _HK_RULES_EDITOR:
         _ui.call(_open_rules_editor_window)
     elif hotkey_id == _HK_CONVERT_SELECTED:
         _idle.cancel()
-        _worker.submit("convert-selected", lambda: convert_selected_text(timings))
+        _queue_hotkey_action("convert-selected", lambda: convert_selected_text(timings))
     elif hotkey_id == _HK_CONVERT_BEFORE_CARET:
         _idle.cancel()
-        if not _worker.submit("convert-before-caret", lambda: convert_before_caret_text(timings)):
-            logging.warning("Ctrl+Ins: worker queue full, action not accepted")
+        _queue_hotkey_action("convert-before-caret", lambda: convert_before_caret_text(timings))
     elif hotkey_id == _HK_TOGGLE_CASE:
         _idle.cancel()
-        _worker.submit("toggle-case", lambda: toggle_case_selected_text(timings))
+        _queue_hotkey_action("toggle-case", lambda: toggle_case_selected_text(timings))
     elif hotkey_id == _HK_TOGGLE_CASE_BEFORE_CARET:
         _idle.cancel()
-        _worker.submit("toggle-case-before-caret", lambda: toggle_case_before_caret_text(timings))
+        _queue_hotkey_action("toggle-case-before-caret", lambda: toggle_case_before_caret_text(timings))
     elif hotkey_id == _HK_UNDO:
         _idle.cancel()
-        _worker.submit("undo-last-change", lambda: undo_last_change(timings))
+        _queue_hotkey_action("undo-last-change", lambda: undo_last_change(timings))
     return True
 
 # ═══════════════════════════════════════════════════════════════════════════════
