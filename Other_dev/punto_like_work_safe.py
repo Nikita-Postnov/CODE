@@ -2465,13 +2465,32 @@ def _clipboard_set_text(text: str, timings: Timings) -> None:
     _clipboard_mark_expected_sequence()
 
 def _wait_for_new_clipboard_text(old_seq: int, timings: Timings) -> Optional[str]:
+    """Ждём именно текст от Ctrl+C, а не только первое изменение буфера.
+
+    Chrome/Electron может сначала изменить sequence number, а CF_UNICODETEXT
+    отдать позже (delayed rendering), либо кратковременно удерживать буфер.
+    На первой пустой попытке прежний код завершался без преобразования.
+    """
     deadline = time.monotonic() + timings.copy_poll_timeout_seconds
+    observed_copy = False
     while time.monotonic() < deadline:
-        if int(user32.GetClipboardSequenceNumber()) != old_seq:
-            text = _clipboard_get_text(timings)
+        seq = int(user32.GetClipboardSequenceNumber())
+        if seq != old_seq:
+            observed_copy = True
+            #НП: Даже при временно пустом тексте снимок буфера восстанавливается.
             _clipboard_mark_expected_sequence()
-            return text
+            try:
+                copied = _clipboard_get_text(timings)
+            except OSError:
+                logging.debug("clipboard: text not yet accessible after Ctrl+C", exc_info=True)
+            else:
+                if copied:
+                    return copied
         time.sleep(timings.copy_poll_interval_seconds)
+    if observed_copy:
+        logging.info("clipboard: copy detected, but Unicode text unavailable before timeout")
+    else:
+        logging.info("clipboard: Ctrl+C did not update clipboard before timeout")
     return None
 
 # ═══════════════════════════════════════════════════════════════════════════════
