@@ -43,7 +43,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
-from queue import PriorityQueue as _PriorityQueue, Empty as _QueueEmpty, Full as _QueueFull
+from queue import Queue as _Queue, PriorityQueue as _PriorityQueue, Empty as _QueueEmpty, Full as _QueueFull
 from typing import Callable, Final, Generator, Literal, Optional
 from ctypes import wintypes
 
