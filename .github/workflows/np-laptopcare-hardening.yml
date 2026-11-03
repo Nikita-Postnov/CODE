@@ -29,4 +29,4 @@ jobs:
       - name: Check syntax
         run: python -m py_compile Other_dev/laptop_care.py Other_dev/test_laptop_care_monitor_policy.py Other_dev/test_laptop_care_hardening.py
       - name: Verify idle monitor, power failures and settings safety
-        run: python -m unittest discover -s Other_dev -p "test_laptop_care*.py" -v
+        run: python -m unittest -v Other_dev.test_laptop_care_monitor_policy Other_dev.test_laptop_care_hardening
