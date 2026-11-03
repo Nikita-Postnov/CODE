@@ -1223,7 +1223,7 @@ class _JobWorker:
         if thread is None:
             return
         try:
-            self._q.put((-1, next(self._sequence), None), timeout=0.5)
+            self._q.put((100, next(self._sequence), None), timeout=0.5)
         except _QueueFull:
             pass
         thread.join(timeout)
@@ -3030,9 +3030,13 @@ def _clipboard_history_snapshot() -> list[ClipboardItem]:
         return list(_clipboard_history)
 
 def _clipboard_capture_job() -> None:
-    _capture_pending.clear()
-    if not _is_paused:
-        _capture_clipboard_to_history(_timings)
+    #НП: Не создаём повторные тяжёлые задачи, пока ещё идёт чтение
+    #НП: предыдущего состояния буфера. Изменения отследит опрос трея.
+    try:
+        if not _is_paused:
+            _capture_clipboard_to_history(_timings)
+    finally:
+        _capture_pending.clear()
 
 def _request_clipboard_capture() -> None:
     """Вызывается из потока трея на WM_CLIPBOARDUPDATE. Схлопывает всплески.
