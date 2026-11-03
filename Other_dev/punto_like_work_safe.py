@@ -3180,29 +3180,54 @@ def _transform_run_before_caret_in_edit(
     return new_fragment, len(new_fragment) - (end - start)
 
 
+def _clipboard_capture_target_matches(foreground: int, focus: int) -> bool:
+    """Не отправляем стрелки/вставку в другое окно после задержки Chrome."""
+    current_foreground = _hwnd_value(user32.GetForegroundWindow())
+    if foreground and current_foreground != foreground:
+        logging.info("before-caret clipboard: foreground changed during copy; abort")
+        return False
+    if focus:
+        current_focus = _get_focused_control_hwnd()
+        if current_focus != focus:
+            logging.info("before-caret clipboard: focused control changed during copy; abort")
+            return False
+    return True
+
+
 def _transform_run_before_caret_via_clipboard(
     timings: Timings,
     transform: Callable[[str], str],
 ) -> Optional[str]:
-    """Не-Edit поля: Shift+Home → Ctrl+C → замена строки до каретки. Новый фрагмент или None."""
+    """Не-Edit поля: Shift+Home → Ctrl+C → преобразование строки до каретки."""
+    original_foreground = _hwnd_value(user32.GetForegroundWindow())
+    original_focus = _get_focused_control_hwnd()
     with _clipboard_guard(timings):
         old_seq = int(user32.GetClipboardSequenceNumber())
 
-        # Физически зажатый Ctrl от хоткея (Ctrl+Ins, Ctrl+F9) _press_combo_*
-        # отпускает сам — иначе вышло бы Ctrl+Shift+Home.
+        #НП: Ctrl от физического хоткея отпускаем перед Shift+Home,
+        #НП: иначе получится Ctrl+Shift+Home вместо выделения текущей строки.
         _press_combo_shift(VK_HOME, timings)
         time.sleep(max(0.03, timings.between_key_events_seconds * 2))
+        if not _clipboard_capture_target_matches(original_foreground, original_focus):
+            return None
         _press_combo_ctrl(VK_C, timings)
 
         selected = _wait_for_new_clipboard_text(old_seq, timings)
         if selected is None:
+            if not _clipboard_capture_target_matches(original_foreground, original_focus):
+                return None
+            logging.info("before-caret clipboard: first copy returned no text; retrying Ctrl+C")
             time.sleep(0.05)
             old_seq = int(user32.GetClipboardSequenceNumber())
             _press_combo_ctrl(VK_C, timings)
             selected = _wait_for_new_clipboard_text(old_seq, timings)
 
+        if not _clipboard_capture_target_matches(original_foreground, original_focus):
+            return None
+
         found = _transform_run_before_caret_text(selected, len(selected), transform) if selected else None
         if found is None:
+            logging.info("before-caret clipboard: no convertible text after copy")
             _collapse_selection_to_right()
             return None
 
