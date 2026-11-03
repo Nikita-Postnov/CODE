@@ -879,9 +879,12 @@ class SelectionOverlay:
 
         # ── события ──
         def event(self, e):
-            # Tab перехватываем до обработки фокуса: он переключает режим.
+            #НП: Tab меняет действие, Shift+Tab — объект (область/окно).
             if e.type() == QEvent.KeyPress and e.key() in (Qt.Key_Tab, Qt.Key_Backtab):
-                self.mgr.toggle_mode()
+                if e.key() == Qt.Key_Backtab or e.modifiers() & Qt.ShiftModifier:
+                    self.mgr.toggle_target()
+                else:
+                    self.mgr.toggle_mode()
                 return True
             return super().event(e)
 
@@ -889,12 +892,11 @@ class SelectionOverlay:
             if e.button() == Qt.LeftButton:
                 hit = self._bar_hit(e.position().toPoint())
                 if hit is not None:
-                    if hit in SelectionOverlay._MODES:
-                        self.mgr.set_mode(hit)
+                    if hit in SelectionOverlay._BAR_BUTTONS:
+                        self.mgr.choose_bar_button(hit)
                     return
                 g = e.globalPosition().toPoint()
-                if self.mgr.mode in (SelectionOverlay.MODE_WINDOW,
-                                     SelectionOverlay.MODE_RECORD_WINDOW):
+                if self.mgr.capture_target() == "window":
                     self.mgr._on_pick_window(g)
                     return
                 self.mgr._on_press(g)
@@ -910,8 +912,7 @@ class SelectionOverlay:
                 for p in self.mgr._panes:
                     p.update()
             else:
-                if self.mgr.mode in (SelectionOverlay.MODE_WINDOW,
-                                     SelectionOverlay.MODE_RECORD_WINDOW):
+                if self.mgr.capture_target() == "window":
                     self.mgr._on_window_hover(e.globalPosition().toPoint())
                 if self.has_bar:
                     over_bar = self._bar_hit(e.position().toPoint()) is not None
@@ -932,8 +933,7 @@ class SelectionOverlay:
             r_global: Optional[QRect] = None
             r_local = QRect()
             inter = QRect()
-            if self.mgr.mode in (SelectionOverlay.MODE_WINDOW,
-                                 SelectionOverlay.MODE_RECORD_WINDOW):
+            if self.mgr.capture_target() == "window":
                 r_global = self.mgr._hover_window_g
             elif self.mgr._origin_g is not None and self.mgr._current_g is not None:
                 r_global = QRect(self.mgr._origin_g, self.mgr._current_g).normalized()
@@ -941,7 +941,7 @@ class SelectionOverlay:
                 r_local = r_global.translated(-self.geometry().topLeft())
                 inter = r_local.intersected(self.rect())
 
-            if self._frozen is not None and self.mgr.mode != SelectionOverlay.MODE_RECORD:
+            if self._frozen is not None and self.mgr.capture_kind() != "record":
                 p.drawPixmap(self.rect(), self._frozen)
                 dim = QRegion(self.rect())
                 if not inter.isEmpty():
@@ -969,20 +969,18 @@ class SelectionOverlay:
                 p.drawLine(sr.left(), r_local.bottom(), sr.right(), r_local.bottom())
                 p.setPen(QPen(QColor(0, 0, 0, 200), 1))  # 1px, снаружи
                 p.drawRect(r_local.adjusted(-1, -1, 1, 1))
-                ocr = self.mgr.mode == SelectionOverlay.MODE_OCR
+                ocr = self.mgr.capture_kind() == "ocr"
                 frame = QColor(234, 67, 53) if record else (QColor(52, 168, 83) if ocr else QColor(255, 255, 255))
                 p.setPen(QPen(frame, 1))
                 p.drawRect(r_local)
                 p.setBrush(Qt.NoBrush)
                 info = f"{r_global.width()} x {r_global.height()}"
                 if record:
-                    info = "⏺ " + info
+                    info = "⏺ Запись · " + info
                 elif ocr:
-                    info = "🔤 " + info
-                elif self.mgr.mode == SelectionOverlay.MODE_WINDOW:
+                    info = "🔤 Текст · " + info
+                elif self.mgr.capture_target() == "window":
                     info = "▣ Окно · " + info
-                elif self.mgr.mode == SelectionOverlay.MODE_RECORD_WINDOW:
-                    info = "⏺ Запись окна · " + info
                 metrics = p.fontMetrics()
                 label_h = metrics.height() + 8
                 label_y = r_local.top() - label_h
