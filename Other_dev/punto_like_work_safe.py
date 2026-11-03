@@ -3030,13 +3030,11 @@ def _clipboard_history_snapshot() -> list[ClipboardItem]:
         return list(_clipboard_history)
 
 def _clipboard_capture_job() -> None:
-    #НП: Не создаём повторные тяжёлые задачи, пока ещё идёт чтение
-    #НП: предыдущего состояния буфера. Изменения отследит опрос трея.
-    try:
-        if not _is_paused:
-            _capture_clipboard_to_history(_timings)
-    finally:
-        _capture_pending.clear()
+    #НП: Снимаем флаг до чтения, чтобы следующее изменение буфера
+    #НП: во время захвата гарантированно поставило повторную задачу.
+    _capture_pending.clear()
+    if not _is_paused:
+        _capture_clipboard_to_history(_timings)
 
 def _request_clipboard_capture() -> None:
     """Вызывается из потока трея на WM_CLIPBOARDUPDATE. Схлопывает всплески.
