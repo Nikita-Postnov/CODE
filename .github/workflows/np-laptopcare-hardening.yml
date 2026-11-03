@@ -1,0 +1,32 @@
+name: NP LaptopCare hardening
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "Other_dev/laptop_care.py"
+      - "Other_dev/test_laptop_care*.py"
+      - ".github/workflows/np-laptopcare-hardening.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "Other_dev/laptop_care.py"
+      - "Other_dev/test_laptop_care*.py"
+      - ".github/workflows/np-laptopcare-hardening.yml"
+
+jobs:
+  laptopcare-tests:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Check syntax
+        run: python -m py_compile Other_dev/laptop_care.py Other_dev/test_laptop_care_monitor_policy.py Other_dev/test_laptop_care_hardening.py
+      - name: Verify idle monitor, power failures and settings safety
+        run: python -m unittest discover -s Other_dev -p "test_laptop_care*.py" -v
