@@ -6,6 +6,7 @@
 import os
 import json
 import re
+from html import escape as escape_html
 import sys
 import base64
 from uuid import uuid4
@@ -103,6 +104,7 @@ from noteapp.logging_setup import (
 from noteapp.utils import (
     strip_html, copy_default_icons, safe_folder_name,
 )
+from noteapp.attachments import copy_attachment_without_overwrite
 from noteapp.models import Note
 from noteapp.generators import NumberGenerator
 from noteapp.widgets.flow_layout import FlowLayout
@@ -3711,50 +3713,66 @@ class NotesApp(NotePersistenceMixin, PluginsMixin, RemindersMixin, TrayMixin, Au
     def dropEvent(self, event):
         if not self.current_note:
             return
+        saved = 0
+        failures = []
+        folder = NOTES_DIR / safe_folder_name(
+            self.current_note.title,
+            self.current_note.uuid,
+            self.current_note.timestamp,
+        )
         for url in event.mimeData().urls():
-            file_path = url.toLocalFile()
-            if os.path.isfile(file_path):
-                note_dir = os.path.join(
-                    NOTES_DIR,
-                    safe_folder_name(
-                        self.current_note.title,
-                        self.current_note.uuid,
-                        self.current_note.timestamp,
-                    ),
-                )
-                if not os.path.exists(note_dir):
-                    os.makedirs(note_dir)
-                filename = os.path.basename(file_path)
-                dest = os.path.join(note_dir, filename)
-                shutil.copy(file_path, dest)
-                if filename.lower().endswith(tuple(IMAGE_EXTENSIONS)):
-                    pixmap = QPixmap(dest)
-                    if not pixmap.isNull():
-                        buffer = QBuffer()
-                        buffer.open(QIODevice.WriteOnly)
-                        pixmap.save(buffer, "PNG")
-                        base64_data = base64.b64encode(buffer.data()).decode("utf-8")
-                        html_img = f'<img src="Data:image/png;base64,{base64_data}" width="200"><br>'
-                        cursor = self.text_edit.textCursor()
-                        cursor.movePosition(QTextCursor.End)
-                        self.text_edit.setTextCursor(cursor)
-                        self.text_edit.insertHtml(html_img)
-                        self.record_state_for_undo()
-                else:
-                    file_url = QUrl.fromLocalFile(os.path.abspath(dest)).toString()
+            source = Path(url.toLocalFile())
+            if not source.is_file():
+                continue
+            try:
+                destination = copy_attachment_without_overwrite(source, folder)
+            except (OSError, ValueError):
+                logging.exception("Не удалось прикрепить файл %s", source)
+                failures.append(source.name)
+                continue
+
+            saved += 1
+            filename = destination.name
+            if filename.lower().endswith(tuple(IMAGE_EXTENSIONS)):
+                pixmap = QPixmap(str(destination))
+                if not pixmap.isNull():
+                    buffer = QBuffer()
+                    buffer.open(QIODevice.WriteOnly)
+                    pixmap.save(buffer, "PNG")
+                    base64_data = base64.b64encode(buffer.data()).decode("utf-8")
+                    html_img = f'<img src="Data:image/png;base64,{base64_data}" width="200"><br>'
                     cursor = self.text_edit.textCursor()
                     cursor.movePosition(QTextCursor.End)
                     self.text_edit.setTextCursor(cursor)
-                    self.text_edit.insertHtml(f'📄 <a href="{file_url}">{filename}</a>')
-        try:
-            self.show_toast(
-                "Файлы прикреплены",
-                timeout_ms=1400,
-                anchor_widget=getattr(self, "attachments_scroll", None),
+                    self.text_edit.insertHtml(html_img)
+                    self.record_state_for_undo()
+            else:
+                file_url = QUrl.fromLocalFile(str(destination.resolve())).toString()
+                safe_url = escape_html(file_url, quote=True)
+                safe_name = escape_html(filename)
+                cursor = self.text_edit.textCursor()
+                cursor.movePosition(QTextCursor.End)
+                self.text_edit.setTextCursor(cursor)
+                self.text_edit.insertHtml(f'📄 <a href="{safe_url}">{safe_name}</a>')
+
+        if saved:
+            try:
+                self.show_toast(
+                    "Файлы прикреплены",
+                    timeout_ms=1400,
+                    anchor_widget=getattr(self, "attachments_scroll", None),
+                )
+            except Exception:
+                pass
+            self.save_note()
+        if failures:
+            names = ", ".join(failures[:5])
+            if len(failures) > 5:
+                names += f" и ещё {len(failures) - 5}"
+            QMessageBox.warning(
+                self, "Не удалось прикрепить файлы",
+                f"Не удалось скопировать: {names}.\\nОригиналы файлов не изменены.",
             )
-        except Exception:
-            pass
-        self.save_note()
 
     def closeEvent(self, event: QCloseEvent):
         self.save_settings()
