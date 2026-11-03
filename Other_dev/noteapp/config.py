@@ -11,7 +11,11 @@ from pathlib import Path
 
 
 def _is_launcher_dir(p: Path) -> bool:
-    return (p / "launcher_config.json").exists() or (p / "Choice.exe").exists()
+    #НП: Choice может запускаться без EXE, через переносимые .pyw/.bat.
+    return any(
+        (p / name).is_file()
+        for name in ("launcher_config.json", "Choice.exe", "Choice.pyw", "Choice.bat")
+    )
 
 
 def _not_data_dir(p: Path) -> Path:
