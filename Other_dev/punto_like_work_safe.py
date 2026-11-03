@@ -4414,6 +4414,13 @@ def _handle_keyboard_event(msg: int, l_param: int) -> None:
     if kb.dwExtraInfo == _INJECT_TAG:
         return  # наши собственные синтетические нажатия
     _keyboard_input_revision += 1
+
+    vk = int(kb.vkCode)
+    is_keydown = msg in (WM_KEYDOWN, WM_SYSKEYDOWN)
+    is_keyup = msg in (WM_KEYUP, WM_SYSKEYUP)
+    #НП: Счётчик физических комбинаций независим от паузы, исключений
+    #НП: и основной очереди. Он ничего не перехватывает и не выполняет.
+    _diagnose_raw_hotkey(vk, is_keydown, is_keyup)
     if _is_paused:
         return
 
@@ -4422,10 +4429,6 @@ def _handle_keyboard_event(msg: int, l_param: int) -> None:
         return  # хоткеи (RegisterHotKey) идут мимо хука и продолжают работать
     if _active_window_only and _allowed_hwnd and fg_hwnd != _allowed_hwnd:
         return
-
-    vk = int(kb.vkCode)
-    is_keydown = msg in (WM_KEYDOWN, WM_SYSKEYDOWN)
-    is_keyup = msg in (WM_KEYUP, WM_SYSKEYUP)
 
     if _settings.select_word_chord and _swc_on_key_event(vk, is_keydown, is_keyup):
         logging.info("chord Ctrl+Alt+Shift -> select word under caret")
@@ -4688,7 +4691,38 @@ _active_hotkeys: dict[int, tuple[int, HotkeyCombo]] = {}
 _desired_hotkeys: dict[int, HotkeyCombo] = {}
 _hotkey_names: dict[int, str] = {}
 _hotkey_hit_counts: dict[int, int] = {}
+#НП: Физические сочетания, увиденные LL-хуком, и сообщения WM_HOTKEY —
+#НП: разные этапы. Сравниваем их для точной локализации сбоя на Windows.
+_raw_hotkey_counts: dict[int, int] = {VK_INSERT: 0, VK_F9: 0}
+_raw_hotkey_pressed: set[int] = set()
+_RAW_HOTKEY_LABELS: Final[dict[int, str]] = {
+    VK_INSERT: "Ctrl+Ins", VK_F9: "Ctrl+F9",
+}
 _HOTKEY_RECOVERY_ID_OFFSET: Final[int] = 100
+
+
+def _diagnose_raw_hotkey(vk: int, keydown: bool, keyup: bool) -> None:
+    """Только учёт физической комбинации без изменения клавиатуры/текста."""
+    if vk not in _raw_hotkey_counts:
+        return
+    if keyup:
+        _raw_hotkey_pressed.discard(vk)
+        return
+    if not keydown or vk in _raw_hotkey_pressed:
+        return
+    _raw_hotkey_pressed.add(vk)
+    if not _is_any_vk_pressed(frozenset({VK_CONTROL, VK_LCONTROL, VK_RCONTROL})):
+        return
+    _raw_hotkey_counts[vk] += 1
+    logging.info(
+        "Raw hotkey detected: %s (keyboard hook count=%d, WM_HOTKEY count=%d)",
+        _RAW_HOTKEY_LABELS[vk],
+        _raw_hotkey_counts[vk],
+        _hotkey_hit_counts.get(
+            _HK_CONVERT_BEFORE_CARET if vk == VK_INSERT
+            else _HK_TOGGLE_CASE_BEFORE_CARET, 0,
+        ),
+    )
 
 
 def _register_available_hotkeys(definitions: list[tuple[int, list[HotkeyCombo], str]]) -> list[int]:
@@ -4775,6 +4809,16 @@ def _hotkey_diagnostic_lines() -> tuple[str, ...]:
             f"{name}: {current} ({state}; настроено {_format_hotkey(*preferred)}; "
             f"срабатываний {_hotkey_hit_counts.get(logical_id, 0)})"
         )
+    lines.append(
+        "Физические нажатия, увиденные клавиатурным хуком (с запуска): "
+        f"Ctrl+Ins={_raw_hotkey_counts[VK_INSERT]}, "
+        f"Ctrl+F9={_raw_hotkey_counts[VK_F9]}"
+    )
+    lines.append(
+        "Примечание: «зарегистрирован» означает успешный RegisterHotKey, "
+        "а «срабатываний» — полученные Windows-сообщения WM_HOTKEY. "
+        "Сравните оба счётчика после нажатия в Chrome."
+    )
     return tuple(lines)
 
 
