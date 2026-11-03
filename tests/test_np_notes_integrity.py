@@ -104,7 +104,7 @@ class TestReminders(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         namespace = {"datetime": datetime, "timedelta": timedelta, "monthrange": monthrange}
-        fns = ["normalize_reminder_repeat", "parse_reminder_datetime", "next_reminder_datetime"]
+        fns = ["normalize_reminder_repeat", "parse_reminder_datetime", "reminder_pause_status", "next_reminder_datetime"]
         nodes = [node_from(APP / "reminders.py", x) for x in fns]
         exec(compile(ast.fix_missing_locations(ast.Module(body=nodes, type_ignores=[])),
                      "<reminder-tests>", "exec"), namespace)
@@ -136,6 +136,29 @@ class TestReminders(unittest.TestCase):
                          datetime(2028, 2, 29, 9))
         self.assertEqual(f(datetime(2028, 2, 29, 9), datetime(2028, 2, 29, 10),
                            "monthly", 31), datetime(2028, 3, 31, 9))
+
+    def test_pause_status_and_invalid_values(self):
+        status = self.f["reminder_pause_status"]
+        now = datetime(2026, 11, 3, 12)
+        self.assertEqual(status("2026-11-04T10:30:00", now),
+                         (True, datetime(2026, 11, 4, 10, 30)))
+        self.assertEqual(status("2026-11-03T11:00:00", now),
+                         (False, datetime(2026, 11, 3, 11)))
+        self.assertEqual(status(None, now), (False, None))
+        self.assertEqual(status("invalid", now), (False, None))
+        self.assertEqual(status("2026-11-04T10:30:00+03:00", now), (False, None))
+
+    def test_pause_is_persisted_and_recurring_schedule_is_not_replaced(self):
+        model = (ROOT / "Other_dev" / "noteapp" / "models.py").read_text(encoding="utf-8")
+        reminder = (APP / "reminders.py").read_text(encoding="utf-8")
+        self.assertIn('"reminder_pause_until": self.reminder_pause_until', model)
+        self.assertIn('note.reminder_pause_until = pause_until', model)
+        self.assertIn('if paused:', reminder)
+        self.assertIn('if normalize_reminder_repeat(note.reminder_repeat):', reminder)
+        self.assertIn('note.reminder_pause_until = None', reminder)
+        ui = (APP / "__init__.py").read_text(encoding="utf-8")
+        self.assertIn('pause_reminder_button.clicked.connect(self.pause_reminder_for_note)', ui)
+        self.assertIn('resume_reminder_button.clicked.connect(self.resume_reminder_for_note)', ui)
 
     def test_iso_legacy_dates(self):
         f = self.f["parse_reminder_datetime"]
