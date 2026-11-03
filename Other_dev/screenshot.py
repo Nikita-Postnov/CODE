@@ -1033,21 +1033,71 @@ class SelectionOverlay:
         self._current_g: Optional[QPoint] = None
         self.selection_made = lambda rect: None
 
-    def bar_hint(self) -> str:
-        if self.mode in (self.MODE_WINDOW, self.MODE_RECORD_WINDOW):
-            action = "записи" if self.mode == self.MODE_RECORD_WINDOW else "снимка"
-            return f"Выбери окно для {action}: наведи и нажми ЛКМ · Esc — отмена"
-        if not self.record_available:
-            reason = self._record_unavailable_reason or "запись недоступна"
-            return f"{reason} · ПКМ / Esc — отмена"
-        return "Tab — сменить режим · ПКМ / Esc — отмена"
+    @classmethod
+    def mode_for_choice(cls, kind: str, target: str) -> Optional[str]:
+        """Режим выполнения определяется независимыми действием и объектом."""
+        return {
+            ("shot", "area"): cls.MODE_SHOT,
+            ("shot", "window"): cls.MODE_WINDOW,
+            ("record", "area"): cls.MODE_RECORD,
+            ("record", "window"): cls.MODE_RECORD_WINDOW,
+            ("ocr", "area"): cls.MODE_OCR,
+            ("ocr", "window"): cls.MODE_OCR_WINDOW,
+        }.get((kind, target))
 
-    def mode_enabled(self, mode: str) -> bool:
+    def capture_kind(self) -> str:
+        if self.mode in (self.MODE_RECORD, self.MODE_RECORD_WINDOW):
+            return "record"
+        if self.mode in (self.MODE_OCR, self.MODE_OCR_WINDOW):
+            return "ocr"
+        return "shot"
+
+    def capture_target(self) -> str:
+        return ("window" if self.mode in (
+            self.MODE_WINDOW, self.MODE_RECORD_WINDOW, self.MODE_OCR_WINDOW,
+        ) else "area")
+
+    def capture_button_enabled(self, key: str) -> bool:
+        group, _, choice = key.partition(":")
+        if group == "kind" and choice in self._ACTIONS:
+            return self.mode_enabled(self.mode_for_choice(choice, self.capture_target()))
+        if group == "target" and choice in self._TARGETS:
+            return self.mode_enabled(self.mode_for_choice(self.capture_kind(), choice))
+        return False
+
+    def choose_bar_button(self, key: str) -> None:
+        group, _, value = key.partition(":")
+        if group == "kind" and value in self._ACTIONS:
+            self.set_capture_kind(value)
+        elif group == "target" and value in self._TARGETS:
+            self.set_capture_target(value)
+
+    def set_capture_kind(self, kind: str) -> None:
+        mode = self.mode_for_choice(kind, self.capture_target())
+        if mode is not None:
+            self.set_mode(mode)
+
+    def set_capture_target(self, target: str) -> None:
+        mode = self.mode_for_choice(self.capture_kind(), target)
+        if mode is not None:
+            self.set_mode(mode)
+
+    def bar_hint(self) -> str:
+        if self.capture_target() == "window":
+            action = "Наведите на окно и нажмите ЛКМ"
+        else:
+            action = "Выделите область мышью"
+        if not self.record_available:
+            warning = self._record_unavailable_reason or "Запись недоступна"
+            return f"{action} · {warning} · Esc — отмена"
+        return f"{action} · Tab — действие · Shift+Tab — объект · Esc — отмена"
+
+    def mode_enabled(self, mode: Optional[str]) -> bool:
         if mode == self.MODE_RECORD:
             return self.record_available
         if mode == self.MODE_RECORD_WINDOW:
             return self.record_available and sys.platform.startswith("win")
-        if mode == self.MODE_OCR:
+        if mode in (self.MODE_OCR, self.MODE_OCR_WINDOW):
             return sys.platform.startswith("win")
         if mode == self.MODE_WINDOW:
             return sys.platform.startswith("win")
@@ -1058,22 +1108,32 @@ class SelectionOverlay:
             return
         if mode != self.mode:
             self.mode = mode
+            self.selected_window_hwnd = None
+            self.selected_window_title = ""
             self._hover_window_g = (
                 window_at_point(QCursor.pos(), self._windows)
-                if mode in (self.MODE_WINDOW, self.MODE_RECORD_WINDOW) else None
+                if self.capture_target() == "window" else None
             )
             for p in self._panes:
                 p.update()
 
     def toggle_mode(self) -> None:
+        """Tab: меняем действие, оставляя выбор объекта неизменным."""
         if self.switchable and self._origin_g is None:
-            modes = self._MODES
-            i = modes.index(self.mode) if self.mode in modes else 0
-            for step in range(1, len(modes) + 1):
-                candidate = modes[(i + step) % len(modes)]
-                if self.mode_enabled(candidate):
-                    self.set_mode(candidate)
+            current = self.capture_kind()
+            index = self._ACTIONS.index(current)
+            for step in range(1, len(self._ACTIONS) + 1):
+                candidate = self._ACTIONS[(index + step) % len(self._ACTIONS)]
+                mode = self.mode_for_choice(candidate, self.capture_target())
+                if self.mode_enabled(mode):
+                    self.set_mode(mode)
                     return
+
+    def toggle_target(self) -> None:
+        """Shift+Tab: меняем объект, оставляя действие неизменным."""
+        if self.switchable and self._origin_g is None:
+            target = "area" if self.capture_target() == "window" else "window"
+            self.set_capture_target(target)
 
     def shots(self) -> List[Tuple[QRect, QPixmap]]:
         """Замороженные кадры экранов: (логическая геометрия экрана, снимок)."""
