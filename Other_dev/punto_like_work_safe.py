@@ -4502,8 +4502,10 @@ def _emit_choice_health() -> None:
         hooks_ok = bool(_hook_handle and _mouse_hook_handle)
         busy_name, busy_for = _worker.current_job()
         worker_ok = worker_ok and busy_for < _WORKER_STUCK_WARN_SECONDS
-        ok = bool(hotkeys and worker_ok and idle_ok and hooks_ok)
+        ok = bool(hotkeys and worker_ok and idle_ok and hooks_ok and not _is_paused)
         reasons = []
+        if _is_paused:
+            reasons.append("NP Punto на паузе — горячие клавиши не выполняются")
         if not hotkeys:
             reasons.append("Основное сочетание горячей клавиши занято или не зарегистрировано")
         if not worker_ok:
