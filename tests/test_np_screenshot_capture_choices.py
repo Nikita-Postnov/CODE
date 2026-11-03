@@ -59,6 +59,16 @@ class CaptureChoicesGuiTests(unittest.TestCase):
                 record_available=ffmpeg,
             )
 
+    def test_global_hotkey_bridge_routes_tab_and_shift_tab_to_separate_groups(self):
+        overlay = Mock()
+        bridge = shot._HookBridge(lambda: None)
+        with patch.object(shot.SelectionOverlay, "active", overlay):
+            bridge._on_overlay_key(shot.VK_TAB)
+            bridge._on_overlay_key(-shot.VK_TAB)
+        overlay.toggle_mode.assert_called_once_with()
+        overlay.toggle_target.assert_called_once_with()
+        overlay._cancel.assert_not_called()
+
     def test_area_and_window_are_always_visible_and_area_selected_by_default(self):
         overlay = self.make_overlay()
         try:
