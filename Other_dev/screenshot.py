@@ -781,26 +781,49 @@ class SelectionOverlay:
 
         # ── панель режимов ──
         def _bar_layout(self) -> Tuple[QRect, List[Tuple[str, QRect]], QRect]:
-            """(вся панель, [(режим, кнопка)…], строка подсказки)."""
+            """Кнопки действия и объекта в двух подписанных группах."""
             fm = QFontMetrics(self._bar_font)
             fm_hint = QFontMetrics(self._hint_font)
-            pad_x, pad_y, gap, margin = 16, 7, 4, 6
-            labels = SelectionOverlay._MODE_LABELS
-            modes = SelectionOverlay._MODES
-            widths = [fm.horizontalAdvance(labels[m]) + 2 * pad_x for m in modes]
+            pad_x, pad_y, gap, margin, group_gap = 14, 7, 4, 8, 20
+            groups = (
+                SelectionOverlay._BAR_BUTTONS[:3],
+                SelectionOverlay._BAR_BUTTONS[3:],
+            )
+            labels = SelectionOverlay._BAR_LABELS
             h_btn = fm.height() + 2 * pad_y
+            widths = {
+                key: fm.horizontalAdvance(labels[key]) + 2 * pad_x
+                for group in groups for key in group
+            }
+            groups_width = [
+                sum(widths[key] for key in group) + gap * (len(group) - 1)
+                for group in groups
+            ]
+            buttons_w = sum(groups_width) + group_gap
             hint = self.mgr.bar_hint()
-            buttons_w = sum(widths) + gap * (len(widths) - 1)
             inner_w = max(buttons_w, fm_hint.horizontalAdvance(hint) + 8)
-            bar = QRect(0, 0, inner_w + 2 * margin, h_btn + fm_hint.height() + 3 * margin)
+            header_h = fm_hint.height() + 2
+            bar_h = header_h + h_btn + fm_hint.height() + 3 * margin
+            bar = QRect(0, 0, inner_w + 2 * margin, bar_h)
             bar.moveTopLeft(QPoint((self.width() - bar.width()) // 2, 16))
             x = bar.left() + margin + (inner_w - buttons_w) // 2
+            button_top = bar.top() + margin + header_h
             buttons: List[Tuple[str, QRect]] = []
-            for m, w in zip(modes, widths):
-                buttons.append((m, QRect(x, bar.top() + margin, w, h_btn)))
-                x += w + gap
-            top = buttons[0][1].bottom() + margin // 2 + 1
-            hint_rect = QRect(bar.left() + margin, top, inner_w, fm_hint.height() + 2)
+            for group_index, group in enumerate(groups):
+                for index, key in enumerate(group):
+                    w = widths[key]
+                    buttons.append((key, QRect(x, button_top, w, h_btn)))
+                    x += w
+                    if index + 1 < len(group):
+                        x += gap
+                if group_index + 1 < len(groups):
+                    x += group_gap
+            hint_rect = QRect(
+                bar.left() + margin,
+                button_top + h_btn + margin // 2,
+                inner_w,
+                fm_hint.height() + 2,
+            )
             return bar, buttons, hint_rect
 
         def _bar_visible(self) -> bool:
@@ -813,30 +836,45 @@ class SelectionOverlay:
             p.setBrush(QColor(32, 33, 36, 235))
             p.drawRoundedRect(bar, 10, 10)
             p.setFont(self._bar_font)
-            for mode, rect in buttons:
-                active = self.mgr.mode == mode
-                enabled = self.mgr.mode_enabled(mode)
-                bg = QColor(26, 115, 232) if active else QColor(60, 64, 67)
+            current_kind = self.mgr.capture_kind()
+            current_target = self.mgr.capture_target()
+            for key, rect in buttons:
+                selected = (
+                    (key == f"kind:{current_kind}")
+                    or (key == f"target:{current_target}")
+                )
+                enabled = self.mgr.capture_button_enabled(key)
+                bg = QColor(26, 115, 232) if selected else QColor(60, 64, 67)
                 if not enabled:
                     bg = QColor(48, 50, 53)
                 p.setPen(Qt.NoPen)
                 p.setBrush(bg)
                 p.drawRoundedRect(rect, 7, 7)
                 p.setPen(QColor(255, 255, 255) if enabled else QColor(130, 130, 130))
-                p.drawText(rect, Qt.AlignCenter, SelectionOverlay._MODE_LABELS[mode])
+                p.drawText(rect, Qt.AlignCenter, SelectionOverlay._BAR_LABELS[key])
+
             p.setFont(self._hint_font)
+            p.setPen(QColor(185, 192, 206))
+            action_buttons = [rect for key, rect in buttons if key.startswith("kind:")]
+            target_buttons = [rect for key, rect in buttons if key.startswith("target:")]
+            for caption, group in (("ДЕЙСТВИЕ", action_buttons),
+                                   ("ОБЪЕКТ", target_buttons)):
+                area = QRect(group[0].left(), bar.top() + 4,
+                             group[-1].right() - group[0].left() + 1,
+                             self._hint_font.pointSize() + 8)
+                p.drawText(area, Qt.AlignCenter, caption)
             p.setPen(QColor(200, 200, 200))
             p.drawText(hint_rect, Qt.AlignCenter, self.mgr.bar_hint())
             p.setRenderHint(QPainter.Antialiasing, False)
 
         def _bar_hit(self, pos: QPoint) -> Optional[str]:
-            """Режим — клик по кнопке, 'bar' — по панели, None — мимо."""
+            """Возвращает кнопку действия/объекта или 'bar' для пустой панели."""
             if not self._bar_visible():
                 return None
             bar, buttons, _hint = self._bar_layout()
-            for mode, rect in buttons:
+            for key, rect in buttons:
                 if rect.contains(pos):
-                    return mode
+                    return key
             return "bar" if bar.contains(pos) else None
 
         # ── события ──
