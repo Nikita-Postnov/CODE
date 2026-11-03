@@ -58,18 +58,20 @@ class JobPriorityTests(unittest.TestCase):
             release.set()
             worker.stop()
 
-    def test_clipboard_job_remains_pending_until_capture_finishes(self):
+    def test_clipboard_job_allows_new_event_to_be_queued_during_capture(self):
         punto._capture_pending.set()
         observed = []
 
         def capture(*args, **kwargs):
+            #НП: Пока worker читает старый буфер, новое изменение должно
+            #НП: иметь возможность поставить ещё одну задачу сохранения.
             observed.append(punto._capture_pending.is_set())
 
         try:
             with patch.object(punto, "_capture_clipboard_to_history", side_effect=capture), \
                  patch.object(punto, "_is_paused", False):
                 punto._clipboard_capture_job()
-            self.assertEqual(observed, [True])
+            self.assertEqual(observed, [False])
             self.assertFalse(punto._capture_pending.is_set())
         finally:
             punto._capture_pending.clear()
