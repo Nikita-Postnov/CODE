@@ -581,12 +581,28 @@ def center_on_screen(win: QWidget, prefer_cursor: bool = True):
     fg.moveCenter(geo.center())
     win.move(fg.topLeft())
 
+class CapturableWindow(tuple):
+    """Совместимая со снимками пара (заголовок, QRect) с HWND для записи видео."""
+
+    def __new__(cls, title: str, rect: QRect, hwnd: int):
+        entry = super().__new__(cls, (title, rect))
+        entry.hwnd = int(hwnd)
+        return entry
+
+
+def window_entry_at_point(point: QPoint, windows: List[Tuple[str, QRect]]):
+    """Верхнее подходящее окно вместе с HWND, если его предоставил Win32."""
+    for entry in windows:
+        rect = entry[1]
+        if rect.contains(point) and rect.width() >= 40 and rect.height() >= 30:
+            return entry
+    return None
+
+
 def window_at_point(point: QPoint, windows: List[Tuple[str, QRect]]) -> Optional[QRect]:
     """Возвращает первое подходящее окно; входной список упорядочен по Z-order."""
-    for _title, rect in windows:
-        if rect.contains(point) and rect.width() >= 40 and rect.height() >= 30:
-            return QRect(rect)
-    return None
+    entry = window_entry_at_point(point, windows)
+    return QRect(entry[1]) if entry is not None else None
 
 
 def _native_window_to_qt_rect(native_rect: QRect) -> QRect:
@@ -688,7 +704,7 @@ def list_capturable_windows() -> List[Tuple[str, QRect]]:
                 )
                 logical = _native_window_to_qt_rect(raw)
                 if logical.width() >= 40 and logical.height() >= 30:
-                    windows.append((name.value, logical))
+                    windows.append(CapturableWindow(name.value, logical, int(hwnd)))
             except (OSError, ValueError, RuntimeError, AttributeError):
                 log.debug("Не удалось прочитать геометрию окна", exc_info=True)
             return True
@@ -722,12 +738,15 @@ class SelectionOverlay:
     active: Optional["SelectionOverlay"] = None
     MODE_SHOT = "shot"
     MODE_RECORD = "record"
+    MODE_RECORD_WINDOW = "record_window"
     MODE_OCR = "ocr"
     MODE_WINDOW = "window"
-    _MODES = (MODE_SHOT, MODE_WINDOW, MODE_RECORD, MODE_OCR)
+    _MODES = (MODE_SHOT, MODE_WINDOW, MODE_RECORD, MODE_RECORD_WINDOW, MODE_OCR)
     _MODE_LABELS = {
         MODE_SHOT: "📷  Скриншот", MODE_WINDOW: "▣  Окно",
-        MODE_RECORD: "⏺  Запись экрана", MODE_OCR: "🔤  Текст",
+        MODE_RECORD: "⏺  Запись экрана",
+        MODE_RECORD_WINDOW: "⏺  Запись окна",
+        MODE_OCR: "🔤  Текст",
     }
 
     class _Pane(QWidget):
@@ -827,7 +846,8 @@ class SelectionOverlay:
                         self.mgr.set_mode(hit)
                     return
                 g = e.globalPosition().toPoint()
-                if self.mgr.mode == SelectionOverlay.MODE_WINDOW:
+                if self.mgr.mode in (SelectionOverlay.MODE_WINDOW,
+                                     SelectionOverlay.MODE_RECORD_WINDOW):
                     self.mgr._on_pick_window(g)
                     return
                 self.mgr._on_press(g)
@@ -843,7 +863,8 @@ class SelectionOverlay:
                 for p in self.mgr._panes:
                     p.update()
             else:
-                if self.mgr.mode == SelectionOverlay.MODE_WINDOW:
+                if self.mgr.mode in (SelectionOverlay.MODE_WINDOW,
+                                     SelectionOverlay.MODE_RECORD_WINDOW):
                     self.mgr._on_window_hover(e.globalPosition().toPoint())
                 if self.has_bar:
                     over_bar = self._bar_hit(e.position().toPoint()) is not None
@@ -864,7 +885,8 @@ class SelectionOverlay:
             r_global: Optional[QRect] = None
             r_local = QRect()
             inter = QRect()
-            if self.mgr.mode == SelectionOverlay.MODE_WINDOW:
+            if self.mgr.mode in (SelectionOverlay.MODE_WINDOW,
+                                 SelectionOverlay.MODE_RECORD_WINDOW):
                 r_global = self.mgr._hover_window_g
             elif self.mgr._origin_g is not None and self.mgr._current_g is not None:
                 r_global = QRect(self.mgr._origin_g, self.mgr._current_g).normalized()
@@ -889,7 +911,8 @@ class SelectionOverlay:
                 p.setCompositionMode(QPainter.CompositionMode_SourceOver)
 
             if r_global is not None and not inter.isEmpty():
-                record = self.mgr.mode == SelectionOverlay.MODE_RECORD
+                record = self.mgr.mode in (SelectionOverlay.MODE_RECORD,
+                                           SelectionOverlay.MODE_RECORD_WINDOW)
                 # направляющие от краёв выделения до краёв экрана
                 p.setPen(QPen(QColor(255, 255, 255, 80), 1, Qt.DashLine))
                 sr = self.rect()
@@ -911,6 +934,8 @@ class SelectionOverlay:
                     info = "🔤 " + info
                 elif self.mgr.mode == SelectionOverlay.MODE_WINDOW:
                     info = "▣ Окно · " + info
+                elif self.mgr.mode == SelectionOverlay.MODE_RECORD_WINDOW:
+                    info = "⏺ Запись окна · " + info
                 metrics = p.fontMetrics()
                 label_h = metrics.height() + 8
                 label_y = r_local.top() - label_h
@@ -938,6 +963,8 @@ class SelectionOverlay:
         self._frozen = frozen
         self._windows = list_capturable_windows() if sys.platform == "win32" else []
         self._hover_window_g: Optional[QRect] = None
+        self.selected_window_hwnd: Optional[int] = None
+        self.selected_window_title = ""
         self.switchable = switchable
         self.record_available = record_available
         self._record_unavailable_reason = record_unavailable_reason
@@ -962,8 +989,9 @@ class SelectionOverlay:
         self.selection_made = lambda rect: None
 
     def bar_hint(self) -> str:
-        if self.mode == self.MODE_WINDOW:
-            return "Наведите на окно и нажмите ЛКМ · Tab — режим · Esc — отмена"
+        if self.mode in (self.MODE_WINDOW, self.MODE_RECORD_WINDOW):
+            action = "записи" if self.mode == self.MODE_RECORD_WINDOW else "снимка"
+            return f"Выбери окно для {action}: наведи и нажми ЛКМ · Esc — отмена"
         if not self.record_available:
             reason = self._record_unavailable_reason or "запись недоступна"
             return f"{reason} · ПКМ / Esc — отмена"
@@ -972,6 +1000,8 @@ class SelectionOverlay:
     def mode_enabled(self, mode: str) -> bool:
         if mode == self.MODE_RECORD:
             return self.record_available
+        if mode == self.MODE_RECORD_WINDOW:
+            return self.record_available and sys.platform.startswith("win")
         if mode == self.MODE_OCR:
             return sys.platform.startswith("win")
         if mode == self.MODE_WINDOW:
@@ -985,7 +1015,7 @@ class SelectionOverlay:
             self.mode = mode
             self._hover_window_g = (
                 window_at_point(QCursor.pos(), self._windows)
-                if mode == self.MODE_WINDOW else None
+                if mode in (self.MODE_WINDOW, self.MODE_RECORD_WINDOW) else None
             )
             for p in self._panes:
                 p.update()
@@ -1006,7 +1036,9 @@ class SelectionOverlay:
 
     def begin(self):
         self._origin_g = self._current_g = None
-        if self.mode == self.MODE_WINDOW:
+        self.selected_window_hwnd = None
+        self.selected_window_title = ""
+        if self.mode in (self.MODE_WINDOW, self.MODE_RECORD_WINDOW):
             self._hover_window_g = window_at_point(QCursor.pos(), self._windows)
         SelectionOverlay.active = self
         bar_pane = None
@@ -1045,12 +1077,19 @@ class SelectionOverlay:
                 pane.update()
 
     def _on_pick_window(self, global_pos: QPoint) -> None:
-        candidate = window_at_point(global_pos, self._windows)
-        if candidate is None:
+        entry = window_entry_at_point(global_pos, self._windows)
+        if entry is None:
             return
+        if getattr(self, "mode", self.MODE_WINDOW) == self.MODE_RECORD_WINDOW:
+            hwnd = getattr(entry, "hwnd", None)
+            if not hwnd:
+                log.warning("Не удалось определить HWND выбранного окна для записи")
+                return
+            self.selected_window_hwnd = hwnd
+            self.selected_window_title = entry[0]
         self._hover_window_g = None
         self.hide()
-        self.selection_made(candidate)
+        self.selection_made(QRect(entry[1]))
 
     def _on_press(self, g: QPoint):
         self._origin_g = g
