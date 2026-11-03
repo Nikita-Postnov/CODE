@@ -1260,6 +1260,8 @@ class PowerManager(QObject):
         self.has_overlay = overlay_supported()
         self.history: deque[str] = deque(maxlen=300)
         self._last_target: str | None = None
+        self._last_failed_target: str | None = None
+        self._last_failed_at = 0.0
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.tick)
         self.refresh_plans()
@@ -1309,6 +1311,8 @@ class PowerManager(QObject):
 
     def apply_settings(self) -> None:
         self._last_target = None
+        self._last_failed_target = None
+        self._last_failed_at = 0.0
         if self.settings["power_auto"]:
             self.timer.start(max(2, int(self.settings["power_interval_s"])) * 1000)
             self.tick()
@@ -1341,24 +1345,50 @@ class PowerManager(QObject):
             return
         if not target or target == self._last_target:
             return
-        self._last_target = target
+
+        #НП: После отказа Windows повторяем тот же профиль не чаще раза в 30 с.
+        #НП: Смена цели (например, сеть → батарея) применяется сразу.
+        now = time.monotonic()
+        if (target == self._last_failed_target
+                and now - self._last_failed_at < 30.0):
+            return
         try:
             self.apply_profile(target)
-            self._emit(f"{reason} → {self.profile_name(target)}")
         except Exception as e:
+            self._last_failed_target = target
+            self._last_failed_at = now
+            log.warning("Питание: не удалось применить %s: %s", target, e)
             self._emit(f"{reason}: не удалось применить «{self.profile_name(target)}»: {e}")
+            return
+
+        #НП: Запоминаем профиль только после успешного изменения параметров ОС.
+        self._last_target = target
+        self._last_failed_target = None
+        self._last_failed_at = 0.0
+        self._emit(f"{reason} → {self.profile_name(target)}")
 
     def apply_profile(self, pid: str) -> None:
+        if not isinstance(pid, str) or ":" not in pid:
+            raise ValueError("Некорректный профиль электропитания")
         kind, guid = pid.split(":", 1)
+        guid = guid.lower()
+        if _GUID_RE.fullmatch(guid) is None:
+            raise ValueError("Некорректный GUID профиля электропитания")
         if kind == "plan":
             code, out = run_cmd(["powercfg", "/setactive", guid], 30)
             if code != 0:
-                raise RuntimeError(out)
+                raise RuntimeError(out or f"powercfg завершился с кодом {code}")
         elif kind == "mode":
-            # ползунок режима работает поверх «Сбалансированной» схемы
+            if guid not in OVERLAY_MODES or not self.has_overlay:
+                raise ValueError("Этот режим электропитания не поддерживается Windows")
+            #НП: Без перехода на «Сбалансированную» ползунок может не работать.
             if any(g == BALANCED for g, _n, _a in self.plans):
-                run_cmd(["powercfg", "/setactive", BALANCED], 30)
+                code, out = run_cmd(["powercfg", "/setactive", BALANCED], 30)
+                if code != 0:
+                    raise RuntimeError(out or f"powercfg завершился с кодом {code}")
             set_overlay(guid)
+        else:
+            raise ValueError(f"Неизвестный тип профиля: {kind}")
 
     def add_hidden_plans(self) -> str:
         have = {g for g, _n, _a in self.plans}
