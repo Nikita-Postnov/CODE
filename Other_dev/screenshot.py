@@ -581,12 +581,28 @@ def center_on_screen(win: QWidget, prefer_cursor: bool = True):
     fg.moveCenter(geo.center())
     win.move(fg.topLeft())
 
+class CapturableWindow(tuple):
+    """Совместимая со снимками пара (заголовок, QRect) с HWND для записи видео."""
+
+    def __new__(cls, title: str, rect: QRect, hwnd: int):
+        entry = super().__new__(cls, (title, rect))
+        entry.hwnd = int(hwnd)
+        return entry
+
+
+def window_entry_at_point(point: QPoint, windows: List[Tuple[str, QRect]]):
+    """Верхнее подходящее окно вместе с HWND, если его предоставил Win32."""
+    for entry in windows:
+        rect = entry[1]
+        if rect.contains(point) and rect.width() >= 40 and rect.height() >= 30:
+            return entry
+    return None
+
+
 def window_at_point(point: QPoint, windows: List[Tuple[str, QRect]]) -> Optional[QRect]:
     """Возвращает первое подходящее окно; входной список упорядочен по Z-order."""
-    for _title, rect in windows:
-        if rect.contains(point) and rect.width() >= 40 and rect.height() >= 30:
-            return QRect(rect)
-    return None
+    entry = window_entry_at_point(point, windows)
+    return QRect(entry[1]) if entry is not None else None
 
 
 def _native_window_to_qt_rect(native_rect: QRect) -> QRect:
@@ -688,7 +704,7 @@ def list_capturable_windows() -> List[Tuple[str, QRect]]:
                 )
                 logical = _native_window_to_qt_rect(raw)
                 if logical.width() >= 40 and logical.height() >= 30:
-                    windows.append((name.value, logical))
+                    windows.append(CapturableWindow(name.value, logical, int(hwnd)))
             except (OSError, ValueError, RuntimeError, AttributeError):
                 log.debug("Не удалось прочитать геометрию окна", exc_info=True)
             return True
@@ -722,12 +738,15 @@ class SelectionOverlay:
     active: Optional["SelectionOverlay"] = None
     MODE_SHOT = "shot"
     MODE_RECORD = "record"
+    MODE_RECORD_WINDOW = "record_window"
     MODE_OCR = "ocr"
     MODE_WINDOW = "window"
-    _MODES = (MODE_SHOT, MODE_WINDOW, MODE_RECORD, MODE_OCR)
+    _MODES = (MODE_SHOT, MODE_WINDOW, MODE_RECORD, MODE_RECORD_WINDOW, MODE_OCR)
     _MODE_LABELS = {
         MODE_SHOT: "📷  Скриншот", MODE_WINDOW: "▣  Окно",
-        MODE_RECORD: "⏺  Запись экрана", MODE_OCR: "🔤  Текст",
+        MODE_RECORD: "⏺  Запись экрана",
+        MODE_RECORD_WINDOW: "⏺  Запись окна",
+        MODE_OCR: "🔤  Текст",
     }
 
     class _Pane(QWidget):
@@ -827,7 +846,8 @@ class SelectionOverlay:
                         self.mgr.set_mode(hit)
                     return
                 g = e.globalPosition().toPoint()
-                if self.mgr.mode == SelectionOverlay.MODE_WINDOW:
+                if self.mgr.mode in (SelectionOverlay.MODE_WINDOW,
+                                     SelectionOverlay.MODE_RECORD_WINDOW):
                     self.mgr._on_pick_window(g)
                     return
                 self.mgr._on_press(g)
@@ -843,7 +863,8 @@ class SelectionOverlay:
                 for p in self.mgr._panes:
                     p.update()
             else:
-                if self.mgr.mode == SelectionOverlay.MODE_WINDOW:
+                if self.mgr.mode in (SelectionOverlay.MODE_WINDOW,
+                                     SelectionOverlay.MODE_RECORD_WINDOW):
                     self.mgr._on_window_hover(e.globalPosition().toPoint())
                 if self.has_bar:
                     over_bar = self._bar_hit(e.position().toPoint()) is not None
@@ -864,7 +885,8 @@ class SelectionOverlay:
             r_global: Optional[QRect] = None
             r_local = QRect()
             inter = QRect()
-            if self.mgr.mode == SelectionOverlay.MODE_WINDOW:
+            if self.mgr.mode in (SelectionOverlay.MODE_WINDOW,
+                                 SelectionOverlay.MODE_RECORD_WINDOW):
                 r_global = self.mgr._hover_window_g
             elif self.mgr._origin_g is not None and self.mgr._current_g is not None:
                 r_global = QRect(self.mgr._origin_g, self.mgr._current_g).normalized()
@@ -889,7 +911,8 @@ class SelectionOverlay:
                 p.setCompositionMode(QPainter.CompositionMode_SourceOver)
 
             if r_global is not None and not inter.isEmpty():
-                record = self.mgr.mode == SelectionOverlay.MODE_RECORD
+                record = self.mgr.mode in (SelectionOverlay.MODE_RECORD,
+                                           SelectionOverlay.MODE_RECORD_WINDOW)
                 # направляющие от краёв выделения до краёв экрана
                 p.setPen(QPen(QColor(255, 255, 255, 80), 1, Qt.DashLine))
                 sr = self.rect()
@@ -911,6 +934,8 @@ class SelectionOverlay:
                     info = "🔤 " + info
                 elif self.mgr.mode == SelectionOverlay.MODE_WINDOW:
                     info = "▣ Окно · " + info
+                elif self.mgr.mode == SelectionOverlay.MODE_RECORD_WINDOW:
+                    info = "⏺ Запись окна · " + info
                 metrics = p.fontMetrics()
                 label_h = metrics.height() + 8
                 label_y = r_local.top() - label_h
@@ -938,6 +963,8 @@ class SelectionOverlay:
         self._frozen = frozen
         self._windows = list_capturable_windows() if sys.platform == "win32" else []
         self._hover_window_g: Optional[QRect] = None
+        self.selected_window_hwnd: Optional[int] = None
+        self.selected_window_title = ""
         self.switchable = switchable
         self.record_available = record_available
         self._record_unavailable_reason = record_unavailable_reason
@@ -962,8 +989,9 @@ class SelectionOverlay:
         self.selection_made = lambda rect: None
 
     def bar_hint(self) -> str:
-        if self.mode == self.MODE_WINDOW:
-            return "Наведите на окно и нажмите ЛКМ · Tab — режим · Esc — отмена"
+        if self.mode in (self.MODE_WINDOW, self.MODE_RECORD_WINDOW):
+            action = "записи" if self.mode == self.MODE_RECORD_WINDOW else "снимка"
+            return f"Выбери окно для {action}: наведи и нажми ЛКМ · Esc — отмена"
         if not self.record_available:
             reason = self._record_unavailable_reason or "запись недоступна"
             return f"{reason} · ПКМ / Esc — отмена"
@@ -972,6 +1000,8 @@ class SelectionOverlay:
     def mode_enabled(self, mode: str) -> bool:
         if mode == self.MODE_RECORD:
             return self.record_available
+        if mode == self.MODE_RECORD_WINDOW:
+            return self.record_available and sys.platform.startswith("win")
         if mode == self.MODE_OCR:
             return sys.platform.startswith("win")
         if mode == self.MODE_WINDOW:
@@ -985,7 +1015,7 @@ class SelectionOverlay:
             self.mode = mode
             self._hover_window_g = (
                 window_at_point(QCursor.pos(), self._windows)
-                if mode == self.MODE_WINDOW else None
+                if mode in (self.MODE_WINDOW, self.MODE_RECORD_WINDOW) else None
             )
             for p in self._panes:
                 p.update()
@@ -1006,7 +1036,9 @@ class SelectionOverlay:
 
     def begin(self):
         self._origin_g = self._current_g = None
-        if self.mode == self.MODE_WINDOW:
+        self.selected_window_hwnd = None
+        self.selected_window_title = ""
+        if self.mode in (self.MODE_WINDOW, self.MODE_RECORD_WINDOW):
             self._hover_window_g = window_at_point(QCursor.pos(), self._windows)
         SelectionOverlay.active = self
         bar_pane = None
@@ -1045,12 +1077,19 @@ class SelectionOverlay:
                 pane.update()
 
     def _on_pick_window(self, global_pos: QPoint) -> None:
-        candidate = window_at_point(global_pos, self._windows)
-        if candidate is None:
+        entry = window_entry_at_point(global_pos, self._windows)
+        if entry is None:
             return
+        if getattr(self, "mode", self.MODE_WINDOW) == self.MODE_RECORD_WINDOW:
+            hwnd = getattr(entry, "hwnd", None)
+            if not hwnd:
+                log.warning("Не удалось определить HWND выбранного окна для записи")
+                return
+            self.selected_window_hwnd = hwnd
+            self.selected_window_title = entry[0]
         self._hover_window_g = None
         self.hide()
-        self.selection_made(candidate)
+        self.selection_made(QRect(entry[1]))
 
     def _on_press(self, g: QPoint):
         self._origin_g = g
@@ -4012,6 +4051,8 @@ def run_capture_flow(initial_mode: str = SelectionOverlay.MODE_SHOT, launcher=No
             rect = _run_selection(overlay)
             mode = overlay.mode
             shots = overlay.shots()
+            target_hwnd = overlay.selected_window_hwnd
+            target_title = overlay.selected_window_title
             log.info("capture: selection rect=%s mode=%s",
                      None if rect is None else rect.getRect(), mode)
         finally:
@@ -4024,6 +4065,11 @@ def run_capture_flow(initial_mode: str = SelectionOverlay.MODE_SHOT, launcher=No
     if mode == SelectionOverlay.MODE_RECORD:
         if rect.width() >= 4 and rect.height() >= 4:
             _begin_recording(rect, launcher)
+        return None
+    if mode == SelectionOverlay.MODE_RECORD_WINDOW:
+        if rect.width() >= 4 and rect.height() >= 4 and target_hwnd:
+            _begin_recording(rect, launcher, window_hwnd=target_hwnd,
+                             window_title=target_title)
         return None
     if mode == SelectionOverlay.MODE_OCR:
         img = compose_region_from_shots(rect, shots)
@@ -4401,7 +4447,7 @@ class Launcher(QMainWindow):
         title = QLabel(
             "<b>Скриншоты</b><br>"
             "PrintScreen — выделить область. Режим (снимок / запись экрана / текст) — "
-            "панель сверху или Tab; захват окна — режим «Окно»; отмена — ПКМ или Esc.<br>"
+            "панель сверху или Tab; снимок окна — «Окно», видео окна — «Запись окна»; отмена — ПКМ или Esc.<br>"
             "Shift+PrintScreen — сразу распознать текст в буфер обмена.<br>"
             "В редакторе: Ctrl+S — сохранить, Ctrl+C — копировать, PrintScreen — новый снимок."
         )
@@ -4416,6 +4462,9 @@ class Launcher(QMainWindow):
         btn_rec = QPushButton("Запись экрана")
         btn_rec.clicked.connect(self.start_recording)
         v.addWidget(btn_rec)
+        btn_window_rec = QPushButton("Запись отдельного окна")
+        btn_window_rec.clicked.connect(self.start_window_recording)
+        v.addWidget(btn_window_rec)
         btn_ocr = QPushButton("Распознать текст")
         btn_ocr.clicked.connect(self.make_ocr)
         v.addWidget(btn_ocr)
@@ -4532,6 +4581,8 @@ class Launcher(QMainWindow):
             "Отменить отложенный снимок", self.cancel_delayed_capture)
         self.act_tray_cancel_delayed.setVisible(False)
         self.act_tray_rec = m.addAction("Запись экрана", self.start_recording)
+        self.act_tray_window_rec = m.addAction(
+            "Запись отдельного окна", self.start_window_recording)
         self.act_tray_ocr = m.addAction("Распознать текст", self.make_ocr)
         self.act_tray_stop = m.addAction("⏹ Остановить запись", self._stop_recording)
         self.act_tray_stop.setVisible(False)
@@ -4638,13 +4689,26 @@ class Launcher(QMainWindow):
         self.hide()
         QTimer.singleShot(200, lambda: self._capture(SelectionOverlay.MODE_RECORD))
 
+    def start_window_recording(self):
+        if not sys.platform.startswith("win"):
+            QMessageBox.information(
+                self, "Запись окна", "Запись отдельного окна доступна в Windows.")
+            return
+        if not ffmpeg_path():
+            QMessageBox.warning(
+                self, "ffmpeg не найден",
+                "Для записи окна нужен ffmpeg.exe в папке Data или в PATH.")
+            return
+        self.hide()
+        QTimer.singleShot(200, lambda: self._capture(SelectionOverlay.MODE_RECORD_WINDOW))
+
     def set_recording_active(self, active: bool, hud=None):
         self._rec_hud = hud if active else None
         if hasattr(self, "act_tray_stop"):
             self.act_tray_stop.setVisible(bool(active))
         if active and hasattr(self, "tray"):
             self.tray.showMessage(
-                "Идёт запись экрана",
+                "Идёт запись видео",
                 "Останови кнопкой ■ Стоп на панели или пунктом «⏹ Остановить запись» в меню трея.",
                 QSystemTrayIcon.Information, 4000,
             )
@@ -5447,6 +5511,44 @@ def build_record_cmd(out: str, rect: QRect, fps: int,
     return a
 
 
+def build_window_record_cmd(out: str, hwnd: int, fps: int,
+                            audio_mode: str, audio_device: Optional[str],
+                            draw_mouse: bool = True) -> list[str]:
+    """Запись конкретного HWND: при перемещении окна захват следует за ним."""
+    if sys.platform != "win32" or not isinstance(hwnd, int) or hwnd <= 0:
+        raise ValueError("Для записи необходимо выбрать окно Windows")
+    ff = ffmpeg_path()
+    a = [ff, "-y", "-f", "gdigrab", "-framerate", str(fps),
+         "-draw_mouse", "1" if draw_mouse else "0", "-i", f"hwnd={hwnd}"]
+    if audio_mode in ("mic", "system") and audio_device:
+        a += ["-f", "dshow", "-i", f"audio={audio_device}",
+              "-c:a", "aac", "-b:a", "160k", "-map", "0:v", "-map", "1:a"]
+    #НП: У окон могут быть нечётные стороны; libx264 требует чётные размеры.
+    a += ["-vf", "pad=ceil(iw/2)*2:ceil(ih/2)*2",
+          "-c:v", "libx264", "-pix_fmt", "yuv420p",
+          "-preset", "veryfast", "-crf", "20",
+          "-g", str(fps), "-keyint_min", str(fps),
+          "-movflags", "+faststart", out]
+    return a
+
+
+def recordable_window_is_ready(hwnd: int) -> bool:
+    """Проверяет, что выбранное окно не закрыли и не свернули до начала записи."""
+    if sys.platform != "win32" or not hwnd:
+        return False
+    try:
+        user32 = ctypes.WinDLL("user32", use_last_error=True)
+        for name in ("IsWindow", "IsWindowVisible", "IsIconic"):
+            fn = getattr(user32, name)
+            fn.argtypes = [wintypes.HWND]
+            fn.restype = wintypes.BOOL
+        return (bool(user32.IsWindow(hwnd)) and
+                bool(user32.IsWindowVisible(hwnd)) and
+                not bool(user32.IsIconic(hwnd)))
+    except (OSError, AttributeError, ValueError):
+        return False
+
+
 def build_export_cmd(src: str, dst: str, t_in: float, t_out: float,
                     censors: List[dict], overlay_png: Optional[str],
                     native_wh: Tuple[int, int]) -> list[str]:
@@ -5527,9 +5629,12 @@ class RecordHUD(QWidget):
     finished = Signal(str)   # путь к готовому mp4
     cancelled = Signal()
 
-    def __init__(self, region: QRect, launcher=None):
+    def __init__(self, region: QRect, launcher=None, *,
+                 window_hwnd: Optional[int] = None, window_title: str = ""):
         super().__init__(None, Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
         self._launcher = launcher
+        self.window_hwnd = window_hwnd
+        self.window_title = window_title
         self.setAttribute(Qt.WA_TranslucentBackground, False)
         self.setAttribute(Qt.WA_DeleteOnClose, True)
         self.region = region
@@ -5543,6 +5648,10 @@ class RecordHUD(QWidget):
         root = QHBoxLayout(self)
         root.setContentsMargins(10, 6, 10, 6)
         root.setSpacing(8)
+
+        if self.window_hwnd:
+            self.setToolTip("Запись окна: " + self.window_title)
+            root.addWidget(QLabel("▣ " + (self.window_title[:35] or "Окно"), self))
 
         self.audio_combo = QComboBox(self)
         self.audio_combo.addItem("Без звука", ("none", None))
@@ -5601,10 +5710,18 @@ class RecordHUD(QWidget):
             QMessageBox.warning(self, "ffmpeg не найден",
                                 "Положи ffmpeg.exe в папку Data рядом с программой.")
             return
+        if self.window_hwnd and not recordable_window_is_ready(self.window_hwnd):
+            QMessageBox.warning(
+                self, "Окно недоступно",
+                "Выбранное окно закрыто или свёрнуто. Разверни его и выбери заново.")
+            return
         mode, dev = self.audio_combo.currentData()
         stamp = time.strftime("%Y-%m-%d_%H-%M-%S")
         self._out_path = str(_recordings_dir() / f"rec_{stamp}_{time.time_ns() % 1_000_000_000:09d}.mp4")
-        cmd = build_record_cmd(self._out_path, self.region, DEFAULT_FPS, mode, dev)
+        cmd = (build_window_record_cmd(self._out_path, self.window_hwnd,
+                                       DEFAULT_FPS, mode, dev)
+               if self.window_hwnd else
+               build_record_cmd(self._out_path, self.region, DEFAULT_FPS, mode, dev))
 
         self._proc = QProcess(self)
         if sys.platform.startswith("win"):
@@ -6348,9 +6465,12 @@ _active_huds: List["RecordHUD"] = []
 _open_video_editors: List[VideoEditorWindow] = []
 
 
-def _begin_recording(rect: QRect, parent_launcher=None) -> None:
-    """Панель записи (выбор звука, Старт/Стоп) для уже выделенной области."""
-    hud = RecordHUD(rect, launcher=parent_launcher)
+def _begin_recording(rect: QRect, parent_launcher=None, *,
+                     window_hwnd: Optional[int] = None,
+                     window_title: str = "") -> None:
+    """Панель записи (звук, Старт/Стоп) для области или выбранного окна."""
+    hud = RecordHUD(rect, launcher=parent_launcher,
+                    window_hwnd=window_hwnd, window_title=window_title)
     _active_huds.append(hud)   # держим ссылку, иначе GC уберёт панель
 
     def on_done(path: str):

@@ -88,7 +88,7 @@ class WindowSelectionTests(unittest.TestCase):
             self.assertTrue(overlay.mode_enabled(shot.SelectionOverlay.MODE_RECORD))
             self.assertTrue(overlay.mode_enabled(shot.SelectionOverlay.MODE_OCR))
         self.assertEqual(shot.SelectionOverlay._MODES,
-                         ("shot", "window", "record", "ocr"))
+                         ("shot", "window", "record", "record_window", "ocr"))
 
 
 class WindowModeGuiTests(unittest.TestCase):
