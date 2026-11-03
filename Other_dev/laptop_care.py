@@ -1507,6 +1507,12 @@ def monitor_needs_process_details(
     return live_view or (journal_enabled and bool(reasons) and now - last_log >= 30)
 
 
+def monitor_poll_interval_s(live_view: bool, journal_enabled: bool, requested: int) -> int:
+    """При выключенном журнале и скрытой вкладке экономим ресурсы."""
+    interval = max(2, min(120, int(requested)))
+    return interval if live_view or journal_enabled else max(30, interval)
+
+
 class ProcMonitor(QObject):
     tick = Signal(object)
 
@@ -1515,14 +1521,23 @@ class ProcMonitor(QObject):
         self.settings = settings
         self.db_path = db_path
         self._stop = threading.Event()
+        self._wake = threading.Event()
         self._live_details = threading.Event()
         self._thread: threading.Thread | None = None
 
     def set_live_details(self, enabled: bool) -> None:
+        was_enabled = self._live_details.is_set()
         if enabled:
             self._live_details.set()
         else:
             self._live_details.clear()
+        if bool(enabled) != was_enabled:
+            self.request_refresh()
+
+    def request_refresh(self) -> None:
+        #НП: Переход на вкладку «Процессы» и изменение настроек будят монитор
+        #НП: сразу, даже если в фоне установлен увеличенный интервал ожидания.
+        self._wake.set()
 
     @property
     def running(self) -> bool:
@@ -1532,11 +1547,13 @@ class ProcMonitor(QObject):
         if psutil is None or self.running:
             return
         self._stop.clear()
+        self._wake.clear()
         self._thread = threading.Thread(target=self._run, name="procmon", daemon=True)
         self._thread.start()
 
     def stop(self) -> None:
         self._stop.set()
+        self._wake.set()
         if self._thread:
             self._thread.join(timeout=3)
 
@@ -1558,7 +1575,15 @@ class ProcMonitor(QObject):
             last_proc_t = last_t
             for p in psutil.process_iter(["cpu_percent"]):   # прогрев счётчиков CPU
                 pass
-            while not self._stop.wait(max(2, int(self.settings["mon_interval_s"]))):
+            while not self._stop.is_set():
+                interval = monitor_poll_interval_s(
+                    self._live_details.is_set(), bool(self.settings["mon_enabled"]),
+                    self.settings["mon_interval_s"],
+                )
+                self._wake.wait(interval)
+                self._wake.clear()
+                if self._stop.is_set():
+                    break
                 try:
                     now = time.time()
                     span = max(0.001, now - last_t)
@@ -2872,6 +2897,8 @@ class ProcTab(QWidget):
 
     def _set(self, key: str, value) -> None:
         self.s[key] = value
+        if key in ("mon_enabled", "mon_interval_s"):
+            self.mon.request_refresh()
 
     def install_psutil(self) -> None:
         cmd = pip_install_cmd(["psutil"])
