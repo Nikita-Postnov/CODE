@@ -5055,6 +5055,8 @@ class _HookBridge(QObject):
             ov._cancel()
         elif vk == VK_TAB:
             ov.toggle_mode()
+        elif vk == -VK_TAB:
+            ov.toggle_target()
 
 
 class _WinHotkey(QAbstractNativeEventFilter):
@@ -5201,11 +5203,13 @@ class _WinHotkey(QAbstractNativeEventFilter):
                 if (SelectionOverlay.active is not None
                         and info.vkCode in (VK_ESCAPE, VK_TAB)
                         and not info.flags & LLKHF_INJECTED):
-                    # Слой выделения открыт: Esc — отмена, Tab — смена режима.
-                    # Глотаем и нажатие, и отпускание, чтобы клавиша не ушла в
-                    # окно под слоем.
+                    #НП: Tab — действие, Shift+Tab — объект. В низкоуровневом
+                    #НП: хуке Shift+Tab не приходит как отдельный Qt.Key_Backtab.
+                    #НП: Глотаем нажатие и отпускание, чтобы не менять чужое окно.
                     if int(w_param) in (WM_KEYDOWN, WM_SYSKEYDOWN):
-                        self._bridge.overlay_key.emit(int(info.vkCode))
+                        code = (-VK_TAB if info.vkCode == VK_TAB
+                                and self._shift_only_down() else int(info.vkCode))
+                        self._bridge.overlay_key.emit(code)
                     return 1
                 if (info.vkCode == VK_OEM_PRTSC_ALT and info.scanCode == 0
                         and not info.flags & LLKHF_INJECTED
