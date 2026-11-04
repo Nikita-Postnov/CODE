@@ -3661,7 +3661,42 @@ class EditorWindow(QMainWindow):
                     return p
         return None
 
+    @staticmethod
+    def _activate_existing_choice() -> bool:
+        if os.name != "nt":
+            return False
+        try:
+            user32 = ctypes.windll.user32
+            found = []
+            callback_type = ctypes.WINFUNCTYPE(ctypes.c_bool, wintypes.HWND, wintypes.LPARAM)
+
+            def inspect(hwnd, _):
+                length = user32.GetWindowTextLengthW(hwnd)
+                if length <= 0:
+                    return True
+                title = ctypes.create_unicode_buffer(length + 1)
+                user32.GetWindowTextW(hwnd, title, length + 1)
+                if title.value.strip() == "Choice" and user32.GetWindow(hwnd, 4) == 0:
+                    found.append(hwnd)
+                    return False
+                return True
+
+            callback = callback_type(inspect)
+            user32.EnumWindows(callback, 0)
+            if not found:
+                return False
+            hwnd = found[0]
+            user32.ShowWindow(hwnd, 9)
+            user32.BringWindowToTop(hwnd)
+            user32.SetForegroundWindow(hwnd)
+            return True
+        except (AttributeError, OSError, ValueError):
+            log.exception("Не удалось активировать существующее окно Choice")
+            return False
+
     def show_app_launcher(self) -> None:
+        if self._activate_existing_choice():
+            return
         p = self._find_launcher_candidate()
         if p is None:
             QMessageBox.warning(self, "Приложения", "Файл Choice не найден.")
@@ -3669,8 +3704,9 @@ class EditorWindow(QMainWindow):
 
         suffix = p.suffix.lower()
         if suffix in (".py", ".pyw"):
-            # Portable: лаунчер запускается своей копией pythonw — Runtime\Choice.exe
-            runner = p.parent / "Runtime" / "Choice.exe"
+            runner = p.parent / "Runtime" / "pythonw.exe"
+            if not runner.is_file():
+                runner = p.parent / "Runtime" / "python.exe"
             QProcess.startDetached(str(runner) if runner.is_file() else sys.executable, [str(p)])
         else:
             QProcess.startDetached(str(p), [])
