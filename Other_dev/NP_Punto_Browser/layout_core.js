@@ -130,14 +130,14 @@
             caret <= 0 || caret > text.length) return null;
         let cursor = caret - 1;
         while (cursor >= 0 && !lettersKind(text[cursor])) {
-            if (text[cursor] === "\\r" || text[cursor] === "\\n") return null;
+            if (text[cursor] === "\r" || text[cursor] === "\n") return null;
             cursor -= 1;
         }
         if (cursor < 0) return null;
         const sourceKind = lettersKind(text[cursor]);
         cursor -= 1;
         while (cursor >= 0 && caret - cursor <= 10000) {
-            if (text[cursor] === "\\r" || text[cursor] === "\\n") break;
+            if (text[cursor] === "\r" || text[cursor] === "\n") break;
             const kind = lettersKind(text[cursor]);
             if (kind && kind !== sourceKind) break;
             cursor -= 1;
