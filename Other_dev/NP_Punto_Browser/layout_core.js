@@ -11,6 +11,12 @@
         k: "л", l: "д", ";": "ж", "'": "э", z: "я", x: "ч", c: "с", v: "м",
         b: "и", n: "т", m: "ь", ",": "б", ".": "ю", "`": "ё",
     };
+    // Знаки Shift-клавиш в английской раскладке, отличающиеся от русской.
+    const enPunctuation = new Map(Object.entries({
+        "@": '"', "#": "№", "$": ";", "^": ":", "&": "?", "?": ",",
+        "|": "/", "~": "Ё", "{": "Х", "}": "Ъ", ":": "Ж",
+        '"': "Э", "<": "Б", ">": "Ю",
+    }));
     const enToRu = new Map(Object.entries(pairs));
     const ruToEn = new Map([...enToRu.entries()].map(([a, b]) => [b, a]));
     const defaultWords = [
@@ -26,6 +32,9 @@
         "понятно", "готово", "проверено", "тестирование", "применить",
         "выбрать", "выбери", "поменять", "изменить", "запомнить", "написать",
         "должно", "должен", "должна", "проект", "проектов", "программист",
+        "что", "как", "где", "это", "там", "вам", "нас", "для", "все", "уже",
+        "нет", "тут", "давай", "теперь", "умеет", "умею", "умеешь", "нормально",
+        "будет", "может", "такие", "после", "этого", "потом", "нужно",
         "hello", "thanks", "please", "welcome", "today", "tomorrow", "yesterday",
         "good", "morning", "evening", "working", "settings", "update",
         "message", "problem", "program", "keyboard", "language", "layout",
@@ -42,19 +51,26 @@
         const en = (text.match(/[a-z]/gi) || []).length;
         const ru = (text.match(/[а-яё]/gi) || []).length;
         if (en === 0 && ru === 0) return text;
-        const table = en > ru ? enToRu : ruToEn;
+        const englishSource = en > ru;
+        const table = englishSource ? enToRu : ruToEn;
         return [...text].map(char => {
             const mapped = table.get(char.toLowerCase());
-            return mapped === undefined ? char : char !== char.toLowerCase() ? mapped.toUpperCase() : mapped;
+            if (mapped !== undefined) {
+                return char !== char.toLowerCase() ? mapped.toUpperCase() : mapped;
+            }
+            // Для обычных знаков препинания без исправления раскладки
+            // сохраняем введённое значение. EN Shift-комбинации преобразуем
+            // только вместе с английскими буквами.
+            return englishSource ? (enPunctuation.get(char) ?? char) : char;
         }).join("");
     }
     function normalizeWords(value) {
         const items = Array.isArray(value) ? value : String(value || "").split(/\r?\n/u);
         return [...new Set(items.map(x => String(x).trim().toLowerCase())
-            .filter(word => word.length >= 4 && word.length <= 32 && lettersKind(word)))].slice(0, 5000);
+            .filter(word => word.length >= 3 && word.length <= 32 && lettersKind(word)))].slice(0, 5000);
     }
     function candidate(raw, words, previousWord = "") {
-        if (raw.length < 4 || raw.length > 32 || !lettersKind(raw)) return null;
+        if (raw.length < 3 || raw.length > 32 || !lettersKind(raw)) return null;
         const known = words instanceof Set ? words : new Set(normalizeWords(words));
         if (known.has(raw.toLowerCase())) return null;
         const converted = convertText(raw);
@@ -84,6 +100,15 @@
         if (!result || result.confidence < 0.95) return null;
         return { start, before: match[0], replacement: result.replacement, reason: result.reason };
     }
+    function correctedSeparator(character, sourceWord, replacement) {
+        // Преобразуем лишь явно отличающиеся физические Shift-клавиши,
+        // когда исправленное слово перешло из EN в RU.
+        if (lettersKind(sourceWord) === "en" && lettersKind(replacement) === "ru") {
+            return enPunctuation.get(character) ?? character;
+        }
+        return character;
+    }
+
     function isExcludedHost(hostname, values) {
         const host = String(hostname || "").toLowerCase();
         return (values || []).some(value => {
@@ -92,7 +117,7 @@
         });
     }
     return Object.freeze({
-        convertText, normalizeWords, candidate, findReplacement, isExcludedHost,
+        convertText, normalizeWords, candidate, findReplacement, correctedSeparator, isExcludedHost,
         lettersKind, defaultWords: Object.freeze(defaultWords.slice()),
     });
 });
