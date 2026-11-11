@@ -3362,8 +3362,15 @@ def _transform_run_before_caret_scintilla(
             old_seq = int(user32.GetClipboardSequenceNumber())
             _sendmsg(hwnd, _SCI_COPY)
             selected = _wait_for_new_clipboard_text(old_seq, timings)
+            if selected is None and target_unchanged():
+                # Некоторые Scintilla-плагины обрабатывают SCI_COPY не сразу.
+                # Пробуем обычный Ctrl+C только при неизменном фокусе.
+                logging.info("Scintilla: retry copying selected text via Ctrl+C")
+                old_seq = int(user32.GetClipboardSequenceNumber())
+                _press_combo_ctrl(VK_C, timings)
+                selected = _wait_for_new_clipboard_text(old_seq, timings)
             if not selected or not selected.strip() or len(selected) > timings.max_selected_length:
-                logging.info("Scintilla: no selected Unicode text from SCI_COPY")
+                logging.info("Scintilla: no selected Unicode text after copy")
                 return None
             if not target_unchanged():
                 return None
