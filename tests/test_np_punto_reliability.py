@@ -508,7 +508,8 @@ class RecoveryTests(unittest.TestCase):
         idle = Mock()
         idle._thread = Mock()
         idle._thread.is_alive.return_value = False
-        with patch.object(punto, "_worker", worker), patch.object(punto, "_idle", idle):
+        with patch.object(punto, "_worker", worker), patch.object(punto, "_idle", idle), \
+             patch.object(punto, "_space", idle):
             punto._watchdog_check_worker()
         worker.start.assert_called_once_with()
         idle.start.assert_called_once_with()
@@ -521,7 +522,8 @@ class RecoveryTests(unittest.TestCase):
         idle = Mock()
         idle._thread = Mock()
         idle._thread.is_alive.return_value = True
-        with patch.object(punto, "_worker", worker), patch.object(punto, "_idle", idle):
+        with patch.object(punto, "_worker", worker), patch.object(punto, "_idle", idle), \
+             patch.object(punto, "_space", idle):
             punto._watchdog_check_worker()
         worker.start.assert_not_called()
         idle.start.assert_not_called()
@@ -677,6 +679,7 @@ class ChoiceHealthTests(unittest.TestCase):
                  patch.object(punto, "_active_hotkeys", bindings), \
                  patch.object(punto, "_worker", worker), \
                  patch.object(punto, "_idle", idle), \
+                 patch.object(punto, "_space", idle), \
                  patch.object(punto, "_hook_handle", 1), \
                  patch.object(punto, "_mouse_hook_handle", 1):
                 punto._emit_choice_health()
