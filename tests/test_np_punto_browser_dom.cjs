@@ -149,3 +149,51 @@ test("ChatGPT-style correction is undoable through native editor insertion",()=>
     assert.equal(h.fireKey("Backspace",{altKey:true,shiftKey:true}),true);
     assert.equal(h.node.data,"xnj ntgthm evttn&");
 });
+
+test("Ctrl+Ins converts text before caret in a simple browser input",()=>{
+    const h=harness("ghbdtn");
+    assert.equal(h.fireKey("Insert",{ctrlKey:true}),true);
+    assert.equal(h.field.value,"привет");
+    assert.equal(h.field.selectionStart,6);
+    assert.equal(h.fireKey("Backspace",{altKey:true,shiftKey:true}),true);
+    assert.equal(h.field.value,"ghbdtn");
+});
+
+test("Ctrl+Ins converts text before caret inside ChatGPT-style editor",()=>{
+    const h=harness("xnj ntgthm evttn&",true);
+    assert.equal(h.fireKey("Insert",{ctrlKey:true}),true);
+    assert.equal(h.node.data,"что теперь умеет?");
+    assert.equal(h.fireKey("Backspace",{altKey:true,shiftKey:true}),true);
+    assert.equal(h.node.data,"xnj ntgthm evttn&");
+});
+
+test("Synthetic bridge shortcut works without a text selection",()=>{
+    const h=harness("ghbdtn",true);
+    assert.equal(h.fireKey("F8",{ctrlKey:true,altKey:true,shiftKey:true}),true);
+    assert.equal(h.node.data,"привет");
+});
+
+test("Ctrl+Ins converts selection instead of unrelated text",()=>{
+    const h=harness("привет ghbdtn");
+    h.field.selectionStart=7;
+    h.field.selectionEnd=13;
+    assert.equal(h.fireKey("Insert",{ctrlKey:true}),true);
+    assert.equal(h.field.value,"привет привет");
+});
+
+test("Ctrl+Ins is ignored in password fields and with ambiguous combinations",()=>{
+    const h=harness("ghbdtn");
+    h.field.type="password";
+    assert.equal(h.fireKey("Insert",{ctrlKey:true}),false);
+    assert.equal(h.field.value,"ghbdtn");
+    h.field.type="text";
+    assert.equal(h.fireKey("Insert",{ctrlKey:true,altKey:true}),false);
+    assert.equal(h.field.value,"ghbdtn");
+});
+
+test("Browser Ctrl+Ins stays local to current editor and prevents default only on success",()=>{
+    const h=harness("hello world");
+    // An existing English phrase changes only on an explicit manual request.
+    assert.equal(h.fireKey("Insert",{ctrlKey:true}),true);
+    assert.equal(h.field.value,"руддщ цщкдв");
+});
