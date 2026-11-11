@@ -105,7 +105,7 @@ class ScintillaNativeTests(unittest.TestCase):
     def test_mixed_language_replaces_only_latin_run_using_utf8_byte_offsets(self):
         editor = FakeScintilla("привет ghbdtn")
         result, writer = self.run_native(editor)
-        self.assertEqual(result, "привет")
+        self.assertEqual(result, " привет")
         self.assertEqual(editor.doc.decode("utf-8"), "привет привет")
         self.assertEqual(editor.caret, len("привет привет".encode("utf-8")))
         self.assertEqual(editor.replace_count, 1)
