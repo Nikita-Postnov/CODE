@@ -219,12 +219,8 @@
             const end = entry.start + entry.after.length;
             if (info.node.data.slice(entry.start, end) !== entry.after ||
                 info.range.startOffset !== end) return false;
-            info.node.replaceData(entry.start, entry.after.length, entry.before);
-            info.range.setStart(info.node, entry.start + entry.before.length);
-            info.range.collapse(true);
-            document.getSelection().removeAllRanges();
-            document.getSelection().addRange(info.range);
-            dispatchInput(field, entry.before);
+            if (entry.start < 0 || !replaceInEditable(
+                field, info, entry.start, end, entry.before)) return false;
         }
         lastChange = null;
         return true;
