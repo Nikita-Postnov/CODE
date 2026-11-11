@@ -126,18 +126,22 @@ class ScintillaTests(unittest.TestCase):
     def test_foreground_change_aborts_without_paste(self):
         windows = Mock()
         windows.GetForegroundWindow.side_effect = [7, 7, 99, 99]
+        windows.GetClipboardSequenceNumber.return_value = 100
         with patch.object(punto, "user32", windows), \
              patch.object(punto, "_get_focused_control_hwnd", return_value=42), \
-             patch.object(punto, "_scintilla_line_before_caret", return_value=(0,6)), \
+             patch.object(punto, "_scintilla_line_before_caret", return_value=(0, 6)), \
              patch.object(punto, "_clipboard_guard", clipboard_guard), \
-             patch.object(punto, "_sendmsg_ok") as send, \
+             patch.object(punto, "_sendmsg", return_value=0), \
+             patch.object(punto, "_sendmsg_ok", return_value=True) as send, \
+             patch.object(punto, "_wait_for_new_clipboard_text", return_value="ghbdtn"), \
              patch.object(punto, "_replace_selection_with_text") as replace:
             value = punto._transform_run_before_caret_scintilla(
                 42, punto.Timings(), punto.convert_keyboard_layout
             )
         self.assertIsNone(value)
         replace.assert_not_called()
-        send.assert_not_called()
+        send.assert_called_once_with(42, punto._SCI_SETSEL, 0, 6)
+
 
 
 if __name__ == "__main__":
