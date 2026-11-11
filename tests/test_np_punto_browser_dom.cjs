@@ -10,6 +10,7 @@ const script = fs.readFileSync(path.join(__dirname, "../Other_dev/NP_Punto_Brows
 
 function harness(initial, rich = false, overrides = {}) {
     const callbacks = new Map();
+    const pendingTimers = [];
     class HTMLElement {
         constructor() { this.isContentEditable = false; }
         closest(selector) {
@@ -83,6 +84,7 @@ function harness(initial, rich = false, overrides = {}) {
     const field = rich ? editor : new HTMLInputElement(initial);
     const context = {
         NPPuntoCore:core, chrome, document:doc, location:{hostname:"chatgpt.com"},
+        setTimeout:cb => {pendingTimers.push(cb);return pendingTimers.length;},
         HTMLElement, HTMLInputElement, HTMLTextAreaElement, InputEvent,
         Node:{TEXT_NODE:3}, Date, Object, String,
     };
@@ -113,7 +115,29 @@ function harness(initial, rich = false, overrides = {}) {
         for(const listener of callbacks.get("keydown") || []) listener(event);
         return prevented;
     }
-    return {field,node,selection,fire,fireKey};
+    function fireNative(separator) {
+        const wasPrevented = fire(separator);
+        if (wasPrevented) return true;
+        if (rich) {
+            const range = selection.getRangeAt(0);
+            const caret = range.startOffset;
+            node.data = node.data.slice(0, caret) + separator + node.data.slice(caret);
+            selection.addRange(new Range(node, caret + separator.length));
+        } else {
+            const caret = field.selectionStart;
+            field.setRangeText(separator, caret, caret);
+        }
+        const event = {
+            target:field, data:separator, inputType:"insertText",
+            isTrusted:true, isComposing:false, composedPath:()=>[field],
+        };
+        for (const listener of callbacks.get("input") || []) listener(event);
+        return false;
+    }
+    function flushTimers() {
+        while (pendingTimers.length) pendingTimers.shift()();
+    }
+    return {field,node,selection,fire,fireKey,fireNative,flushTimers};
 }
 
 test("Plain ChatGPT-like input corrects whole phrase on final punctuation",()=>{
@@ -252,4 +276,63 @@ test("Partial rule inside a larger word is not expanded",()=>{
     });
     assert.equal(h.fire(" "),false);
     assert.equal(h.field.value,"xbrb");
+});
+
+test("Real user case: saved ща - сейчас rule replaces text after native space in ChatGPT",()=>{
+    const h=harness("ща", true, {
+        enabled:false, rulesEnabled:true, rules:[{from:"ща",to:"сейчас"}],
+    });
+    assert.equal(h.fireNative(" "),false);
+    assert.equal(h.node.data,"ща ");
+    h.flushTimers();
+    assert.equal(h.node.data,"сейчас ");
+    assert.equal(h.selection.getRangeAt(0).startOffset,7);
+});
+
+test("Real user case: user rule corrects after native space in plain input",()=>{
+    const h=harness("ща", false, {
+        enabled:false, rulesEnabled:true, rules:[{from:"ща",to:"сейчас"}],
+    });
+    assert.equal(h.fireNative(" "),false);
+    h.flushTimers();
+    assert.equal(h.field.value,"сейчас ");
+});
+
+test("Post-input rule does not affect other words or force unsupported replacements",()=>{
+    const h=harness("пища", true, {
+        enabled:false, rulesEnabled:true, rules:[{from:"ща",to:"сейчас"}],
+    });
+    h.fireNative(" ");
+    h.flushTimers();
+    assert.equal(h.node.data,"пища ");
+});
+
+test("Post-input rules allow regular punctuation and preserve it exactly",()=>{
+    const h=harness("ща", true, {
+        enabled:false, rulesEnabled:true, rules:[{from:"ща",to:"сейчас"}],
+    });
+    h.fireNative("!");
+    h.flushTimers();
+    assert.equal(h.node.data,"сейчас!");
+});
+
+test("Changing field text before scheduled rule safely cancels pending action",()=>{
+    const h=harness("ща", false, {
+        enabled:false, rulesEnabled:true, rules:[{from:"ща",to:"сейчас"}],
+    });
+    h.fireNative(" ");
+    h.field.setRangeText("д",3,3);
+    h.flushTimers();
+    assert.equal(h.field.value,"ща д");
+});
+
+test("Post-input rich text correction remains undoable",()=>{
+    const h=harness("ща", true, {
+        enabled:false, rulesEnabled:true, rules:[{from:"ща",to:"сейчас"}],
+    });
+    h.fireNative(" ");
+    h.flushTimers();
+    assert.equal(h.node.data,"сейчас ");
+    assert.equal(h.fireKey("Backspace",{altKey:true,shiftKey:true}),true);
+    assert.equal(h.node.data,"ща ");
 });
