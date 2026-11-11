@@ -11,6 +11,7 @@
     };
     let settings = { ...defaults };
     let lastChange = null;
+    let applyingCorrection = false;
 
     function refresh() {
         chrome.storage.local.get(defaults, result => {
@@ -82,7 +83,8 @@
         const found = core.findReplacement(prefix, settings);
         if (!found) return false;
         const original = found.before + separator;
-        const replacement = found.replacement + separator;
+        const replacement = found.replacement +
+            core.correctedSeparator(separator, found.before, found.replacement);
         setPlainText(field, found.start, caret, replacement);
         saveUndo(field, found.start, original, replacement);
         return true;
@@ -98,6 +100,42 @@
         return { range, node };
     }
 
+    function replaceInEditable(editor, info, start, end, replacement, undoBefore = null) {
+        // Rich-text-редакторы (включая ProseMirror) требуют штатной команды ввода.
+        // Прямая замена TextNode не всегда обновляет их внутреннюю модель.
+        const { node, range } = info;
+        const previousText = node.data.slice(start, end);
+        const selection = document.getSelection();
+        const savedRange = range.cloneRange();
+        const replaceRange = range.cloneRange();
+        replaceRange.setStart(node, start);
+        replaceRange.setEnd(node, end);
+        selection.removeAllRanges();
+        selection.addRange(replaceRange);
+        let inserted = false;
+        try {
+            applyingCorrection = true;
+            inserted = document.execCommand("insertText", false, replacement) === true;
+        } catch (_error) {
+            inserted = false;
+        } finally {
+            applyingCorrection = false;
+            if (!inserted) {
+                selection.removeAllRanges();
+                selection.addRange(savedRange);
+            }
+        }
+        if (!inserted) return false;
+        const after = singleNodeSelection(editor);
+        if (after && after.range.collapsed) {
+            saveUndo(editor, after.range.startOffset - replacement.length,
+                undoBefore === null ? previousText : undoBefore, replacement, after.node);
+        } else {
+            lastChange = null;
+        }
+        return true;
+    }
+
     function autoReplaceEditable(editor, separator) {
         const info = singleNodeSelection(editor);
         if (!info || !info.range.collapsed) return false;
@@ -106,23 +144,17 @@
         const prefix = node.data.slice(0, caret);
         const found = core.findReplacement(prefix, settings);
         if (!found) return false;
-        const original = found.before + separator;
-        const replacement = found.replacement + separator;
-        node.replaceData(found.start, caret - found.start, replacement);
-        range.setStart(node, found.start + replacement.length);
-        range.collapse(true);
-        document.getSelection().removeAllRanges();
-        document.getSelection().addRange(range);
-        dispatchInput(editor, replacement);
-        saveUndo(editor, found.start, original, replacement, node);
-        return true;
+        const replacement = found.replacement +
+            core.correctedSeparator(separator, found.before, found.replacement);
+        return replaceInEditable(editor, info, found.start, caret, replacement, found.before + separator);
     }
 
     document.addEventListener("beforeinput", event => {
+        if (applyingCorrection) return;
         if (event.isTrusted) lastChange = null;
         if (!settings.enabled || event.defaultPrevented || event.isComposing ||
             event.inputType !== "insertText" || typeof event.data !== "string" ||
-            !/^[ .,!?;:]$/u.test(event.data)) return;
+            !/^[ .,!?;:&@#$^|~]$/u.test(event.data)) return;
         const field = editingTarget(event);
         if (!field) return;
         let didReplace = false;
@@ -157,13 +189,7 @@
         const source = node.data.slice(start, end);
         const converted = core.convertText(source);
         if (source === converted) return false;
-        node.replaceData(start, end - start, converted);
-        range.setStart(node, start + converted.length);
-        range.collapse(true);
-        document.getSelection().removeAllRanges();
-        document.getSelection().addRange(range);
-        dispatchInput(field, converted);
-        saveUndo(field, start, source, converted, node);
+        if (!replaceInEditable(field, info, start, end, converted)) return false;
         learn(source, converted);
         return true;
     }
@@ -171,7 +197,7 @@
     function learn(source, converted) {
         if (!settings.learnManual || !core.lettersKind(source) ||
             !core.lettersKind(converted) || converted.length < 4 ||
-            converted.length > 32 || source.length > 32) return;
+            converted.length > 32 || source.length > 32 || converted.length < 3) return;
         const word = converted.toLowerCase();
         const list = core.normalizeWords(settings.learnedWords);
         if (list.includes(word) || list.length >= 1000) return;
@@ -193,12 +219,8 @@
             const end = entry.start + entry.after.length;
             if (info.node.data.slice(entry.start, end) !== entry.after ||
                 info.range.startOffset !== end) return false;
-            info.node.replaceData(entry.start, entry.after.length, entry.before);
-            info.range.setStart(info.node, entry.start + entry.before.length);
-            info.range.collapse(true);
-            document.getSelection().removeAllRanges();
-            document.getSelection().addRange(info.range);
-            dispatchInput(field, entry.before);
+            if (entry.start < 0 || !replaceInEditable(
+                field, info, entry.start, end, entry.before)) return false;
         }
         lastChange = null;
         return true;
