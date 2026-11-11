@@ -115,17 +115,17 @@ function harness(initial, rich = false, overrides = {}) {
         for(const listener of callbacks.get("keydown") || []) listener(event);
         return prevented;
     }
-    function fireNative(separator) {
+    function fireNative(separator, domSeparator = separator) {
         const wasPrevented = fire(separator);
         if (wasPrevented) return true;
         if (rich) {
             const range = selection.getRangeAt(0);
             const caret = range.startOffset;
-            node.data = node.data.slice(0, caret) + separator + node.data.slice(caret);
-            selection.addRange(new Range(node, caret + separator.length));
+            node.data = node.data.slice(0, caret) + domSeparator + node.data.slice(caret);
+            selection.addRange(new Range(node, caret + domSeparator.length));
         } else {
             const caret = field.selectionStart;
-            field.setRangeText(separator, caret, caret);
+            field.setRangeText(domSeparator, caret, caret);
         }
         const event = {
             target:field, data:separator, inputType:"insertText",
@@ -340,4 +340,25 @@ test("Post-input rich text correction remains undoable",()=>{
     assert.equal(h.node.data,"сейчас ");
     assert.equal(h.fireKey("Backspace",{altKey:true,shiftKey:true}),true);
     assert.equal(h.node.data,"ща ");
+});
+
+test("Chrome contenteditable NBSP is accepted when Space generates U+00A0 in DOM",()=>{
+    const h=harness("ща", true, {
+        enabled:false, rulesEnabled:true, rules:[{from:"ща",to:"сейчас"}],
+    });
+    // InputEvent.data is a regular space, but contenteditable stores NBSP.
+    h.fireNative(" ", "\u00a0");
+    h.flushTimers();
+    assert.equal(h.node.data,"сейчас ");
+    assert.equal(h.fireKey("Backspace",{altKey:true,shiftKey:true}),true);
+    assert.equal(h.node.data,"ща\u00a0");
+});
+
+test("NBSP after user typing never triggers replacement without matching rule",()=>{
+    const h=harness("пища", true, {
+        enabled:false, rulesEnabled:true, rules:[{from:"ща",to:"сейчас"}],
+    });
+    h.fireNative(" ", "\u00a0");
+    h.flushTimers();
+    assert.equal(h.node.data,"пища\u00a0");
 });
