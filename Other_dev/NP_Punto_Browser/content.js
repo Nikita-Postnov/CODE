@@ -104,6 +104,7 @@
         // Rich-text-редакторы (включая ProseMirror) требуют штатной команды ввода.
         // Прямая замена TextNode не всегда обновляет их внутреннюю модель.
         const { node, range } = info;
+        const previousText = node.data.slice(start, end);
         const selection = document.getSelection();
         const savedRange = range.cloneRange();
         const replaceRange = range.cloneRange();
@@ -115,6 +116,8 @@
         try {
             applyingCorrection = true;
             inserted = document.execCommand("insertText", false, replacement) === true;
+        } catch (_error) {
+            inserted = false;
         } finally {
             applyingCorrection = false;
             if (!inserted) {
@@ -126,7 +129,7 @@
         const after = singleNodeSelection(editor);
         if (after && after.range.collapsed) {
             saveUndo(editor, after.range.startOffset - replacement.length,
-                node.data.slice(start, end), replacement, after.node);
+                previousText, replacement, after.node);
         } else {
             lastChange = null;
         }
