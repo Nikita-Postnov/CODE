@@ -93,3 +93,49 @@ test("Ctrl+Ins has safe line and caret boundaries", () => {
     assert.equal(found.start, 7);
     assert.equal(found.replacement, "привет");
 });
+
+test("User rules are independent of dictionary auto correction", () => {
+    const config = {
+        autoEnabled:false, rulesEnabled:true,
+        rules:[{from:"BRB",to:"be right back"}],
+    };
+    assert.deepEqual(core.findReplacement("brb",config), {
+        start:0,before:"brb",replacement:"be right back",reason:"rule",
+    });
+    assert.equal(core.findReplacement("ghbdtn", config), null);
+    assert.equal(core.findReplacement("BRB", {...config,rulesEnabled:false}), null);
+});
+
+test("User rule matching ignores case and does not expand within other words", () => {
+    const config = {
+        autoEnabled:false,
+        rules:[{from:"брб",to:"Буду рад помочь"}],
+    };
+    assert.equal(core.findReplacement("БРБ",config).replacement,"Буду рад помочь");
+    assert.equal(core.findReplacement("тестБРБ",config),null);
+    assert.equal(core.findReplacement("тест_БРБ",config),null);
+    assert.equal(core.findReplacement("тест2БРБ",config),null);
+    assert.equal(core.findReplacement("тест БРБ",config).replacement,"Буду рад помочь");
+});
+
+test("Most specific rule wins regardless of its position in the list", () => {
+    const config = {
+        autoEnabled:false,
+        rules:[
+            {from:"б",to:"one"}, {from:"аб",to:"two"}, {from:"АБ",to:"three"}
+        ],
+    };
+    assert.deepEqual(core.findReplacement("аб",config),{
+        start:0,before:"аб",replacement:"two",reason:"rule",
+    });
+    assert.equal(core.findReplacement("шаб",config),null);
+});
+
+test("Rules with different layouts preserve their literal replacement", () => {
+    const config = {
+        autoEnabled:false, rulesEnabled:true,
+        rules:[{from:"brb",to:"Скоро вернусь!"}],
+    };
+    assert.equal(core.findReplacement("brb",config).replacement,"Скоро вернусь!");
+    assert.equal(core.findReplacement("ghbdtn", {...config,autoEnabled:true}).replacement,"привет");
+});
