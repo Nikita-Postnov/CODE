@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NP Punto Browser — настройки</title>
+<style>
+:root { color-scheme: light dark; font-family: "Segoe UI", Arial, sans-serif; }
+body { max-width: 840px; padding: 22px; margin: 0 auto; line-height: 1.5; }
+h1 { font-size: 1.7rem; margin-bottom: 4px; }
+p { color: #6c6c6c; margin-top: 0; }
+fieldset { border: 1px solid #9996; border-radius: 9px; margin: 16px 0; padding: 15px; }
+label { display: block; margin: 10px 0; }
+textarea { font: 14px Consolas, monospace; width: 100%; box-sizing: border-box;
+  min-height: 110px; padding: 10px; resize: vertical; border-radius: 7px; border: 1px solid #999; }
+button { padding: 9px 20px; border: 1px solid #888; border-radius: 7px; cursor: pointer; }
+small { color: #777; display: block; }
+#status { min-height: 24px; margin-top: 10px; }
+</style>
+</head>
+<body>
+<h1>NP Punto Browser</h1>
+<p>Исправление работает локально. Вводимый текст не передаётся на сервер.</p>
+<fieldset><legend>Функции</legend>
+<label><input id="enabled" type="checkbox"> Автоматически исправлять после пробела или знака препинания</label>
+<label><input id="learn" type="checkbox"> Запоминать вручную исправленные слова в локальном словаре</label>
+<small>Оба режима изначально выключены. Ручное исправление выделения доступно всегда.</small>
+</fieldset>
+<fieldset><legend>Словарь известных слов</legend>
+<label for="words">По одному слову на строку. Можно вставить слова из Data/punto_like_layout_words.txt</label>
+<textarea id="words" rows="10" spellcheck="false"></textarea>
+</fieldset>
+<fieldset><legend>Сайты-исключения</legend>
+<label for="hosts">По одному домену на строку (например: example.org)</label>
+<textarea id="hosts" rows="4" spellcheck="false"></textarea>
+</fieldset>
+<fieldset><legend>Пользовательские правила</legend>
+<label for="rules">По одному правилу на строку: сокращение =&gt; полный текст</label>
+<textarea id="rules" rows="6" spellcheck="false"></textarea>
+<small>Правила применяются раньше словаря, только при явном включении автоматического режима.</small>
+</fieldset>
+<button type="button" id="save">Сохранить настройки</button>
+<button type="button" id="clear">Очистить выученные слова</button>
+<div id="status" role="status" aria-live="polite"></div>
+<p style="margin-top:20px">
+<strong>Горячие клавиши:</strong> Ctrl+Alt+Shift+F8 — исправить выделение,
+Alt+Shift+Backspace — отменить последнее исправление в том же поле.
+</p>
+<script src="layout_core.js"></script>
+<script src="options.js"></script>
+</body>
+</html>
