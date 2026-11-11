@@ -154,12 +154,50 @@ class ClipboardTests(unittest.TestCase):
         api.EmptyClipboard.assert_not_called()
 
 
+class EnhancedSettingsTests(unittest.TestCase):
+    def test_excluded_exes_are_normalized_and_learn_is_opt_in(self):
+        values = punto._settings_to_dict(punto.Settings())
+        self.assertFalse(values["learn_manual_corrections"])
+        self.assertIn("code.exe", values["auto_excluded_exes"])
+        settings, warnings = punto._settings_from_dict({
+            "learn_manual_corrections": True,
+            "auto_excluded_exes": ["CODE.EXE", "notepad.exe"],
+        })
+        self.assertFalse(warnings)
+        self.assertTrue(settings.learn_manual_corrections)
+        self.assertEqual(settings.auto_excluded_exes, ("code.exe", "notepad.exe"))
+
+    def test_invalid_learn_setting_is_safe(self):
+        result, warnings = punto._settings_from_dict({
+            "learn_manual_corrections": "yes", "auto_excluded_exes": ["noexe"]})
+        self.assertFalse(result.learn_manual_corrections)
+        self.assertIn("code.exe", result.auto_excluded_exes)
+        self.assertEqual(len(warnings), 2)
+
+    def test_manual_learning_respects_opt_in(self):
+        with tempfile.TemporaryDirectory() as directory, \
+             patch.object(punto, "DATA_DIR", Path(directory)), \
+             patch.object(punto, "_layout_words", frozenset()), \
+             patch.object(punto, "_settings", punto.Settings(learn_manual_corrections=True)):
+            punto._learn_manual_word("ghbdtn", "привет")
+            self.assertIn("привет", punto._load_learned_words())
+            punto._learn_manual_word("1234", "секрет")
+            self.assertEqual(punto._load_learned_words(), frozenset({"привет"}))
+        with tempfile.TemporaryDirectory() as directory, \
+             patch.object(punto, "DATA_DIR", Path(directory)), \
+             patch.object(punto, "_layout_words", frozenset()), \
+             patch.object(punto, "_settings", punto.Settings()):
+            punto._learn_manual_word("ghbdtn", "привет")
+            self.assertFalse((Path(directory) / "punto_like_learned_words.txt").exists())
+
+
 class KeyboardTests(unittest.TestCase):
     def test_space_is_scheduled_after_target_has_processed_character(self):
         worker = Mock()
         idle = Mock()
         with patch.object(punto, "_worker", worker), \
              patch.object(punto, "_idle", idle), \
+             patch.object(punto, "_space", idle), \
              patch.object(punto, "_settings", punto.Settings(auto_layout_correction=True)), \
              patch.object(punto, "_get_focused_control_hwnd", return_value=17), \
              patch.object(punto, "_is_text_input_focus", return_value=True), \
@@ -179,6 +217,7 @@ class KeyboardTests(unittest.TestCase):
         api.GetForegroundWindow.return_value = 45
         with patch.object(punto, "user32", api), \
              patch.object(punto, "_idle", idle), \
+             patch.object(punto, "_space", idle), \
              patch.object(punto, "_settings", punto.Settings(auto_layout_correction=True)), \
              patch.object(punto, "_get_focused_control_hwnd", return_value=17), \
              patch.object(punto, "_is_text_input_focus", return_value=True), \
@@ -201,6 +240,7 @@ class KeyboardTests(unittest.TestCase):
         api.GetForegroundWindow.return_value = 45
         with patch.object(punto, "user32", api), \
              patch.object(punto, "_idle", idle), \
+             patch.object(punto, "_space", idle), \
              patch.object(punto, "_settings", punto.Settings(auto_layout_correction=True)), \
              patch.object(punto, "_get_focused_control_hwnd", return_value=17), \
              patch.object(punto, "_is_text_input_focus", return_value=True), \
@@ -226,6 +266,7 @@ class KeyboardTests(unittest.TestCase):
         current = punto._keyboard_input_revision
         with patch.object(punto, "user32", api), \
              patch.object(punto, "_idle", idle), \
+             patch.object(punto, "_space", idle), \
              patch.object(punto, "_settings", punto.Settings(auto_layout_correction=True)), \
              patch.object(punto, "_get_focused_control_hwnd", return_value=17), \
              patch.object(punto, "_is_text_input_focus", return_value=True), \
