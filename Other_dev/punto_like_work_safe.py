@@ -4953,6 +4953,18 @@ def _resume_in_all_windows() -> None:
     logging.info("NP_Punto resumed: pause=False, active_window_only=False")
 
 
+def _diagnose_focus() -> tuple[str, str]:
+    """Сведения о типе поля без получения текста; безопасно для диагностики и тестов."""
+    if user32 is None:
+        return "не определён", "недоступно"
+    try:
+        focused = _get_focused_control_hwnd()
+        return (_get_class_name(focused) or "не определён",
+                "Win32 Edit/RichEdit" if _is_text_input_focus(focused) else "ограниченная поддержка")
+    except (OSError, AttributeError):
+        return "не определён", "недоступно"
+
+
 def _runtime_diagnostics(exe: str = "") -> str:
     """Без чтения набираемого текста показывает причины неработающей автозамены."""
     with _disabled_apps_lock:
@@ -4960,6 +4972,7 @@ def _runtime_diagnostics(exe: str = "") -> str:
     worker_ok = _worker._thread is not None and _worker._thread.is_alive()
     idle_ok = _idle._thread is not None and _idle._thread.is_alive()
     space_ok = _space._thread is not None and _space._thread.is_alive()
+    field_class, field_support = _diagnose_focus()
     return "\n".join((
         f"Работа: {'ПАУЗА' if _is_paused else 'включена'}",
         f"Только одно окно: {'ДА' if _active_window_only else 'нет'}",
@@ -4973,8 +4986,8 @@ def _runtime_diagnostics(exe: str = "") -> str:
         f"Фоновая обработка: {'работает' if worker_ok else 'НЕ РАБОТАЕТ'}",
         f"Таймер автозамены: {'работает' if idle_ok else 'НЕ РАБОТАЕТ'}",
         f"Обработка пробела: {'работает' if space_ok else 'НЕ РАБОТАЕТ'}",
-        f"Класс поля: {_get_class_name(_get_focused_control_hwnd()) or 'не определён'}",
-        f"Тип поля: {'Win32 Edit/RichEdit' if _is_text_input_focus(_get_focused_control_hwnd()) else 'ограниченная поддержка'}",
+        f"Класс поля: {field_class}",
+        f"Тип поля: {field_support}",
         f"Автокоррекция исключена здесь: {'ДА' if exe in _settings.auto_excluded_exes else 'нет'}",
         f"Обучение от ручных исправлений: {'включено' if _settings.learn_manual_corrections else 'выключено'}",
         f"Клавиатурный хук: {'установлен' if _hook_handle else 'НЕ УСТАНОВЛЕН'}",
