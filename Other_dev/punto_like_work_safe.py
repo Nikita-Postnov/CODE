@@ -4108,7 +4108,7 @@ def _open_file_async(path: Path, ensure: Callable[[], None]) -> None:
 
 
 def _show_tray_menu(hwnd: int) -> None:
-    global _active_window_only, _allowed_hwnd
+    global _active_window_only, _allowed_hwnd, _settings
     pt = POINT(0, 0)
     user32.GetCursorPos(ctypes.byref(pt))
 
@@ -4182,7 +4182,6 @@ def _show_tray_menu(hwnd: int) -> None:
     elif cmd == _TRAY_MENU_RESUME_ALL:
         _resume_in_all_windows()
     elif cmd == _TRAY_MENU_BROWSER_BRIDGE:
-        global _settings
         updated = dataclass_replace(
             _settings,
             browser_extension_hotkey_bridge=not _settings.browser_extension_hotkey_bridge,
