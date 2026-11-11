@@ -95,7 +95,29 @@
         if (!match) return null;
         const start = prefix.length - match[0].length;
         const prev = prefix.slice(0, start).match(/[A-Za-zА-Яа-яЁё]+(?=[^A-Za-zА-Яа-яЁё]*$)/u);
-        const words = new Set(normalizeWords([...(configuration.words || []), ...(configuration.learnedWords || [])]));
+        const words = new Set(normalizeWords([
+            ...defaultWords, ...(configuration.words || []), ...(configuration.learnedWords || []),
+        ]));
+
+        // Если пользователь успел набрать несколько слов в неверной раскладке,
+        // исправляем всю короткую фразу, только когда КАЖДОЕ слово известно.
+        // Обычный английский текст остаётся без изменений.
+        const phrase = prefix.match(/(?:^|\s)([A-Za-z]+(?:\s+[A-Za-z]+){1,4})$/u);
+        if (phrase) {
+            const before = phrase[1];
+            const tokens = before.split(/\s+/u);
+            const proposed = tokens.map(word => convertText(word));
+            if (tokens.every((word, i) => word.length >= 3 &&
+                    !words.has(word.toLowerCase()) &&
+                    words.has(proposed[i].toLowerCase()) &&
+                    lettersKind(proposed[i]) === "ru")) {
+                return {
+                    start: prefix.length - before.length, before,
+                    replacement: convertText(before), reason: "known-phrase",
+                };
+            }
+        }
+
         const result = candidate(match[0], words, prev ? prev[0] : "");
         if (!result || result.confidence < 0.95) return null;
         return { start, before: match[0], replacement: result.replacement, reason: result.reason };
