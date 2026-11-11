@@ -81,16 +81,27 @@
         return { replacement: converted, confidence, reason: "dictionary" };
     }
     function findReplacement(prefix, configuration) {
+        // Пользовательские сокращения независимы от исправления раскладки.
+        // При совпадении нескольких правил приоритет получает самое длинное.
         const rules = Array.isArray(configuration.rules) ? configuration.rules : [];
-        for (const item of rules) {
-            if (!item || typeof item.from !== "string" || typeof item.to !== "string" ||
-                item.from.length < 2 || item.from.length > 64 || item.to.length > 256) continue;
-            if (prefix.endsWith(item.from)) {
+        let matchedRule = null;
+        if (configuration.rulesEnabled !== false) {
+            for (const item of rules) {
+                if (!item || typeof item.from !== "string" || typeof item.to !== "string" ||
+                    item.from.length < 1 || item.from.length > 64 || !item.to ||
+                    item.to.length > 256) continue;
                 const start = prefix.length - item.from.length;
-                if (start > 0 && /[\p{L}\p{N}]/u.test(prefix[start - 1])) continue;
-                return { start, before: item.from, replacement: item.to, reason: "rule" };
+                if (start < 0 || prefix.slice(start).toLowerCase() !== item.from.toLowerCase()) continue;
+                if (start > 0 && /[\p{L}\p{N}_]/u.test(prefix[start - 1])) continue;
+                if (!matchedRule || item.from.length > matchedRule.before.length) {
+                    matchedRule = {
+                        start, before: prefix.slice(start), replacement: item.to, reason: "rule",
+                    };
+                }
             }
         }
+        if (matchedRule) return matchedRule;
+        if (configuration.autoEnabled === false) return null;
         const match = prefix.match(/[A-Za-zА-Яа-яЁё]+$/u);
         if (!match) return null;
         const start = prefix.length - match[0].length;
