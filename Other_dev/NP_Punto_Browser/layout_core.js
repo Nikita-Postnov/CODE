@@ -125,7 +125,9 @@
     function correctedSeparator(character, sourceWord, replacement) {
         // Преобразуем лишь явно отличающиеся физические Shift-клавиши,
         // когда исправленное слово перешло из EN в RU.
-        if (lettersKind(sourceWord) === "en" && lettersKind(replacement) === "ru") {
+        const sourceLast = String(sourceWord).match(/[A-Za-zА-Яа-яЁё]+$/u)?.[0] || "";
+        const replacementLast = String(replacement).match(/[A-Za-zА-Яа-яЁё]+$/u)?.[0] || "";
+        if (lettersKind(sourceLast) === "en" && lettersKind(replacementLast) === "ru") {
             return enPunctuation.get(character) ?? character;
         }
         return character;
