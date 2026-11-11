@@ -512,7 +512,7 @@ class RecoveryTests(unittest.TestCase):
              patch.object(punto, "_space", idle):
             punto._watchdog_check_worker()
         worker.start.assert_called_once_with()
-        idle.start.assert_called_once_with()
+        self.assertEqual(idle.start.call_count, 2)  # idle + space
 
     def test_watchdog_preserves_healthy_threads(self):
         worker = Mock()
