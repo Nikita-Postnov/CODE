@@ -3516,7 +3516,7 @@ def _try_auto_layout_in_edit(hwnd: object, full_text: str, end: int, caret: int)
     return False
 
 
-def _apply_rules_in_edit(hwnd: object, after_space: bool) -> None:
+def _apply_rules_in_edit(hwnd: object, after_space: bool, characters_after_space: int = 0) -> None:
     """Применяет правила к тексту перед кареткой в стандартном Edit/RichEdit.
 
     after_space=True — сразу после пробела (триггер стоит перед ним),
@@ -3530,9 +3530,10 @@ def _apply_rules_in_edit(hwnd: object, after_space: bool) -> None:
         return
 
     if after_space:
-        if full_text[caret - 1] != " ":
+        boundary = caret - characters_after_space
+        if boundary <= 0 or boundary > len(full_text) or full_text[boundary - 1] != " ":
             return
-        look_end = caret - 1
+        look_end = boundary - 1
     else:
         look_end = caret
     if look_end <= 0:
@@ -3551,7 +3552,7 @@ def _apply_rules_in_edit(hwnd: object, after_space: bool) -> None:
         return
 
     replace_start = look_end - len(match.trigger)
-    new_caret = replace_start + len(match.replacement) + (1 if after_space else 0)
+    new_caret = caret + len(match.replacement) - len(match.trigger)
     # _replace_range_in_edit_safely перечитывает текст и проверяет, что на месте
     # всё ещё стоит триггер, — поэтому лишних повторных чтений здесь не нужно.
     if _replace_range_in_edit_safely(
@@ -3567,13 +3568,18 @@ def _apply_rules_in_edit(hwnd: object, after_space: bool) -> None:
         logging.debug("%s: safe replace aborted", "SPACE" if after_space else "IDLE")
 
 
-def _space_is_ready_in_edit(hwnd: object) -> bool:
-    """Пробел уже вставлен целевым контролом, каретка стоит сразу после него."""
+def _space_is_ready_in_edit(hwnd: object, chars_after_space: int = 0) -> bool:
+    """Проверяет пробел в рассчитанной позиции относительно текущей каретки."""
+    if not 0 <= chars_after_space <= 16:
+        return False
     caret = _get_collapsed_caret_from_edit(hwnd)
-    if caret is None or caret <= 0:
+    if caret is None or caret <= chars_after_space:
         return False
     text = _read_edit_full_text(hwnd)
-    return bool(text and caret <= len(text) and text[caret - 1] == " ")
+    boundary = caret - chars_after_space
+    return bool(text and caret <= len(text) and text[boundary - 1] == " ")
+
+
 
 
 def _idle_rules_job(fg_hwnd: int, focus_hwnd: int) -> None:
@@ -4341,6 +4347,10 @@ _worker_stuck_warned: bool = False
 _space_keydown_blocked: bool = False
 _space_keydown_fg_hwnd: int = 0
 _keyboard_input_revision: int = 0
+# Учёт символьных нажатий позволяет безопасно исправить слово после пробела,
+# даже если пользователь успел напечатать несколько следующих символов.
+_text_key_count: int = 0
+_edit_navigation_revision: int = 0
 
 # ── Аккорд Ctrl+Alt+Shift → выделить слово под кареткой ──────────────────────
 # Срабатывает на ОТПУСКАНИИ, если все три модификатора (любые — левые/правые)
@@ -4430,12 +4440,22 @@ def _is_char_vk(vk: int) -> bool:
 
 def _on_key_down(vk: int, fg_hwnd: int) -> None:
     global _space_keydown_blocked, _space_keydown_fg_hwnd
+    global _text_key_count, _edit_navigation_revision
     if vk == VK_SPACE:
         _space_keydown_fg_hwnd = fg_hwnd
         _space_keydown_blocked = _is_any_vk_pressed(_SPACE_BLOCKING_MODIFIER_VKS)
+        if _space_keydown_blocked:
+            _edit_navigation_revision += 1
+        else:
+            _text_key_count += 1
         return
     if vk in _IDLE_NEUTRAL_VKS:
         return
+    if (_is_char_vk(vk) and vk not in (VK_PACKET, VK_PROCESSKEY)
+            and not _is_any_vk_pressed(_TEXT_SHORTCUT_MODIFIER_VKS)):
+        _text_key_count += 1
+    else:
+        _edit_navigation_revision += 1
     if not _is_char_vk(vk):
         # Стрелки, Home/End, Backspace, Delete, Enter, Tab, Esc... — пользователь
         # ушёл с места набора или правит текст: отложенную замену отменяем.
@@ -4472,22 +4492,29 @@ def _on_space_up(fg_hwnd: int, fg_exe: str) -> None:
         logging.debug("Autocorrection: unsupported focus class=%r exe=%s",
                       _get_class_name(focus), fg_exe)
         return
-    revision = _keyboard_input_revision
+    key_count = _text_key_count
+    position_revision = _edit_navigation_revision
 
     def apply_if_unchanged(attempt: int = 0) -> None:
-        if _is_paused or revision != _keyboard_input_revision:
+        if _is_paused or position_revision != _edit_navigation_revision:
+            return
+        suffix = _text_key_count - key_count
+        if not 0 <= suffix <= 16:
             return
         if _hwnd_value(user32.GetForegroundWindow()) != fg_hwnd:
             return
         if _get_focused_control_hwnd() != focus or not _is_text_input_focus(focus):
             return
-        if not _space_is_ready_in_edit(focus):
+        if not _space_is_ready_in_edit(focus, suffix):
             # Асинхронный Edit может показать пробел позже события keyup.
             # Повторяем только при неизменном вводе и фокусе.
             if attempt < 2:
                 _space.schedule(0.025, lambda: apply_if_unchanged(attempt + 1))
             return
-        _apply_rules_in_edit(focus, after_space=True)
+        if suffix:
+            _apply_rules_in_edit(focus, after_space=True, characters_after_space=suffix)
+        else:
+            _apply_rules_in_edit(focus, after_space=True)
 
     # Space уже отпущен: начинаем проверку раньше, чтобы не пропускать
     # исправление при обычной быстрой печати. Чтение поля — только в worker.
@@ -4553,8 +4580,9 @@ def _mouse_hook_proc(n_code: int, w_param: int, l_param: int) -> int:
     _touch_hook_liveness()
     if n_code == HC_ACTION and int(w_param) in _MOUSE_BUTTON_DOWN_MESSAGES:
         try:
-            global _keyboard_input_revision
+            global _keyboard_input_revision, _edit_navigation_revision
             _keyboard_input_revision += 1
+            _edit_navigation_revision += 1
             _idle.cancel()
             _space.cancel()
         except Exception:
