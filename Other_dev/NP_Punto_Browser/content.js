@@ -119,6 +119,7 @@
     }
 
     document.addEventListener("beforeinput", event => {
+        if (event.isTrusted) lastChange = null;
         if (!settings.enabled || event.defaultPrevented || event.isComposing ||
             event.inputType !== "insertText" || typeof event.data !== "string" ||
             !/^[ .,!?;:]$/u.test(event.data)) return;
@@ -217,11 +218,4 @@
         }
     }, true);
 
-    document.addEventListener("beforeinput", event => {
-        if (event.inputType !== "insertText" || event.data !== " " ||
-            settings.enabled) {
-            // Отмену можно выполнять лишь непосредственно после исправления.
-            if (event.isTrusted) lastChange = null;
-        }
-    }, false);
 })();
