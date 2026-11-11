@@ -5,6 +5,8 @@ on:
     branches: [main]
     paths:
       - "Other_dev/punto_like_work_safe.py"
+      - "Other_dev/NP_Punto_Browser/**"
+      - "tests/test_np_punto_browser.cjs"
       - "tests/test_np_punto_reliability.py"
       - "tests/test_np_punto_hotkey_priority.py"
       - "tests/test_np_punto_chromium_copy.py"
@@ -14,6 +16,8 @@ on:
     branches: [main]
     paths:
       - "Other_dev/punto_like_work_safe.py"
+      - "Other_dev/NP_Punto_Browser/**"
+      - "tests/test_np_punto_browser.cjs"
       - "tests/test_np_punto_reliability.py"
       - "tests/test_np_punto_hotkey_priority.py"
       - "tests/test_np_punto_chromium_copy.py"
@@ -32,6 +36,14 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - name: Validate browser extension
+        run: |
+          python -m json.tool Other_dev/NP_Punto_Browser/manifest.json
+          node --check Other_dev/NP_Punto_Browser/layout_core.js
+          node --check Other_dev/NP_Punto_Browser/content.js
+          node --check Other_dev/NP_Punto_Browser/options.js
+      - name: Test browser layout engine
+        run: node --test tests/test_np_punto_browser.cjs
       - name: Compile NP Punto
         run: python -m py_compile Other_dev/punto_like_work_safe.py
       - name: Validate NP Punto safety
