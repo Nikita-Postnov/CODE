@@ -40,7 +40,7 @@ import threading
 import time
 import zlib
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace as dataclass_replace
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from queue import Queue as _Queue, PriorityQueue as _PriorityQueue, Empty as _QueueEmpty, Full as _QueueFull
@@ -248,6 +248,7 @@ _TRAY_MENU_OPEN_APP_SETTINGS: Final[int] = 1008
 _TRAY_MENU_OPEN_LAYOUT_WORDS: Final[int] = 1009
 _TRAY_MENU_DIAGNOSTICS: Final[int] = 1010
 _TRAY_MENU_RESUME_ALL: Final[int] = 1011
+_TRAY_MENU_BROWSER_BRIDGE: Final[int] = 1012
 
 _CLIPBOARD_POLL_TIMER_ID: Final[int] = 1  # только fallback, если listener не встал
 
@@ -297,6 +298,10 @@ _MEDIA_PLAYER_EXES: Final[frozenset[str]] = frozenset({
     "daum.exe",  # устаревшее имя Daum PotPlayer
     "films & tv.exe", "video.ui.exe",  # Windows Movies & TV
     "msixvc.exe",
+})
+
+_CHROMIUM_BROWSER_EXES: Final[frozenset[str]] = frozenset({
+    "chrome.exe", "msedge.exe", "brave.exe", "vivaldi.exe", "opera.exe", "opera_gx.exe",
 })
 
 _CONSOLE_EXES: Final[frozenset[str]] = frozenset({
@@ -611,6 +616,7 @@ class Settings:
     auto_layout_correction: bool = False
     learn_manual_corrections: bool = False
     auto_excluded_exes: tuple[str, ...] = ("code.exe", "pycharm64.exe", "devenv.exe")
+    browser_extension_hotkey_bridge: bool = False
 
 
 _HOTKEY_MOD_NAMES: Final[dict[str, int]] = {
@@ -698,6 +704,7 @@ def _settings_to_dict(settings: Settings) -> dict:
         "auto_layout_correction": settings.auto_layout_correction,
         "learn_manual_corrections": settings.learn_manual_corrections,
         "auto_excluded_exes": list(settings.auto_excluded_exes),
+        "browser_extension_hotkey_bridge": settings.browser_extension_hotkey_bridge,
     }
 
 
@@ -766,6 +773,11 @@ def _settings_from_dict(data: object) -> tuple[Settings, list[str]]:
     ):
         warnings.append("settings: auto_excluded_exes должен быть списком exe-имён")
         excluded = list(defaults.auto_excluded_exes)
+    browser_bridge = data.get(
+        "browser_extension_hotkey_bridge", defaults.browser_extension_hotkey_bridge)
+    if not isinstance(browser_bridge, bool):
+        warnings.append("settings: browser_extension_hotkey_bridge должен быть true/false")
+        browser_bridge = defaults.browser_extension_hotkey_bridge
     settings = Settings(
         hotkeys=Hotkeys(**hk_values),
         select_word_chord=chord,
@@ -780,6 +792,7 @@ def _settings_from_dict(data: object) -> tuple[Settings, list[str]]:
         auto_layout_correction=auto_layout,
         learn_manual_corrections=learn,
         auto_excluded_exes=tuple(sorted({value.lower() for value in excluded})),
+        browser_extension_hotkey_bridge=browser_bridge,
     )
     return settings, warnings
 
@@ -2033,6 +2046,26 @@ def _press_combo(modifier_vk: int, vk_tap: int, timings: Timings) -> None:
     finally:
         _send_input([_key_input(modifier_vk, True)])
         time.sleep(timings.between_key_events_seconds)
+
+def _send_browser_extension_shortcut(timings: Timings) -> None:
+    """Передаёт Ctrl+Ins локальному расширению браузера как Ctrl+Alt+Shift+F8.
+
+    Комбинация не содержит Ctrl+Ins, поэтому не вызывает повторно WM_HOTKEY.
+    Собственные события помечены _INJECT_TAG и не запускают автозамену.
+    """
+    modifiers = (VK_CONTROL, VK_MENU, VK_SHIFT)
+    _send_input(
+        _physical_modifier_release_events()
+        + [_key_input(vk, False) for vk in modifiers]
+    )
+    try:
+        time.sleep(timings.between_key_events_seconds)
+        _send_input([_key_input(VK_F8, False), _key_input(VK_F8, True)])
+        time.sleep(timings.between_key_events_seconds)
+    finally:
+        _send_input([_key_input(vk, True) for vk in reversed(modifiers)])
+        time.sleep(timings.between_key_events_seconds)
+
 
 def _press_combo_ctrl(vk_tap: int, timings: Timings) -> None:
     _press_combo(VK_CONTROL, vk_tap, timings)
@@ -3373,6 +3406,21 @@ def _transform_run_before_caret(timings: Timings, transform: Callable[[str], str
     return _transform_run_before_caret_via_clipboard(timings, transform)
 
 
+def _convert_before_caret_with_browser_bridge(timings: Timings) -> None:
+    """Выбирает отдельный путь для расширения браузера только при opt-in."""
+    if _settings.browser_extension_hotkey_bridge:
+        fg = _hwnd_value(user32.GetForegroundWindow())
+        exe = _get_exe_name_for_hwnd(fg)
+        if exe in _CHROMIUM_BROWSER_EXES:
+            _send_browser_extension_shortcut(timings)
+            logging.info(
+                "Ctrl+Ins: browser extension shortcut delivered to %s (browser acknowledgement unavailable)",
+                exe,
+            )
+            return
+    convert_before_caret_text(timings)
+
+
 def convert_before_caret_text(timings: Timings) -> None:
     """Ctrl+Ins: сменить раскладку фрагмента перед кареткой."""
     converted = _transform_run_before_caret(timings, convert_keyboard_layout)
@@ -4088,6 +4136,8 @@ def _show_tray_menu(hwnd: int) -> None:
         add(_TRAY_MENU_OPEN_LAYOUT_WORDS, "Словарь исправления раскладки")
         add(_TRAY_MENU_DIAGNOSTICS, "Проверить состояние NP_Punto")
         add(_TRAY_MENU_RESUME_ALL, "Возобновить работу во всех окнах")
+        add(_TRAY_MENU_BROWSER_BRIDGE, "Ctrl+Ins в Chrome/Edge через расширение",
+            MF_STRING | (MF_CHECKED if _settings.browser_extension_hotkey_bridge else 0))
         add(0, None, MF_SEPARATOR)
         add(_TRAY_MENU_TOGGLE_ACTIVE_WINDOW, "Работать только в текущем окне",
             MF_STRING | (MF_CHECKED if _active_window_only else 0))
@@ -4131,6 +4181,23 @@ def _show_tray_menu(hwnd: int) -> None:
         ).start()
     elif cmd == _TRAY_MENU_RESUME_ALL:
         _resume_in_all_windows()
+    elif cmd == _TRAY_MENU_BROWSER_BRIDGE:
+        global _settings
+        updated = dataclass_replace(
+            _settings,
+            browser_extension_hotkey_bridge=not _settings.browser_extension_hotkey_bridge,
+        )
+        try:
+            _atomic_write_text(
+                _settings_path(),
+                json.dumps(_settings_to_dict(updated), ensure_ascii=False, indent=2) + "\n",
+            )
+        except OSError:
+            logging.warning("Failed to save browser Ctrl+Ins routing", exc_info=True)
+        else:
+            _settings = updated
+            logging.info("Browser Ctrl+Ins extension routing: %s",
+                         updated.browser_extension_hotkey_bridge)
     elif cmd == _TRAY_MENU_TOGGLE_ACTIVE_WINDOW:
         if not _active_window_only:
             _allowed_hwnd = origin_hwnd
@@ -4990,6 +5057,7 @@ def _runtime_diagnostics(exe: str = "") -> str:
         f"Тип поля: {field_support}",
         f"Автокоррекция исключена здесь: {'ДА' if exe in _settings.auto_excluded_exes else 'нет'}",
         f"Обучение от ручных исправлений: {'включено' if _settings.learn_manual_corrections else 'выключено'}",
+        f"Ctrl+Ins в браузере через расширение: {'ДА' if _settings.browser_extension_hotkey_bridge else 'нет'}",
         f"Клавиатурный хук: {'установлен' if _hook_handle else 'НЕ УСТАНОВЛЕН'}",
         f"Файл настроек: {_settings_path()}",
         f"Журнал: {DATA_DIR / ('punto_like' + _session_suffix() + '.log')}",
@@ -5066,7 +5134,7 @@ def _on_hotkey(hotkey_id: int) -> bool:
         _queue_hotkey_action("convert-selected", lambda: convert_selected_text(timings))
     elif hotkey_id == _HK_CONVERT_BEFORE_CARET:
         _idle.cancel()
-        _queue_hotkey_action("convert-before-caret", lambda: convert_before_caret_text(timings))
+        _queue_hotkey_action("convert-before-caret", lambda: _convert_before_caret_with_browser_bridge(timings))
     elif hotkey_id == _HK_TOGGLE_CASE:
         _idle.cancel()
         _queue_hotkey_action("toggle-case", lambda: toggle_case_selected_text(timings))
