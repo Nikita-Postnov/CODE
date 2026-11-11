@@ -609,6 +609,8 @@ class Settings:
     # "type"  — набором через KEYEVENTF_UNICODE (буфер не трогается при замене).
     replace_method: ReplaceMethod = "paste"
     auto_layout_correction: bool = False
+    learn_manual_corrections: bool = False
+    auto_excluded_exes: tuple[str, ...] = ("code.exe", "pycharm64.exe", "devenv.exe")
 
 
 _HOTKEY_MOD_NAMES: Final[dict[str, int]] = {
@@ -694,6 +696,8 @@ def _settings_to_dict(settings: Settings) -> dict:
         "clipboard_history_max_total_mb": settings.clipboard_history_max_total_bytes // 1_000_000,
         "replace_method": settings.replace_method,
         "auto_layout_correction": settings.auto_layout_correction,
+        "learn_manual_corrections": settings.learn_manual_corrections,
+        "auto_excluded_exes": list(settings.auto_excluded_exes),
     }
 
 
@@ -751,6 +755,17 @@ def _settings_from_dict(data: object) -> tuple[Settings, list[str]]:
     if not isinstance(auto_layout, bool):
         warnings.append("settings: auto_layout_correction должен быть true/false")
         auto_layout = False
+    learn = data.get("learn_manual_corrections", defaults.learn_manual_corrections)
+    if not isinstance(learn, bool):
+        warnings.append("settings: learn_manual_corrections должен быть true/false")
+        learn = defaults.learn_manual_corrections
+    excluded = data.get("auto_excluded_exes", list(defaults.auto_excluded_exes))
+    if not isinstance(excluded, list) or not all(
+        isinstance(value, str) and 0 < len(value) <= 100 and value.lower().endswith(".exe")
+        for value in excluded
+    ):
+        warnings.append("settings: auto_excluded_exes должен быть списком exe-имён")
+        excluded = list(defaults.auto_excluded_exes)
     settings = Settings(
         hotkeys=Hotkeys(**hk_values),
         select_word_chord=chord,
@@ -763,6 +778,8 @@ def _settings_from_dict(data: object) -> tuple[Settings, list[str]]:
         clipboard_history_max_total_bytes=int(max_total_mb) * 1_000_000,
         replace_method=method,
         auto_layout_correction=auto_layout,
+        learn_manual_corrections=learn,
+        auto_excluded_exes=tuple(sorted({value.lower() for value in excluded})),
     )
     return settings, warnings
 
@@ -815,6 +832,7 @@ _DICTIONARY_FILE_NAME: Final[str] = "punto_like_dictionary.txt"
 _DISABLED_APPS_FILE_NAME: Final[str] = "punto_like_disabled_apps.txt"
 _SETTINGS_FILE_NAME: Final[str] = "punto_like_settings.json"
 _LAYOUT_WORDS_FILE_NAME: Final[str] = "punto_like_layout_words.txt"
+_LEARNED_WORDS_FILE_NAME: Final[str] = "punto_like_learned_words.txt"
 
 DATA_DIR: Final[Path] = Path(__file__).resolve().parent / "Data"
 
@@ -885,10 +903,52 @@ def _load_layout_words() -> frozenset[str]:
     return frozenset(result)
 
 
+def _learned_words_path() -> Path:
+    return DATA_DIR / _LEARNED_WORDS_FILE_NAME
+
+
+def _load_learned_words() -> frozenset[str]:
+    path = _learned_words_path()
+    if not path.is_file():
+        return frozenset()
+    words = set()
+    for line in path.read_text(encoding="utf-8").splitlines():
+        value = line.strip().lower()
+        if 4 <= len(value) <= 32 and value.isalpha():
+            words.add(value)
+    return frozenset(words)
+
+
+def _learn_manual_word(original: str, converted: str) -> None:
+    """Добавляет только вручную подтверждённое слово при явном согласии пользователя."""
+    global _layout_words
+    if not _settings.learn_manual_corrections:
+        return
+    if not (4 <= len(original) <= 32 and original.isalpha() and
+            4 <= len(converted) <= 32 and converted.isalpha()):
+        return
+    if (len({_layout_kind_for_char(ch) for ch in original}) != 1
+            or len({_layout_kind_for_char(ch) for ch in converted}) != 1):
+        return
+    value = converted.lower()
+    if value in _layout_words:
+        return
+    try:
+        words = _load_learned_words()
+        if len(words) >= 1000:
+            logging.info("Learning: word limit reached")
+            return
+        _atomic_write_text(_learned_words_path(), "\n".join(sorted(words | {value})) + "\n")
+        _layout_words = _layout_words | {value}
+        logging.info("Learning: confirmed word added (length=%d)", len(value))
+    except OSError:
+        logging.warning("Learning: cannot persist confirmed word", exc_info=True)
+
+
 def _reload_layout_words() -> None:
     global _layout_words
     try:
-        _layout_words = _load_layout_words()
+        _layout_words = _load_layout_words() | _load_learned_words()
     except (OSError, UnicodeError):
         logging.warning("Не удалось обновить словарь раскладки", exc_info=True)
 
@@ -1411,6 +1471,7 @@ def _worker_submit(name: str, fn: Callable[[], None]) -> bool:
 
 _worker = _JobWorker("worker")
 _idle = _IdleScheduler(_worker_submit)
+_space = _IdleScheduler(_worker_submit)
 _ui = _TkUi()
 _picker_window: object | None = None
 _rules_editor_window: object | None = None
@@ -3137,6 +3198,7 @@ def convert_selected_text(timings: Timings) -> None:
         if selected is not None and selected.strip():
             converted = convert_keyboard_layout(selected)
             if converted != selected and _try_replace_selection_in_edit(hwnd_focus, converted):
+                _learn_manual_word(selected, converted)
                 _switch_layout_toward_text(converted)
             return
 
@@ -3316,6 +3378,10 @@ def convert_before_caret_text(timings: Timings) -> None:
     converted = _transform_run_before_caret(timings, convert_keyboard_layout)
     if converted is not None:
         logging.info("Ctrl+Ins: converted before caret (length=%d)", len(converted))
+        if not _is_password_edit(_get_focused_control_hwnd()):
+            original = convert_keyboard_layout(converted)
+            if convert_keyboard_layout(original) == converted:
+                _learn_manual_word(original, converted)
         _switch_layout_toward_text(converted)
     else:
         logging.info("Ctrl+Ins: no text converted (caret/focus/clipboard/application restrictions)")
@@ -3442,15 +3508,15 @@ def _try_auto_layout_in_edit(hwnd: object, full_text: str, end: int, caret: int)
     if corrected is None:
         return False
     if _replace_range_in_edit_safely(hwnd, start, end, raw, corrected, caret):
-        logging.info("Autocorrection: %s -> %s", raw, corrected)
+        logging.info("Autocorrection: word changed (length=%d)", len(raw))
         _switch_layout_toward_text(corrected)
         return True
-    logging.debug("Autocorrection: replacement failed for %r in control %s",
-                  raw, _get_class_name(hwnd))
+    logging.debug("Autocorrection: replacement failed (length=%d, class=%s)",
+                  len(raw), _get_class_name(hwnd))
     return False
 
 
-def _apply_rules_in_edit(hwnd: object, after_space: bool) -> None:
+def _apply_rules_in_edit(hwnd: object, after_space: bool, characters_after_space: int = 0) -> None:
     """Применяет правила к тексту перед кареткой в стандартном Edit/RichEdit.
 
     after_space=True — сразу после пробела (триггер стоит перед ним),
@@ -3464,9 +3530,10 @@ def _apply_rules_in_edit(hwnd: object, after_space: bool) -> None:
         return
 
     if after_space:
-        if full_text[caret - 1] != " ":
+        boundary = caret - characters_after_space
+        if boundary <= 0 or boundary > len(full_text) or full_text[boundary - 1] != " ":
             return
-        look_end = caret - 1
+        look_end = boundary - 1
     else:
         look_end = caret
     if look_end <= 0:
@@ -3485,7 +3552,7 @@ def _apply_rules_in_edit(hwnd: object, after_space: bool) -> None:
         return
 
     replace_start = look_end - len(match.trigger)
-    new_caret = replace_start + len(match.replacement) + (1 if after_space else 0)
+    new_caret = caret + len(match.replacement) - len(match.trigger)
     # _replace_range_in_edit_safely перечитывает текст и проверяет, что на месте
     # всё ещё стоит триггер, — поэтому лишних повторных чтений здесь не нужно.
     if _replace_range_in_edit_safely(
@@ -3501,13 +3568,18 @@ def _apply_rules_in_edit(hwnd: object, after_space: bool) -> None:
         logging.debug("%s: safe replace aborted", "SPACE" if after_space else "IDLE")
 
 
-def _space_is_ready_in_edit(hwnd: object) -> bool:
-    """Пробел уже вставлен целевым контролом, каретка стоит сразу после него."""
+def _space_is_ready_in_edit(hwnd: object, chars_after_space: int = 0) -> bool:
+    """Проверяет пробел в рассчитанной позиции относительно текущей каретки."""
+    if not 0 <= chars_after_space <= 16:
+        return False
     caret = _get_collapsed_caret_from_edit(hwnd)
-    if caret is None or caret <= 0:
+    if caret is None or caret <= chars_after_space:
         return False
     text = _read_edit_full_text(hwnd)
-    return bool(text and caret <= len(text) and text[caret - 1] == " ")
+    boundary = caret - chars_after_space
+    return bool(text and caret <= len(text) and text[boundary - 1] == " ")
+
+
 
 
 def _idle_rules_job(fg_hwnd: int, focus_hwnd: int) -> None:
@@ -4275,6 +4347,10 @@ _worker_stuck_warned: bool = False
 _space_keydown_blocked: bool = False
 _space_keydown_fg_hwnd: int = 0
 _keyboard_input_revision: int = 0
+# Учёт символьных нажатий позволяет безопасно исправить слово после пробела,
+# даже если пользователь успел напечатать несколько следующих символов.
+_text_key_count: int = 0
+_edit_navigation_revision: int = 0
 
 # ── Аккорд Ctrl+Alt+Shift → выделить слово под кареткой ──────────────────────
 # Срабатывает на ОТПУСКАНИИ, если все три модификатора (любые — левые/правые)
@@ -4364,12 +4440,22 @@ def _is_char_vk(vk: int) -> bool:
 
 def _on_key_down(vk: int, fg_hwnd: int) -> None:
     global _space_keydown_blocked, _space_keydown_fg_hwnd
+    global _text_key_count, _edit_navigation_revision
     if vk == VK_SPACE:
         _space_keydown_fg_hwnd = fg_hwnd
         _space_keydown_blocked = _is_any_vk_pressed(_SPACE_BLOCKING_MODIFIER_VKS)
+        if _space_keydown_blocked:
+            _edit_navigation_revision += 1
+        else:
+            _text_key_count += 1
         return
     if vk in _IDLE_NEUTRAL_VKS:
         return
+    if (_is_char_vk(vk) and vk not in (VK_PACKET, VK_PROCESSKEY)
+            and not _is_any_vk_pressed(_TEXT_SHORTCUT_MODIFIER_VKS)):
+        _text_key_count += 1
+    else:
+        _edit_navigation_revision += 1
     if not _is_char_vk(vk):
         # Стрелки, Home/End, Backspace, Delete, Enter, Tab, Esc... — пользователь
         # ушёл с места набора или правит текст: отложенную замену отменяем.
@@ -4396,7 +4482,8 @@ def _on_space_up(fg_hwnd: int, fg_exe: str) -> None:
     _space_keydown_fg_hwnd = 0
     if blocked or (down_fg and fg_hwnd and down_fg != fg_hwnd):
         return
-    if fg_exe in _MEDIA_PLAYER_EXES or fg_exe in _CONSOLE_EXES:
+    if (fg_exe in _MEDIA_PLAYER_EXES or fg_exe in _CONSOLE_EXES
+            or fg_exe in _settings.auto_excluded_exes):
         return
     if not _settings.auto_layout_correction and _compute_max_trigger_len(_get_rules_snapshot()) == 0:
         return
@@ -4405,26 +4492,33 @@ def _on_space_up(fg_hwnd: int, fg_exe: str) -> None:
         logging.debug("Autocorrection: unsupported focus class=%r exe=%s",
                       _get_class_name(focus), fg_exe)
         return
-    revision = _keyboard_input_revision
+    key_count = _text_key_count
+    position_revision = _edit_navigation_revision
 
     def apply_if_unchanged(attempt: int = 0) -> None:
-        if _is_paused or revision != _keyboard_input_revision:
+        if _is_paused or position_revision != _edit_navigation_revision:
+            return
+        suffix = _text_key_count - key_count
+        if not 0 <= suffix <= 16:
             return
         if _hwnd_value(user32.GetForegroundWindow()) != fg_hwnd:
             return
         if _get_focused_control_hwnd() != focus or not _is_text_input_focus(focus):
             return
-        if not _space_is_ready_in_edit(focus):
+        if not _space_is_ready_in_edit(focus, suffix):
             # Асинхронный Edit может показать пробел позже события keyup.
             # Повторяем только при неизменном вводе и фокусе.
             if attempt < 2:
-                _idle.schedule(0.025, lambda: apply_if_unchanged(attempt + 1))
+                _space.schedule(0.025, lambda: apply_if_unchanged(attempt + 1))
             return
-        _apply_rules_in_edit(focus, after_space=True)
+        if suffix:
+            _apply_rules_in_edit(focus, after_space=True, characters_after_space=suffix)
+        else:
+            _apply_rules_in_edit(focus, after_space=True)
 
     # Space уже отпущен: начинаем проверку раньше, чтобы не пропускать
     # исправление при обычной быстрой печати. Чтение поля — только в worker.
-    _idle.schedule(0.02, apply_if_unchanged)
+    _space.schedule(0.02, apply_if_unchanged)
 
 
 def _handle_keyboard_event(msg: int, l_param: int) -> None:
@@ -4486,9 +4580,11 @@ def _mouse_hook_proc(n_code: int, w_param: int, l_param: int) -> int:
     _touch_hook_liveness()
     if n_code == HC_ACTION and int(w_param) in _MOUSE_BUTTON_DOWN_MESSAGES:
         try:
-            global _keyboard_input_revision
+            global _keyboard_input_revision, _edit_navigation_revision
             _keyboard_input_revision += 1
+            _edit_navigation_revision += 1
             _idle.cancel()
+            _space.cancel()
         except Exception:
             logging.debug("mouse hook callback error", exc_info=True)
     return int(user32.CallNextHookEx(None, n_code, w_param, l_param))
@@ -4565,10 +4661,11 @@ def _emit_choice_health() -> None:
         )
         worker_ok = bool(_worker._thread and _worker._thread.is_alive())
         idle_ok = bool(_idle._thread and _idle._thread.is_alive())
+        space_ok = bool(_space._thread and _space._thread.is_alive())
         hooks_ok = bool(_hook_handle and _mouse_hook_handle)
         busy_name, busy_for = _worker.current_job()
         worker_ok = worker_ok and busy_for < _WORKER_STUCK_WARN_SECONDS
-        ok = bool(hotkeys and worker_ok and idle_ok and hooks_ok and not _is_paused)
+        ok = bool(hotkeys and worker_ok and idle_ok and space_ok and hooks_ok and not _is_paused)
         reasons = []
         if _is_paused:
             reasons.append("NP Punto на паузе — горячие клавиши не выполняются")
@@ -4578,6 +4675,8 @@ def _emit_choice_health() -> None:
             reasons.append("Фоновый обработчик не отвечает")
         if not idle_ok:
             reasons.append("Таймер автозамены остановлен")
+        if not space_ok:
+            reasons.append("Таймер обработки пробела остановлен")
         if not hooks_ok:
             reasons.append("Клавиатурный или мышиный хук отсутствует")
         data = {"key": key, "ts": time.time(), "ok": ok,
@@ -4629,7 +4728,7 @@ def _watchdog_check_hooks() -> None:
 def _watchdog_check_worker() -> None:
     """Обнаруживает отказ worker/idle, восстанавливает потоки, диагностирует зависания."""
     global _worker_stuck_warned
-    for component, label in ((_worker, "worker"), (_idle, "idle")):
+    for component, label in ((_worker, "worker"), (_idle, "idle"), (_space, "space")):
         thread = component._thread
         if thread is None or not thread.is_alive():
             logging.error("NP_Punto: %s thread stopped unexpectedly; restarting", label)
@@ -4848,9 +4947,22 @@ def _resume_in_all_windows() -> None:
     _active_window_only = False
     _allowed_hwnd = 0
     _idle.cancel()
+    _space.cancel()
     _invalidate_fg_cache()
     _post_tray_refresh()
     logging.info("NP_Punto resumed: pause=False, active_window_only=False")
+
+
+def _diagnose_focus() -> tuple[str, str]:
+    """Сведения о типе поля без получения текста; безопасно для диагностики и тестов."""
+    if user32 is None:
+        return "не определён", "недоступно"
+    try:
+        focused = _get_focused_control_hwnd()
+        return (_get_class_name(focused) or "не определён",
+                "Win32 Edit/RichEdit" if _is_text_input_focus(focused) else "ограниченная поддержка")
+    except (OSError, AttributeError):
+        return "не определён", "недоступно"
 
 
 def _runtime_diagnostics(exe: str = "") -> str:
@@ -4859,6 +4971,8 @@ def _runtime_diagnostics(exe: str = "") -> str:
         disabled = exe.lower() in _disabled_apps if exe else False
     worker_ok = _worker._thread is not None and _worker._thread.is_alive()
     idle_ok = _idle._thread is not None and _idle._thread.is_alive()
+    space_ok = _space._thread is not None and _space._thread.is_alive()
+    field_class, field_support = _diagnose_focus()
     return "\n".join((
         f"Работа: {'ПАУЗА' if _is_paused else 'включена'}",
         f"Только одно окно: {'ДА' if _active_window_only else 'нет'}",
@@ -4871,6 +4985,11 @@ def _runtime_diagnostics(exe: str = "") -> str:
         f"Исключено: {'ДА' if disabled else 'нет'}",
         f"Фоновая обработка: {'работает' if worker_ok else 'НЕ РАБОТАЕТ'}",
         f"Таймер автозамены: {'работает' if idle_ok else 'НЕ РАБОТАЕТ'}",
+        f"Обработка пробела: {'работает' if space_ok else 'НЕ РАБОТАЕТ'}",
+        f"Класс поля: {field_class}",
+        f"Тип поля: {field_support}",
+        f"Автокоррекция исключена здесь: {'ДА' if exe in _settings.auto_excluded_exes else 'нет'}",
+        f"Обучение от ручных исправлений: {'включено' if _settings.learn_manual_corrections else 'выключено'}",
         f"Клавиатурный хук: {'установлен' if _hook_handle else 'НЕ УСТАНОВЛЕН'}",
         f"Файл настроек: {_settings_path()}",
         f"Журнал: {DATA_DIR / ('punto_like' + _session_suffix() + '.log')}",
@@ -4881,6 +5000,7 @@ def _toggle_pause() -> None:
     global _is_paused
     _is_paused = not _is_paused
     _idle.cancel()
+    _space.cancel()
     _post_tray_refresh()
     logging.info("PAUSED" if _is_paused else "RESUMED")
 
@@ -4998,6 +5118,7 @@ def run_app() -> None:
 
         _worker.start()
         _idle.start()
+        _space.start()
         _start_tray_thread()
         _worker.submit("clipboard-capture-initial", lambda: _capture_clipboard_to_history(_timings, force=True), priority=10)
         _install_keyboard_hook()
@@ -5064,6 +5185,7 @@ def run_app() -> None:
         _run_guarded("uninstall keyboard hook", _uninstall_keyboard_hook)
         _run_guarded("uninstall mouse hook", _uninstall_mouse_hook)
         _run_guarded("stop idle scheduler", _idle.stop)
+        _run_guarded("stop space scheduler", _space.stop)
         _run_guarded("stop worker", _worker.stop)
         _run_guarded("stop ui", _ui.stop)
         _run_guarded("stop tray", _stop_tray_thread)
