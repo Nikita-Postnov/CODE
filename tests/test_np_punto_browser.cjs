@@ -8,6 +8,7 @@ test("Converts words in both keyboard directions", () => {
     assert.equal(core.convertText("Ghbdtn"), "Привет");
     assert.equal(core.convertText("привет"), "ghbdtn");
     assert.equal(core.convertText("Hello"), "Руддщ");
+    assert.equal(core.convertText("xnj ntgthm evttn&"), "что теперь умеет?");
 });
 
 test("Only recognized words qualify for automatic correction", () => {
@@ -41,4 +42,26 @@ test("Normalizes dictionary and rejects mixed tokens", () => {
     assert.equal(core.lettersKind("Тест"),"ru");
     assert.equal(core.lettersKind("test"),"en");
     assert.equal(core.lettersKind("test123"),null);
+});
+
+test("Screenshot case: common ChatGPT phrase is automatically recognized", () => {
+    const options = { words: core.defaultWords, rules: [] };
+    assert.deepEqual(core.findReplacement("xnj", options), {
+        start: 0, before: "xnj", replacement: "что", reason: "dictionary",
+    });
+    assert.equal(core.findReplacement("ntgthm", options).replacement, "теперь");
+    assert.equal(core.findReplacement("evttn", options).replacement, "умеет");
+    assert.deepEqual(core.findReplacement("xnj ntgthm evttn", options), {
+        start: 0, before: "xnj ntgthm evttn",
+        replacement: "что теперь умеет", reason: "known-phrase",
+    });
+    assert.equal(core.correctedSeparator("&", "evttn", "умеет"), "?");
+    assert.equal(core.correctedSeparator("&", "work", "work"), "&");
+});
+
+test("Known valid English sentences are not corrected accidentally", () => {
+    const options = {words: core.defaultWords, rules: []};
+    assert.equal(core.findReplacement("hello", options), null);
+    assert.equal(core.findReplacement("hello world", options), null);
+    assert.equal(core.findReplacement("working today", options), null);
 });
