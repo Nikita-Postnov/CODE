@@ -227,7 +227,8 @@ test("User rule works even with dictionary correction switched off in a plain in
         enabled:false, rulesEnabled:true,
         rules:[{from:"brb",to:"be right back"}],
     });
-    assert.equal(h.fire(" "),true);
+    assert.equal(h.fireNative(" "),false);
+    h.flushTimers();
     assert.equal(h.field.value,"be right back ");
 });
 
@@ -236,7 +237,8 @@ test("Custom rule expands inside a ChatGPT-style editor without layout autocorre
         enabled:false, rulesEnabled:true,
         rules:[{from:"брб",to:"Буду рад помочь"}],
     });
-    assert.equal(h.fire(" "),true);
+    assert.equal(h.fireNative(" "),false);
+    h.flushTimers();
     assert.equal(h.node.data,"Буду рад помочь ");
     assert.equal(h.fireKey("Backspace",{altKey:true,shiftKey:true}),true);
     assert.equal(h.node.data,"БРБ ");
@@ -247,7 +249,8 @@ test("Rule delimiter is retained verbatim, even when replacement changes languag
         enabled:false, rulesEnabled:true,
         rules:[{from:"brb",to:"вернулся"}],
     });
-    assert.equal(h.fire("&"),true);
+    assert.equal(h.fireNative("&"),false);
+    h.flushTimers();
     assert.equal(h.field.value,"вернулся&");
 });
 
@@ -256,8 +259,9 @@ test("Disabling custom rules does not accidentally enable dictionary correction"
         enabled:false, rulesEnabled:false,
         rules:[{from:"brb",to:"be right back"}],
     });
-    assert.equal(h.fire(" "),false);
-    assert.equal(h.field.value,"brb");
+    assert.equal(h.fireNative(" "),false);
+    h.flushTimers();
+    assert.equal(h.field.value,"brb ");
 });
 
 test("Disabled rules do not suppress normal dictionary correction",()=>{
@@ -274,8 +278,9 @@ test("Partial rule inside a larger word is not expanded",()=>{
         enabled:false, rulesEnabled:true,
         rules:[{from:"brb",to:"be right back"}],
     });
-    assert.equal(h.fire(" "),false);
-    assert.equal(h.field.value,"xbrb");
+    assert.equal(h.fireNative(" "),false);
+    h.flushTimers();
+    assert.equal(h.field.value,"xbrb ");
 });
 
 test("Real user case: saved ща - сейчас rule replaces text after native space in ChatGPT",()=>{
