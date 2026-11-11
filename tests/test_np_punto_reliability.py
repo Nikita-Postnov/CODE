@@ -212,7 +212,7 @@ class KeyboardTests(unittest.TestCase):
 
     def test_space_callback_runs_only_if_focus_and_input_unchanged(self):
         idle = Mock()
-        current = punto._keyboard_input_revision
+        current = punto._edit_navigation_revision
         api = Mock()
         api.GetForegroundWindow.return_value = 45
         with patch.object(punto, "user32", api), \
@@ -223,14 +223,14 @@ class KeyboardTests(unittest.TestCase):
              patch.object(punto, "_is_text_input_focus", return_value=True), \
              patch.object(punto, "_space_keydown_blocked", False), \
              patch.object(punto, "_space_keydown_fg_hwnd", 45), \
-             patch.object(punto, "_keyboard_input_revision", current), \
+             patch.object(punto, "_edit_navigation_revision", current), \
              patch.object(punto, "_space_is_ready_in_edit", return_value=True), \
              patch.object(punto, "_apply_rules_in_edit") as apply:
             punto._on_space_up(45, "notepad.exe")
             callback = idle.schedule.call_args.args[1]
             callback()
             apply.assert_called_once_with(17, after_space=True)
-            punto._keyboard_input_revision += 1
+            punto._edit_navigation_revision += 1
             callback()
             apply.assert_called_once()
 
@@ -263,7 +263,7 @@ class KeyboardTests(unittest.TestCase):
         idle = Mock()
         api = Mock()
         api.GetForegroundWindow.return_value = 45
-        current = punto._keyboard_input_revision
+        current = punto._edit_navigation_revision
         with patch.object(punto, "user32", api), \
              patch.object(punto, "_idle", idle), \
              patch.object(punto, "_space", idle), \
@@ -272,15 +272,52 @@ class KeyboardTests(unittest.TestCase):
              patch.object(punto, "_is_text_input_focus", return_value=True), \
              patch.object(punto, "_space_keydown_blocked", False), \
              patch.object(punto, "_space_keydown_fg_hwnd", 45), \
-             patch.object(punto, "_keyboard_input_revision", current), \
+             patch.object(punto, "_edit_navigation_revision", current), \
              patch.object(punto, "_space_is_ready_in_edit", return_value=False), \
              patch.object(punto, "_apply_rules_in_edit") as apply:
             punto._on_space_up(45, "notepad.exe")
             idle.schedule.call_args.args[1]()
             next_callback = idle.schedule.call_args.args[1]
-            punto._keyboard_input_revision += 1
+            punto._edit_navigation_revision += 1
             next_callback()
             apply.assert_not_called()
+
+    def test_fast_typing_after_space_preserves_current_caret(self):
+        idle = Mock()
+        api = Mock()
+        api.GetForegroundWindow.return_value = 45
+        original_count = punto._text_key_count
+        with patch.object(punto, "user32", api), \
+             patch.object(punto, "_idle", idle), \
+             patch.object(punto, "_space", idle), \
+             patch.object(punto, "_settings", punto.Settings(auto_layout_correction=True)), \
+             patch.object(punto, "_get_focused_control_hwnd", return_value=17), \
+             patch.object(punto, "_is_text_input_focus", return_value=True), \
+             patch.object(punto, "_space_keydown_blocked", False), \
+             patch.object(punto, "_space_keydown_fg_hwnd", 45), \
+             patch.object(punto, "_text_key_count", original_count), \
+             patch.object(punto, "_space_is_ready_in_edit", return_value=True) as ready, \
+             patch.object(punto, "_apply_rules_in_edit") as apply:
+            punto._on_space_up(45, "notepad.exe")
+            callback = idle.schedule.call_args.args[1]
+            punto._text_key_count += 2
+            callback()
+            ready.assert_called_once_with(17, 2)
+            apply.assert_called_once_with(
+                17, after_space=True, characters_after_space=2)
+
+    def test_auto_layout_correction_preserves_typed_suffix(self):
+        with patch.object(punto, "_settings", punto.Settings(auto_layout_correction=True)), \
+             patch.object(punto, "_layout_words", frozenset({"привет"})), \
+             patch.object(punto, "_get_collapsed_caret_from_edit", return_value=9), \
+             patch.object(punto, "_read_edit_full_text", return_value="ghbdtn ab"), \
+             patch.object(punto, "_replace_range_in_edit_safely", return_value=True) as replace, \
+             patch.object(punto, "_switch_layout_toward_text"):
+            punto._apply_rules_in_edit(17, after_space=True, characters_after_space=2)
+        replace.assert_called_once_with(17, 0, 6, "ghbdtn", "привет", 9)
+
+    def test_space_scheduler_is_separate_from_idle(self):
+        self.assertIsNot(punto._space, punto._idle)
 
     def test_ctrl_insert_uses_direct_edit_when_replacement_succeeds(self):
         api = Mock()
