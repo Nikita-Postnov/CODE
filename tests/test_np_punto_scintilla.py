@@ -86,6 +86,7 @@ class ScintillaTests(unittest.TestCase):
         with patch.object(punto, "user32", windows), \
              patch.object(punto, "_get_focused_control_hwnd", side_effect=focus), \
              patch.object(punto, "_clipboard_guard", clipboard_guard), \
+             patch.object(punto, "_scintilla_clipboard_free", return_value=None), \
              patch.object(punto, "_scintilla_line_before_caret", return_value=(0,6)), \
              patch.object(punto, "_sendmsg", side_effect=send), \
              patch.object(punto, "_sendmsg_ok", side_effect=sent_ok), \
@@ -129,6 +130,7 @@ class ScintillaTests(unittest.TestCase):
         windows.GetClipboardSequenceNumber.return_value = 100
         with patch.object(punto, "user32", windows), \
              patch.object(punto, "_get_focused_control_hwnd", return_value=42), \
+             patch.object(punto, "_scintilla_clipboard_free", return_value=None), \
              patch.object(punto, "_scintilla_line_before_caret", return_value=(0, 6)), \
              patch.object(punto, "_clipboard_guard", clipboard_guard), \
              patch.object(punto, "_sendmsg", return_value=0), \

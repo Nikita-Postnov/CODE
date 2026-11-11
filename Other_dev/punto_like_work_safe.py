@@ -1716,6 +1716,12 @@ def _setup_winapi_prototypes() -> None:
     _proto(kernel32, "GetCurrentThreadId", DWORD)
     _proto(kernel32, "ProcessIdToSessionId", BOOL, DWORD, ctypes.POINTER(DWORD))
     _proto(kernel32, "OpenProcess", HANDLE, DWORD, BOOL, DWORD)
+    _proto(kernel32, "VirtualAllocEx", VOIDP, HANDLE, VOIDP, ctypes.c_size_t, DWORD, DWORD)
+    _proto(kernel32, "VirtualFreeEx", BOOL, HANDLE, VOIDP, ctypes.c_size_t, DWORD)
+    _proto(kernel32, "ReadProcessMemory", BOOL,
+           HANDLE, VOIDP, VOIDP, ctypes.c_size_t, ctypes.POINTER(ctypes.c_size_t))
+    _proto(kernel32, "WriteProcessMemory", BOOL,
+           HANDLE, VOIDP, VOIDP, ctypes.c_size_t, ctypes.POINTER(ctypes.c_size_t))
     _proto(kernel32, "QueryFullProcessImageNameW", BOOL, HANDLE, DWORD, LPWSTR, ctypes.POINTER(DWORD))
     _proto(kernel32, "GetTickCount", DWORD)
     _proto(kernel32, "CreateJobObjectW", HANDLE, VOIDP, LPCWSTR)
@@ -1958,6 +1964,24 @@ _SCI_LINEFROMPOSITION: Final[int] = 2166
 _SCI_POSITIONFROMLINE: Final[int] = 2167
 _SCI_COPY: Final[int] = 2178
 _SCI_GETSELECTIONS: Final[int] = 2570
+_SCI_GETCODEPAGE: Final[int] = 2137
+_SCI_GETREADONLY: Final[int] = 2140
+_SCI_GETTARGETSTART: Final[int] = 2191
+_SCI_GETTARGETEND: Final[int] = 2193
+_SCI_SETTARGETSTART: Final[int] = 2190
+_SCI_SETTARGETEND: Final[int] = 2192
+_SCI_GETTARGETTEXT: Final[int] = 2687
+_SCI_REPLACETARGET: Final[int] = 2194
+_SCI_SETEMPTYSELECTION: Final[int] = 2556
+
+# Разрешения только для чтения/записи ограниченного участка памяти редактора.
+_PROCESS_VM_OPERATION: Final[int] = 0x0008
+_PROCESS_VM_READ: Final[int] = 0x0010
+_PROCESS_VM_WRITE: Final[int] = 0x0020
+_MEM_COMMIT: Final[int] = 0x1000
+_MEM_RESERVE: Final[int] = 0x2000
+_MEM_RELEASE: Final[int] = 0x8000
+_PAGE_READWRITE: Final[int] = 0x04
 
 def _sendmsg(hwnd: object, msg: int, wparam: int = 0, lparam: int = 0) -> int:
     """SendMessageTimeoutW с защитой от зависшего окна; 0 при таймауте/ошибке."""
@@ -3330,6 +3354,164 @@ def _scintilla_line_before_caret(hwnd: object, max_bytes: int) -> Optional[tuple
     return start, caret
 
 
+@contextmanager
+def _scintilla_remote_memory(hwnd: object, capacity: int) -> Generator[tuple[object, int], None, None]:
+    """Временная память в процессе Notepad++; освобождается при любом исходе.
+
+    Только для настоящего окна Scintilla в Notepad++. Используется для
+    SCI_GETTARGETTEXT и SCI_REPLACETARGET, без чтения пользовательского буфера.
+    """
+    if _get_exe_name_for_hwnd(_hwnd_value(hwnd)) != "notepad++.exe":
+        raise PermissionError("Clipboard-free Scintilla доступен только для Notepad++")
+    pid = wintypes.DWORD(0)
+    if not user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid)) or not pid.value:
+        raise OSError("Не удалось определить PID Scintilla")
+    access = (_PROCESS_VM_OPERATION | _PROCESS_VM_READ | _PROCESS_VM_WRITE
+              | PROCESS_QUERY_LIMITED_INFORMATION)
+    process = kernel32.OpenProcess(access, False, pid.value)
+    if not process:
+        raise OSError("Нет доступа к памяти процесса Notepad++")
+    remote = 0
+    try:
+        remote = _hwnd_value(kernel32.VirtualAllocEx(
+            process, None, capacity, _MEM_COMMIT | _MEM_RESERVE, _PAGE_READWRITE))
+        if not remote:
+            raise OSError("Не удалось выделить временную память Scintilla")
+        yield process, remote
+    finally:
+        if remote:
+            kernel32.VirtualFreeEx(process, remote, 0, _MEM_RELEASE)
+        kernel32.CloseHandle(process)
+
+
+def _scintilla_remote_read(process: object, address: int, count: int) -> Optional[bytes]:
+    if count < 0:
+        return None
+    buf = ctypes.create_string_buffer(count)
+    transferred = ctypes.c_size_t(0)
+    if (count and not kernel32.ReadProcessMemory(
+            process, address, buf, count, ctypes.byref(transferred))):
+        return None
+    if transferred.value != count:
+        return None
+    return buf.raw
+
+
+def _scintilla_remote_write(process: object, address: int, payload: bytes) -> bool:
+    if not payload:
+        return False
+    data = ctypes.create_string_buffer(payload)
+    transferred = ctypes.c_size_t(0)
+    return bool(kernel32.WriteProcessMemory(
+        process, address, data, len(payload), ctypes.byref(transferred))
+        and transferred.value == len(payload))
+
+
+def _scintilla_target_bytes(hwnd: object, process: object, address: int,
+                            start: int, end: int) -> Optional[bytes]:
+    """Читает заданный диапазон в память адресата и восстанавливает target."""
+    if end < start:
+        return None
+    target_start = _sendmsg(hwnd, _SCI_GETTARGETSTART)
+    target_end = _sendmsg(hwnd, _SCI_GETTARGETEND)
+    try:
+        if not _sendmsg_ok(hwnd, _SCI_SETTARGETSTART, start, 0):
+            return None
+        if not _sendmsg_ok(hwnd, _SCI_SETTARGETEND, end, 0):
+            return None
+        copied = _sendmsg(hwnd, _SCI_GETTARGETTEXT, 0, address)
+        if copied < end - start:
+            return None
+        return _scintilla_remote_read(process, address, end - start)
+    finally:
+        _sendmsg_ok(hwnd, _SCI_SETTARGETSTART, target_start, 0)
+        _sendmsg_ok(hwnd, _SCI_SETTARGETEND, target_end, 0)
+
+
+def _scintilla_clipboard_free(
+    hwnd: object,
+    timings: Timings,
+    transform: Callable[[str], str],
+) -> Optional[str]:
+    """Ctrl+Ins в Notepad++: чтение и замена Scintilla без Clipboard API."""
+    span = _scintilla_line_before_caret(hwnd, timings.max_selected_length * 4)
+    if span is None:
+        return None
+    start, caret = span
+    if _sendmsg(hwnd, _SCI_GETCODEPAGE) != 65001:
+        logging.info("Scintilla: native path skipped (editor is not UTF-8)")
+        return None
+    if _sendmsg(hwnd, _SCI_GETREADONLY):
+        return None
+    foreground = _hwnd_value(user32.GetForegroundWindow())
+    focus = _get_focused_control_hwnd()
+    if focus != _hwnd_value(hwnd):
+        return None
+
+    def stable() -> bool:
+        return (bool(_clipboard_capture_target_matches(foreground, focus))
+                and _scintilla_line_before_caret(hwnd, timings.max_selected_length * 4)
+                    == (start, caret))
+
+    capacity = max(8192, timings.max_selected_length * 4 + 4096)
+    try:
+        with _scintilla_remote_memory(hwnd, capacity) as (process, address):
+            if not stable():
+                return None
+            original_bytes = _scintilla_target_bytes(hwnd, process, address, start, caret)
+            if original_bytes is None:
+                return None
+            try:
+                original = original_bytes.decode("utf-8", "strict")
+            except UnicodeError:
+                logging.info("Scintilla: invalid UTF-8; native path skipped")
+                return None
+            found = _transform_run_before_caret_text(original, len(original), transform)
+            if found is None:
+                return None
+            char_start, char_end, converted = found
+            byte_start = start + len(original[:char_start].encode("utf-8"))
+            byte_end = start + len(original[:char_end].encode("utf-8"))
+            replacement = converted.encode("utf-8")
+            if not replacement or len(replacement) + 1 > capacity:
+                return None
+            if not stable():
+                return None
+            # Повторная проверка перед записью: данные могли измениться,
+            # пока Scintilla обрабатывал сообщения от другого плагина.
+            if _scintilla_target_bytes(hwnd, process, address, start, caret) != original_bytes:
+                return None
+            if not stable() or not _scintilla_remote_write(process, address, replacement):
+                return None
+
+            saved_start = _sendmsg(hwnd, _SCI_GETTARGETSTART)
+            saved_end = _sendmsg(hwnd, _SCI_GETTARGETEND)
+            try:
+                if (not _sendmsg_ok(hwnd, _SCI_SETTARGETSTART, byte_start, 0)
+                        or not _sendmsg_ok(hwnd, _SCI_SETTARGETEND, byte_end, 0)
+                        or not stable()):
+                    return None
+                result_length = _sendmsg(hwnd, _SCI_REPLACETARGET, len(replacement), address)
+            finally:
+                _sendmsg_ok(hwnd, _SCI_SETTARGETSTART, saved_start, 0)
+                _sendmsg_ok(hwnd, _SCI_SETTARGETEND, saved_end, 0)
+
+            if result_length != len(replacement):
+                logging.warning("Scintilla: native replacement did not confirm length")
+                return None
+            actual = _scintilla_target_bytes(
+                hwnd, process, address, byte_start, byte_start + len(replacement))
+            if actual != replacement:
+                logging.warning("Scintilla: native replacement verification failed")
+                return None
+            _sendmsg_ok(hwnd, _SCI_SETEMPTYSELECTION, byte_start + len(replacement), 0)
+            logging.info("Scintilla: clipboard-free replacement verified (length=%d)", len(converted))
+            return converted
+    except (OSError, PermissionError) as exc:
+        logging.info("Scintilla: clipboard-free mode unavailable: %s", exc)
+        return None
+
+
 def _transform_run_before_caret_scintilla(
     hwnd: object,
     timings: Timings,
@@ -3341,6 +3523,11 @@ def _transform_run_before_caret_scintilla(
     Из чужого процесса используем лишь сообщения с числовыми параметрами.
     Буфер обмена сохраняется стандартной защитой.
     """
+    # Современный Notepad++ работает напрямую через SCI_GETTARGETTEXT /
+    # SCI_REPLACETARGET: никаких изменений буфера обмена (OLE DataObject).
+    converted = _scintilla_clipboard_free(hwnd, timings, transform)
+    if converted is not None:
+        return converted
     span = _scintilla_line_before_caret(hwnd, timings.max_selected_length * 4)
     if span is None:
         return None
@@ -3383,6 +3570,9 @@ def _transform_run_before_caret_scintilla(
             time.sleep(timings.paste_settle_seconds)
             logging.info("Scintilla: Ctrl+Ins replacement sent (length=%d)", len(replacement))
             return replacement
+    except ClipboardSnapshotUnsafe as exc:
+        logging.info("Scintilla: clipboard fallback safely skipped: %s", exc)
+        return None
     finally:
         # Если диапазон исходной строки остался выделенным, операция не
         # состоялась. Восстанавливаем каретку только при исходном фокусе.
