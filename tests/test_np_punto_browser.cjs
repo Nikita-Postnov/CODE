@@ -65,3 +65,31 @@ test("Known valid English sentences are not corrected accidentally", () => {
     assert.equal(core.findReplacement("hello world", options), null);
     assert.equal(core.findReplacement("working today", options), null);
 });
+
+test("Ctrl+Ins converts the last layout run before caret without dictionary", () => {
+    const prefix = "привет ghbdtn";
+    assert.deepEqual(core.findRunBeforeCaret(prefix, prefix.length), {
+        start: 7, end: prefix.length, before: "ghbdtn", replacement: "привет",
+    });
+    const phrase = "xnj ntgthm evttn&";
+    assert.equal(
+        core.findRunBeforeCaret(phrase, phrase.length).replacement,
+        "что теперь умеет?",
+    );
+    const mixed = "ctrl+ins не работают";
+    assert.equal(
+        core.findRunBeforeCaret(mixed, mixed.length).replacement,
+        "yt hf,jnf.n",
+    );
+});
+
+test("Ctrl+Ins has safe line and caret boundaries", () => {
+    assert.equal(core.findRunBeforeCaret("ghbdtn\n", 7), null);
+    assert.equal(core.findRunBeforeCaret("ghbdtn", 0), null);
+    assert.equal(core.findRunBeforeCaret("ghbdtn", 100), null);
+    assert.equal(core.findRunBeforeCaret("", 0), null);
+    const multiline = "привет\nghbdtn";
+    const found = core.findRunBeforeCaret(multiline, multiline.length);
+    assert.equal(found.start, 7);
+    assert.equal(found.replacement, "привет");
+});
