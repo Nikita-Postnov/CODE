@@ -5,7 +5,7 @@
     if (!core || !globalThis.chrome?.storage?.local) return;
 
     const defaults = {
-        enabled: false, learnManual: false,
+        enabled: false, rulesEnabled: true, learnManual: false,
         words: core.defaultWords, learnedWords: [], rules: [],
         excludedHosts: [],
     };
@@ -80,11 +80,12 @@
         const caret = field.selectionStart;
         if (caret === null || caret !== field.selectionEnd) return false;
         const prefix = field.value.slice(0, caret);
-        const found = core.findReplacement(prefix, settings);
+        const found = core.findReplacement(prefix, { ...settings, autoEnabled: settings.enabled });
         if (!found) return false;
         const original = found.before + separator;
         const replacement = found.replacement +
-            core.correctedSeparator(separator, found.before, found.replacement);
+            (found.reason === "rule" ? separator :
+                core.correctedSeparator(separator, found.before, found.replacement));
         setPlainText(field, found.start, caret, replacement);
         saveUndo(field, found.start, original, replacement);
         return true;
@@ -142,17 +143,18 @@
         const { node, range } = info;
         const caret = range.startOffset;
         const prefix = node.data.slice(0, caret);
-        const found = core.findReplacement(prefix, settings);
+        const found = core.findReplacement(prefix, { ...settings, autoEnabled: settings.enabled });
         if (!found) return false;
         const replacement = found.replacement +
-            core.correctedSeparator(separator, found.before, found.replacement);
+            (found.reason === "rule" ? separator :
+                core.correctedSeparator(separator, found.before, found.replacement));
         return replaceInEditable(editor, info, found.start, caret, replacement, found.before + separator);
     }
 
     document.addEventListener("beforeinput", event => {
         if (applyingCorrection) return;
         if (event.isTrusted) lastChange = null;
-        if (!settings.enabled || event.defaultPrevented || event.isComposing ||
+        if (!(settings.enabled || settings.rulesEnabled) || event.defaultPrevented || event.isComposing ||
             event.inputType !== "insertText" || typeof event.data !== "string" ||
             !/^[ .,!?;:&@#$^|~]$/u.test(event.data)) return;
         const field = editingTarget(event);
