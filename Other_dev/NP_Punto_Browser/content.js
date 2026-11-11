@@ -81,7 +81,7 @@
         if (caret === null || caret !== field.selectionEnd) return false;
         const prefix = field.value.slice(0, caret);
         const found = core.findReplacement(prefix, { ...settings, autoEnabled: settings.enabled });
-        if (!found) return false;
+        if (!found || found.reason === "rule") return false;
         const original = found.before + separator;
         const replacement = found.replacement +
             (found.reason === "rule" ? separator :
@@ -144,19 +144,86 @@
         const caret = range.startOffset;
         const prefix = node.data.slice(0, caret);
         const found = core.findReplacement(prefix, { ...settings, autoEnabled: settings.enabled });
-        if (!found) return false;
+        if (!found || found.reason === "rule") return false;
         const replacement = found.replacement +
             (found.reason === "rule" ? separator :
                 core.correctedSeparator(separator, found.before, found.replacement));
         return replaceInEditable(editor, info, found.start, caret, replacement, found.before + separator);
     }
 
+    function matchesInsertedSeparator(actual, separator) {
+        // Chrome может заменять пробел на U+00A0 в contenteditable,
+        // а InputEvent.data при этом содержит обычный U+0020.
+        return actual === separator ||
+            ((separator === " " || separator === "\u00a0") &&
+                (actual === " " || actual === "\u00a0"));
+    }
+
+    function replaceAfterNativeInput(field, separator) {
+        // В сложных редакторах нативная вставка должна завершиться до запуска
+        // execCommand: изменение прямо из beforeinput может быть отклонено.
+        if (isPlainField(field)) {
+            const caret = field.selectionStart;
+            if (caret === null || caret !== field.selectionEnd || caret < 1 ||
+                !matchesInsertedSeparator(field.value[caret - 1], separator)) return false;
+            const prefix = field.value.slice(0, caret - 1);
+            const found = core.findReplacement(prefix, {
+                ...settings, autoEnabled: settings.enabled,
+            });
+            if (!found) return false;
+            const replacement = found.replacement +
+                (found.reason === "rule" ? separator :
+                    core.correctedSeparator(separator, found.before, found.replacement));
+            const original = field.value.slice(found.start, caret);
+            setPlainText(field, found.start, caret, replacement);
+            saveUndo(field, found.start, original, replacement);
+            return true;
+        }
+
+        const info = singleNodeSelection(field);
+        if (!info || !info.range.collapsed) return false;
+        const { node, range } = info;
+        const caret = range.startOffset;
+        if (caret < 1 || !matchesInsertedSeparator(node.data[caret - 1], separator)) return false;
+        const found = core.findReplacement(node.data.slice(0, caret - 1), {
+            ...settings, autoEnabled: settings.enabled,
+        });
+        if (!found) return false;
+        const replacement = found.replacement +
+            (found.reason === "rule" ? separator :
+                core.correctedSeparator(separator, found.before, found.replacement));
+        return replaceInEditable(field, info, found.start, caret, replacement);
+    }
+
+    document.addEventListener("input", event => {
+        if (applyingCorrection || event.isComposing || event.inputType !== "insertText" ||
+            typeof event.data !== "string" ||
+            !/^[ \u00a0.,!?;:&@#$^|~]$/u.test(event.data) ||
+            !(settings.enabled || settings.rulesEnabled)) return;
+        const field = editingTarget(event);
+        if (!field) return;
+        const separator = event.data;
+        // Нулевая отложенная задача исполняется после завершения штатных
+        // обработчиков ввода редактора (ProseMirror/React и прочие).
+        setTimeout(() => {
+            if (applyingCorrection || !(settings.enabled || settings.rulesEnabled) ||
+                disabledOnThisSite()) return;
+            try {
+                const active = document.activeElement;
+                if (active && active !== field && !field.contains(active)) return;
+                replaceAfterNativeInput(field, separator);
+            } catch (_error) {
+                // Никакой отправки введённого текста или тихой перезаписи.
+            }
+        }, 0);
+    }, true);
+
     document.addEventListener("beforeinput", event => {
         if (applyingCorrection) return;
         if (event.isTrusted) lastChange = null;
         if (!(settings.enabled || settings.rulesEnabled) || event.defaultPrevented || event.isComposing ||
             event.inputType !== "insertText" || typeof event.data !== "string" ||
-            !/^[ .,!?;:&@#$^|~]$/u.test(event.data)) return;
+            !/^[ \u00a0.,!?;:&@#$^|~]$/u.test(event.data)) return;
         const field = editingTarget(event);
         if (!field) return;
         let didReplace = false;

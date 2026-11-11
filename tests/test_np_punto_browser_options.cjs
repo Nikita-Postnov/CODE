@@ -50,7 +50,7 @@ test("Stored rules are loaded and independently enabled by default", () => {
     });
     assert.equal(h.elements.enabled.checked, false);
     assert.equal(h.elements.rulesEnabled.checked, true);
-    assert.equal(h.elements.rules.value, "brb => be right back");
+    assert.equal(h.elements.rules.value, "brb - be right back");
 });
 
 test("Rule preview checks current edits without saving", () => {
@@ -87,7 +87,7 @@ test("Malformed and duplicate rules are rejected on save", () => {
     h.elements.rules.value="brb";
     h.click("save");
     assert.equal(h.storage.rules,undefined);
-    assert.match(h.elements.status.textContent,/разделитель/);
+    assert.match(h.elements.status.textContent,/сокращение - полный текст/);
     h.elements.rules.value="brb => ответ\nBRB => другой ответ";
     h.click("save");
     assert.equal(h.storage.rules,undefined);
@@ -102,4 +102,33 @@ test("Saved rules can be disabled independently of word conversion", () => {
     assert.equal(h.storage.enabled,true);
     assert.equal(h.storage.rulesEnabled,false);
     assert.equal(h.storage.rules[0].from,"brb");
+});
+
+test("New preferred dash format saves and previews ща - сейчас",()=>{
+    const h=setup({enabled:false, rulesEnabled:true});
+    h.elements.rules.value="ща - сейчас";
+    h.elements.ruleTest.value="ЩА";
+    h.click("testRule");
+    assert.equal(h.elements.ruleTestResult.textContent, "Сработает: сейчас");
+    h.click("save");
+    assert.deepEqual(Array.from(h.storage.rules,x=>({...x})),[
+        {from:"ща",to:"сейчас"},
+    ]);
+    assert.equal(h.storage.rulesEnabled,true);
+});
+
+test("Old arrow rule format remains compatible on update",()=>{
+    const h=setup({rules:[{from:"ща",to:"сейчас"}]});
+    assert.equal(h.elements.rules.value,"ща - сейчас");
+    h.elements.rules.value="ща => сейчас";
+    h.click("save");
+    assert.equal(h.storage.rules[0].from,"ща");
+    assert.equal(h.storage.rules[0].to,"сейчас");
+});
+
+test("Dashes within rule output are preserved",()=>{
+    const h=setup();
+    h.elements.rules.value="бт - бета-тест";
+    h.click("save");
+    assert.equal(h.storage.rules[0].to,"бета-тест");
 });

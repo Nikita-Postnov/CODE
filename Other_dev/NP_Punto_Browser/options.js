@@ -22,7 +22,7 @@
             el("learn").checked = Boolean(values.learnManual);
             el("words").value = (values.words || []).join("\n");
             el("hosts").value = (values.excludedHosts || []).join("\n");
-            el("rules").value = (values.rules || []).map(r => r.from + " => " + r.to).join("\n");
+            el("rules").value = (values.rules || []).map(r => r.from + " - " + r.to).join("\n");
             report("Настройки загружены. Подтверждённых слов: " + (values.learnedWords || []).length);
         });
     }
@@ -30,12 +30,15 @@
         const rules = [];
         const seen = new Set();
         for (const line of lines(el("rules").value)) {
-            const pos = line.indexOf("=>");
-            if (pos === -1) {
-                return { error: "Неверное правило: требуется разделитель =>." };
+            // Новый удобный формат: «ща - сейчас»; прежний «ща => сейчас»
+            // сохраняется для обратной совместимости при ручном вводе.
+            const arrow = line.indexOf("=>");
+            const dash = arrow < 0 ? line.match(/^(.+?)\s+-\s+(.+)$/u) : null;
+            if (arrow < 0 && !dash) {
+                return { error: "Неверное правило: используйте «сокращение - полный текст»." };
             }
-            const from = line.slice(0, pos).trim();
-            const to = line.slice(pos + 2).trim();
+            const from = (arrow >= 0 ? line.slice(0, arrow) : dash[1]).trim();
+            const to = (arrow >= 0 ? line.slice(arrow + 2) : dash[2]).trim();
             if (!from || from.length > 64 || !to || to.length > 256 || rules.length >= 250) {
                 return { error: "Проверьте длину и количество правил (до 250)." };
             }
