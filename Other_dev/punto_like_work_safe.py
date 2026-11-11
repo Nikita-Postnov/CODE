@@ -1683,7 +1683,12 @@ def _get_class_name(hwnd: object) -> str:
 
 def _is_edit_like_class(class_name: str) -> bool:
     c = (class_name or "").lower()
-    return c == "edit" or c.startswith("richedit")
+    return (
+        c == "edit"
+        or c.startswith("richedit")
+        or c.startswith("windowsforms10.edit.")
+        or c.startswith("windowsforms10.richedit")
+    )
 
 def _get_focused_control_hwnd() -> int:
     """hwnd контрола с фокусом в foreground-потоке (0, если не определить).
@@ -3496,6 +3501,15 @@ def _apply_rules_in_edit(hwnd: object, after_space: bool) -> None:
         logging.debug("%s: safe replace aborted", "SPACE" if after_space else "IDLE")
 
 
+def _space_is_ready_in_edit(hwnd: object) -> bool:
+    """Пробел уже вставлен целевым контролом, каретка стоит сразу после него."""
+    caret = _get_collapsed_caret_from_edit(hwnd)
+    if caret is None or caret <= 0:
+        return False
+    text = _read_edit_full_text(hwnd)
+    return bool(text and caret <= len(text) and text[caret - 1] == " ")
+
+
 def _idle_rules_job(fg_hwnd: int, focus_hwnd: int) -> None:
     """Worker: автозамена после паузы во вводе — если окно и фокус те же."""
     if _is_paused:
@@ -4393,19 +4407,24 @@ def _on_space_up(fg_hwnd: int, fg_exe: str) -> None:
         return
     revision = _keyboard_input_revision
 
-    def apply_if_unchanged() -> None:
+    def apply_if_unchanged(attempt: int = 0) -> None:
         if _is_paused or revision != _keyboard_input_revision:
             return
         if _hwnd_value(user32.GetForegroundWindow()) != fg_hwnd:
             return
         if _get_focused_control_hwnd() != focus or not _is_text_input_focus(focus):
             return
+        if not _space_is_ready_in_edit(focus):
+            # Асинхронный Edit может показать пробел позже события keyup.
+            # Повторяем только при неизменном вводе и фокусе.
+            if attempt < 2:
+                _idle.schedule(0.025, lambda: apply_if_unchanged(attempt + 1))
+            return
         _apply_rules_in_edit(focus, after_space=True)
 
-    # После отпускания Space целевое приложение ещё может обрабатывать символ.
-    # Не читаем текст в клавиатурном хуке и не блокируем ввод: через 80 мс
-    # запускаем одноразовую проверку в worker, если пользователь не продолжил печатать.
-    _idle.schedule(0.08, apply_if_unchanged)
+    # Space уже отпущен: начинаем проверку раньше, чтобы не пропускать
+    # исправление при обычной быстрой печати. Чтение поля — только в worker.
+    _idle.schedule(0.02, apply_if_unchanged)
 
 
 def _handle_keyboard_event(msg: int, l_param: int) -> None:
