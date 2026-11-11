@@ -169,7 +169,8 @@ class KeyboardTests(unittest.TestCase):
         worker.run_sync.assert_not_called()
         worker.submit.assert_not_called()
         idle.schedule.assert_called_once()
-        self.assertGreaterEqual(idle.schedule.call_args.args[0], 0.05)
+        self.assertGreaterEqual(idle.schedule.call_args.args[0], 0.015)
+        self.assertLessEqual(idle.schedule.call_args.args[0], 0.03)
 
     def test_space_callback_runs_only_if_focus_and_input_unchanged(self):
         idle = Mock()
@@ -184,6 +185,7 @@ class KeyboardTests(unittest.TestCase):
              patch.object(punto, "_space_keydown_blocked", False), \
              patch.object(punto, "_space_keydown_fg_hwnd", 45), \
              patch.object(punto, "_keyboard_input_revision", current), \
+             patch.object(punto, "_space_is_ready_in_edit", return_value=True), \
              patch.object(punto, "_apply_rules_in_edit") as apply:
             punto._on_space_up(45, "notepad.exe")
             callback = idle.schedule.call_args.args[1]
@@ -192,6 +194,52 @@ class KeyboardTests(unittest.TestCase):
             punto._keyboard_input_revision += 1
             callback()
             apply.assert_called_once()
+
+    def test_async_edit_retries_space_without_changing_focus_or_keyboard_guard(self):
+        idle = Mock()
+        api = Mock()
+        api.GetForegroundWindow.return_value = 45
+        with patch.object(punto, "user32", api), \
+             patch.object(punto, "_idle", idle), \
+             patch.object(punto, "_settings", punto.Settings(auto_layout_correction=True)), \
+             patch.object(punto, "_get_focused_control_hwnd", return_value=17), \
+             patch.object(punto, "_is_text_input_focus", return_value=True), \
+             patch.object(punto, "_space_keydown_blocked", False), \
+             patch.object(punto, "_space_keydown_fg_hwnd", 45), \
+             patch.object(punto, "_space_is_ready_in_edit", side_effect=[False, True]) as ready, \
+             patch.object(punto, "_apply_rules_in_edit") as apply:
+            punto._on_space_up(45, "notepad.exe")
+            first = idle.schedule.call_args.args[1]
+            first()
+            self.assertEqual(idle.schedule.call_count, 2)
+            self.assertAlmostEqual(idle.schedule.call_args.args[0], 0.025)
+            apply.assert_not_called()
+            second = idle.schedule.call_args.args[1]
+            second()
+            self.assertEqual(ready.call_count, 2)
+            apply.assert_called_once_with(17, after_space=True)
+
+    def test_async_edit_retry_ignores_keyboard_input_after_space(self):
+        idle = Mock()
+        api = Mock()
+        api.GetForegroundWindow.return_value = 45
+        current = punto._keyboard_input_revision
+        with patch.object(punto, "user32", api), \
+             patch.object(punto, "_idle", idle), \
+             patch.object(punto, "_settings", punto.Settings(auto_layout_correction=True)), \
+             patch.object(punto, "_get_focused_control_hwnd", return_value=17), \
+             patch.object(punto, "_is_text_input_focus", return_value=True), \
+             patch.object(punto, "_space_keydown_blocked", False), \
+             patch.object(punto, "_space_keydown_fg_hwnd", 45), \
+             patch.object(punto, "_keyboard_input_revision", current), \
+             patch.object(punto, "_space_is_ready_in_edit", return_value=False), \
+             patch.object(punto, "_apply_rules_in_edit") as apply:
+            punto._on_space_up(45, "notepad.exe")
+            idle.schedule.call_args.args[1]()
+            next_callback = idle.schedule.call_args.args[1]
+            punto._keyboard_input_revision += 1
+            next_callback()
+            apply.assert_not_called()
 
     def test_ctrl_insert_uses_direct_edit_when_replacement_succeeds(self):
         api = Mock()
@@ -326,6 +374,10 @@ class KeyboardTests(unittest.TestCase):
         self.assertTrue(punto._is_edit_like_class("Edit"))
         self.assertTrue(punto._is_edit_like_class("RichEditD2DPT"))
         self.assertTrue(punto._is_edit_like_class("RichEdit20W"))
+        self.assertTrue(punto._is_edit_like_class("WindowsForms10.EDIT.app.0.13965fa_r9_ad1"))
+        self.assertTrue(punto._is_edit_like_class("WindowsForms10.RichEdit20W.app.0.13965fa"))
+        self.assertFalse(punto._is_edit_like_class("WindowsForms10.Window.8.app.0.13965fa"))
+        self.assertFalse(punto._is_edit_like_class("Chrome_RenderWidgetHostHWND"))
         self.assertFalse(punto._is_edit_like_class("PasswordBox"))
 
     def test_auto_layout_replaces_dictionary_word_in_notepad(self):
