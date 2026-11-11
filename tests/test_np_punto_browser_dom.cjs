@@ -8,7 +8,7 @@ const core = require("../Other_dev/NP_Punto_Browser/layout_core.js");
 
 const script = fs.readFileSync(path.join(__dirname, "../Other_dev/NP_Punto_Browser/content.js"), "utf8");
 
-function harness(initial, rich = false) {
+function harness(initial, rich = false, overrides = {}) {
     const callbacks = new Map();
     class HTMLElement {
         constructor() { this.isContentEditable = false; }
@@ -74,7 +74,7 @@ function harness(initial, rich = false) {
         runtime:{lastError:null},
         storage:{
             local:{
-                get(defaults,cb){cb({...defaults,enabled:true});},
+                get(defaults,cb){cb({...defaults,enabled:true,...overrides});},
                 set(){},
             },
             onChanged:{addListener(){}},
@@ -196,4 +196,60 @@ test("Browser Ctrl+Ins stays local to current editor and prevents default only o
     // An existing English phrase changes only on an explicit manual request.
     assert.equal(h.fireKey("Insert",{ctrlKey:true}),true);
     assert.equal(h.field.value,"руддщ цщкдв");
+});
+
+test("User rule works even with dictionary correction switched off in a plain input",()=>{
+    const h=harness("brb", false, {
+        enabled:false, rulesEnabled:true,
+        rules:[{from:"brb",to:"be right back"}],
+    });
+    assert.equal(h.fire(" "),true);
+    assert.equal(h.field.value,"be right back ");
+});
+
+test("Custom rule expands inside a ChatGPT-style editor without layout autocorrection",()=>{
+    const h=harness("БРБ", true, {
+        enabled:false, rulesEnabled:true,
+        rules:[{from:"брб",to:"Буду рад помочь"}],
+    });
+    assert.equal(h.fire(" "),true);
+    assert.equal(h.node.data,"Буду рад помочь ");
+    assert.equal(h.fireKey("Backspace",{altKey:true,shiftKey:true}),true);
+    assert.equal(h.node.data,"БРБ ");
+});
+
+test("Rule delimiter is retained verbatim, even when replacement changes language",()=>{
+    const h=harness("brb", false, {
+        enabled:false, rulesEnabled:true,
+        rules:[{from:"brb",to:"вернулся"}],
+    });
+    assert.equal(h.fire("&"),true);
+    assert.equal(h.field.value,"вернулся&");
+});
+
+test("Disabling custom rules does not accidentally enable dictionary correction",()=>{
+    const h=harness("brb", false, {
+        enabled:false, rulesEnabled:false,
+        rules:[{from:"brb",to:"be right back"}],
+    });
+    assert.equal(h.fire(" "),false);
+    assert.equal(h.field.value,"brb");
+});
+
+test("Disabled rules do not suppress normal dictionary correction",()=>{
+    const h=harness("ghbdtn", true, {
+        enabled:true, rulesEnabled:false,
+        rules:[{from:"ghbdtn",to:"Другое"}],
+    });
+    assert.equal(h.fire(" "),true);
+    assert.equal(h.node.data,"привет ");
+});
+
+test("Partial rule inside a larger word is not expanded",()=>{
+    const h=harness("xbrb", false, {
+        enabled:false, rulesEnabled:true,
+        rules:[{from:"brb",to:"be right back"}],
+    });
+    assert.equal(h.fire(" "),false);
+    assert.equal(h.field.value,"xbrb");
 });

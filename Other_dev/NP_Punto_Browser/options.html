@@ -22,9 +22,9 @@ small { color: #777; display: block; }
 <h1>NP Punto Browser</h1>
 <p>Исправление работает локально. Вводимый текст не передаётся на сервер.</p>
 <fieldset><legend>Функции</legend>
-<label><input id="enabled" type="checkbox"> Автоматически исправлять после пробела или знака препинания</label>
+<label><input id="enabled" type="checkbox"> Автоматически исправлять раскладку по словарю</label>
 <label><input id="learn" type="checkbox"> Запоминать вручную исправленные слова в локальном словаре</label>
-<small>Оба режима изначально выключены. Ручное исправление выделения доступно всегда.</small>
+<small>Словарная коррекция и обучение изначально выключены. Настроенные пользовательские правила работают отдельно.</small>
 </fieldset>
 <fieldset><legend>Словарь известных слов</legend>
 <label for="words">По одному слову на строку. Можно вставить слова из Data/punto_like_layout_words.txt</label>
@@ -35,9 +35,15 @@ small { color: #777; display: block; }
 <textarea id="hosts" rows="4" spellcheck="false"></textarea>
 </fieldset>
 <fieldset><legend>Пользовательские правила</legend>
+<label><input id="rulesEnabled" type="checkbox" checked> Автоматически применять мои правила</label>
+<small>Работают независимо от исправления раскладки. Замена происходит после пробела или знака препинания. Регистр сокращения не важен.</small>
 <label for="rules">По одному правилу на строку: сокращение =&gt; полный текст</label>
 <textarea id="rules" rows="6" spellcheck="false"></textarea>
-<small>Правила применяются раньше словаря, только при явном включении автоматического режима.</small>
+<small>Правила имеют приоритет над словарём. При совпадении выбирается самое длинное сокращение.</small>
+<label for="ruleTest">Проверить правило без сохранения</label>
+<input id="ruleTest" type="text" placeholder="Введите сокращение, например brb" autocomplete="off" spellcheck="false" style="width:100%;box-sizing:border-box;padding:8px;margin:5px 0">
+<button type="button" id="testRule">Проверить замену</button>
+<div id="ruleTestResult" role="status" aria-live="polite"></div>
 </fieldset>
 <button type="button" id="save">Сохранить настройки</button>
 <button type="button" id="clear">Очистить выученные слова</button>

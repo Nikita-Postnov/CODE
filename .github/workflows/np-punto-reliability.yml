@@ -8,6 +8,7 @@ on:
       - "Other_dev/NP_Punto_Browser/**"
       - "tests/test_np_punto_browser.cjs"
       - "tests/test_np_punto_browser_dom.cjs"
+      - "tests/test_np_punto_browser_options.cjs"
       - "tests/test_np_punto_browser_bridge.py"
       - "tests/test_np_punto_reliability.py"
       - "tests/test_np_punto_hotkey_priority.py"
@@ -21,6 +22,7 @@ on:
       - "Other_dev/NP_Punto_Browser/**"
       - "tests/test_np_punto_browser.cjs"
       - "tests/test_np_punto_browser_dom.cjs"
+      - "tests/test_np_punto_browser_options.cjs"
       - "tests/test_np_punto_browser_bridge.py"
       - "tests/test_np_punto_reliability.py"
       - "tests/test_np_punto_hotkey_priority.py"
@@ -47,8 +49,9 @@ jobs:
           node --check Other_dev/NP_Punto_Browser/content.js
           node --check Other_dev/NP_Punto_Browser/options.js
           node --check tests/test_np_punto_browser_dom.cjs
+          node --check tests/test_np_punto_browser_options.cjs
       - name: Test browser layout engine
-        run: node --test tests/test_np_punto_browser.cjs tests/test_np_punto_browser_dom.cjs
+        run: node --test tests/test_np_punto_browser.cjs tests/test_np_punto_browser_dom.cjs tests/test_np_punto_browser_options.cjs
       - name: Compile NP Punto
         run: python -m py_compile Other_dev/punto_like_work_safe.py
       - name: Validate NP Punto safety
