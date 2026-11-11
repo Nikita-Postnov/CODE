@@ -194,6 +194,23 @@
         return true;
     }
 
+    function manuallyConvertBeforeCaret(field) {
+        if (isPlainField(field)) {
+            const caret = field.selectionStart;
+            if (caret === null || caret !== field.selectionEnd) return false;
+            const found = core.findRunBeforeCaret(field.value, caret);
+            if (!found) return false;
+            setPlainText(field, found.start, found.end, found.replacement);
+            saveUndo(field, found.start, found.before, found.replacement);
+            return true;
+        }
+        const info = singleNodeSelection(field);
+        if (!info || !info.range.collapsed) return false;
+        const found = core.findRunBeforeCaret(info.node.data, info.range.startOffset);
+        if (!found) return false;
+        return replaceInEditable(field, info, found.start, found.end, found.replacement);
+    }
+
     function learn(source, converted) {
         if (!settings.learnManual || !core.lettersKind(source) ||
             !core.lettersKind(converted) || converted.length < 4 ||
@@ -231,9 +248,13 @@
         const field = editingTarget(event);
         if (!field) return;
         const manual = event.ctrlKey && event.altKey && event.shiftKey && event.key === "F8";
-        const revert = !event.ctrlKey && event.altKey && event.shiftKey && event.key === "Backspace";
-        if (!manual && !revert) return;
-        const success = manual ? manuallyConvert(field) : undo(field);
+        const ctrlInsert = event.ctrlKey && !event.altKey && !event.shiftKey &&
+            (event.key === "Insert" || event.code === "Insert");
+        const revert = !event.ctrlKey && event.altKey && event.shiftKey &&
+            event.key === "Backspace";
+        if (!manual && !ctrlInsert && !revert) return;
+        const success = revert ? undo(field) :
+            (manuallyConvert(field) || manuallyConvertBeforeCaret(field));
         if (success) {
             event.preventDefault();
             event.stopPropagation();
