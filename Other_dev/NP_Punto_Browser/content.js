@@ -100,7 +100,7 @@
         return { range, node };
     }
 
-    function replaceInEditable(editor, info, start, end, replacement) {
+    function replaceInEditable(editor, info, start, end, replacement, undoBefore = null) {
         // Rich-text-редакторы (включая ProseMirror) требуют штатной команды ввода.
         // Прямая замена TextNode не всегда обновляет их внутреннюю модель.
         const { node, range } = info;
@@ -129,7 +129,7 @@
         const after = singleNodeSelection(editor);
         if (after && after.range.collapsed) {
             saveUndo(editor, after.range.startOffset - replacement.length,
-                previousText, replacement, after.node);
+                undoBefore === null ? previousText : undoBefore, replacement, after.node);
         } else {
             lastChange = null;
         }
@@ -146,7 +146,7 @@
         if (!found) return false;
         const replacement = found.replacement +
             core.correctedSeparator(separator, found.before, found.replacement);
-        return replaceInEditable(editor, info, found.start, caret, replacement);
+        return replaceInEditable(editor, info, found.start, caret, replacement, found.before + separator);
     }
 
     document.addEventListener("beforeinput", event => {
