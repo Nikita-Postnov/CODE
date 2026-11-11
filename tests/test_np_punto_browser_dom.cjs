@@ -99,7 +99,21 @@ function harness(initial, rich = false) {
         for(const listener of callbacks.get("beforeinput") || []) listener(event);
         return prevented;
     }
-    return {field,node,selection,fire};
+    function fireKey(key, modifiers = {}) {
+        let prevented = false;
+        const event = {
+            target:field, key, isTrusted:true, isComposing:false,defaultPrevented:false,
+            altKey:modifiers.altKey || false,
+            shiftKey:modifiers.shiftKey || false,
+            ctrlKey:modifiers.ctrlKey || false,
+            composedPath:()=>[field],
+            preventDefault(){prevented=true;},
+            stopPropagation(){},
+        };
+        for(const listener of callbacks.get("keydown") || []) listener(event);
+        return prevented;
+    }
+    return {field,node,selection,fire,fireKey};
 }
 
 test("Plain ChatGPT-like input corrects whole phrase on final punctuation",()=>{
@@ -126,4 +140,12 @@ test("Normal English is not rewritten",()=>{
     const h=harness("hello world");
     assert.equal(h.fire(" "),false);
     assert.equal(h.field.value,"hello world");
+});
+
+test("ChatGPT-style correction is undoable through native editor insertion",()=>{
+    const h=harness("xnj ntgthm evttn",true);
+    assert.equal(h.fire("&"),true);
+    assert.equal(h.node.data,"что теперь умеет?");
+    assert.equal(h.fireKey("Backspace",{altKey:true,shiftKey:true}),true);
+    assert.equal(h.node.data,"xnj ntgthm evttn&");
 });
