@@ -1948,6 +1948,17 @@ def _resolve_real_foreground_hwnd() -> int:
 
 _WORKER_SEND_TIMEOUT_MS: Final[int] = 200
 
+# Scintilla (Notepad++, Geany и др.). Только целочисленные Win32-сообщения:
+# чтение указателей из чужого процесса здесь намеренно не применяется.
+_SCI_GETCURRENTPOS: Final[int] = 2008
+_SCI_GETSELECTIONSTART: Final[int] = 2143
+_SCI_GETSELECTIONEND: Final[int] = 2145
+_SCI_SETSEL: Final[int] = 2160
+_SCI_LINEFROMPOSITION: Final[int] = 2166
+_SCI_POSITIONFROMLINE: Final[int] = 2167
+_SCI_COPY: Final[int] = 2178
+_SCI_GETSELECTIONS: Final[int] = 2570
+
 def _sendmsg(hwnd: object, msg: int, wparam: int = 0, lparam: int = 0) -> int:
     """SendMessageTimeoutW с защитой от зависшего окна; 0 при таймауте/ошибке."""
     res = ctypes.c_ulonglong(0)
@@ -3294,6 +3305,94 @@ def _clipboard_capture_target_matches(foreground: int, focus: int) -> bool:
     return True
 
 
+def _is_scintilla_control(hwnd: object) -> bool:
+    return bool(hwnd and _get_class_name(hwnd).lower().startswith("scintilla"))
+
+
+def _scintilla_line_before_caret(hwnd: object, max_bytes: int) -> Optional[tuple[int, int]]:
+    """Диапазон текущей строки Scintilla до каретки (UTF-8 byte offsets)."""
+    if not _is_scintilla_control(hwnd):
+        return None
+    if _sendmsg(hwnd, _SCI_GETSELECTIONS) > 1:
+        logging.info("Scintilla: multiple selections; conversion skipped")
+        return None
+    caret = _sendmsg(hwnd, _SCI_GETCURRENTPOS)
+    if caret <= 0:
+        return None
+    if (_sendmsg(hwnd, _SCI_GETSELECTIONSTART) != caret
+            or _sendmsg(hwnd, _SCI_GETSELECTIONEND) != caret):
+        logging.info("Scintilla: active selection; before-caret conversion skipped")
+        return None
+    line = _sendmsg(hwnd, _SCI_LINEFROMPOSITION, caret)
+    start = _sendmsg(hwnd, _SCI_POSITIONFROMLINE, line)
+    if start < 0 or start >= caret or caret - start > max_bytes:
+        return None
+    return start, caret
+
+
+def _transform_run_before_caret_scintilla(
+    hwnd: object,
+    timings: Timings,
+    transform: Callable[[str], str],
+) -> Optional[str]:
+    """Notepad++: выделение строки через SCI_SETSEL, копирование через SCI_COPY.
+
+    Обходит ненадёжный для некоторых Scintilla-приложений Shift+Home.
+    Из чужого процесса используем лишь сообщения с числовыми параметрами.
+    Буфер обмена сохраняется стандартной защитой.
+    """
+    span = _scintilla_line_before_caret(hwnd, timings.max_selected_length * 4)
+    if span is None:
+        return None
+    start, caret = span
+    foreground = _hwnd_value(user32.GetForegroundWindow())
+    focus = _get_focused_control_hwnd()
+    if focus != _hwnd_value(hwnd):
+        return None
+
+    def target_unchanged() -> bool:
+        return _clipboard_capture_target_matches(foreground, focus)
+
+    try:
+        with _clipboard_guard(timings):
+            if not target_unchanged():
+                return None
+            if not _sendmsg_ok(hwnd, _SCI_SETSEL, start, caret):
+                return None
+            old_seq = int(user32.GetClipboardSequenceNumber())
+            _sendmsg(hwnd, _SCI_COPY)
+            selected = _wait_for_new_clipboard_text(old_seq, timings)
+            if selected is None and target_unchanged():
+                # Некоторые Scintilla-плагины обрабатывают SCI_COPY не сразу.
+                # Пробуем обычный Ctrl+C только при неизменном фокусе.
+                logging.info("Scintilla: retry copying selected text via Ctrl+C")
+                old_seq = int(user32.GetClipboardSequenceNumber())
+                _press_combo_ctrl(VK_C, timings)
+                selected = _wait_for_new_clipboard_text(old_seq, timings)
+            if not selected or not selected.strip() or len(selected) > timings.max_selected_length:
+                logging.info("Scintilla: no selected Unicode text after copy")
+                return None
+            if not target_unchanged():
+                return None
+            found = _transform_run_before_caret_text(selected, len(selected), transform)
+            if found is None:
+                return None
+            part_start, part_end, replacement = found
+            final_text = selected[:part_start] + replacement + selected[part_end:]
+            _replace_selection_with_text(final_text, timings)
+            time.sleep(timings.paste_settle_seconds)
+            logging.info("Scintilla: Ctrl+Ins replacement sent (length=%d)", len(replacement))
+            return replacement
+    finally:
+        # Если диапазон исходной строки остался выделенным, операция не
+        # состоялась. Восстанавливаем каретку только при исходном фокусе.
+        if target_unchanged():
+            sel_start = _sendmsg(hwnd, _SCI_GETSELECTIONSTART)
+            sel_end = _sendmsg(hwnd, _SCI_GETSELECTIONEND)
+            if sel_start == start and sel_end == caret:
+                _sendmsg_ok(hwnd, _SCI_SETSEL, caret, caret)
+
+
 def _transform_run_before_caret_via_clipboard(
     timings: Timings,
     transform: Callable[[str], str],
@@ -3348,6 +3447,8 @@ def _transform_run_before_caret(timings: Timings, transform: Callable[[str], str
     if hwnd_focus and _is_password_edit(hwnd_focus):
         logging.info("before-caret: skipped protected password control")
         return None
+    if _is_scintilla_control(hwnd_focus):
+        return _transform_run_before_caret_scintilla(hwnd_focus, timings, transform)
 
     foreground = _hwnd_value(user32.GetForegroundWindow())
     sel = _edit_get_sel(hwnd_focus)

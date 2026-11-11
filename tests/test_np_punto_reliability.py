@@ -428,6 +428,7 @@ class KeyboardTests(unittest.TestCase):
         with patch.object(punto, "user32", api), \
              patch.object(punto, "_get_focused_control_hwnd", return_value=222), \
              patch.object(punto, "_is_password_edit", return_value=False), \
+             patch.object(punto, "_is_scintilla_control", return_value=False), \
              patch.object(punto, "_edit_get_sel", return_value=(0, 6)), \
              patch.object(punto, "_read_edit_full_text", return_value="ghbdtn"), \
              patch.object(punto, "_sendmsg_ok", return_value=False), \
