@@ -8,6 +8,7 @@ on:
       - "Other_dev/NP_Punto_Browser/**"
       - "tests/test_np_punto_browser.cjs"
       - "tests/test_np_punto_browser_dom.cjs"
+      - "tests/test_np_punto_browser_bridge.py"
       - "tests/test_np_punto_reliability.py"
       - "tests/test_np_punto_hotkey_priority.py"
       - "tests/test_np_punto_chromium_copy.py"
@@ -20,6 +21,7 @@ on:
       - "Other_dev/NP_Punto_Browser/**"
       - "tests/test_np_punto_browser.cjs"
       - "tests/test_np_punto_browser_dom.cjs"
+      - "tests/test_np_punto_browser_bridge.py"
       - "tests/test_np_punto_reliability.py"
       - "tests/test_np_punto_hotkey_priority.py"
       - "tests/test_np_punto_chromium_copy.py"
@@ -50,4 +52,4 @@ jobs:
       - name: Compile NP Punto
         run: python -m py_compile Other_dev/punto_like_work_safe.py
       - name: Validate NP Punto safety
-        run: python -m unittest -v tests.test_np_punto_reliability tests.test_np_punto_hotkey_priority tests.test_np_punto_chromium_copy tests.test_np_punto_raw_hotkey_diagnostic
+        run: python -m unittest -v tests.test_np_punto_reliability tests.test_np_punto_hotkey_priority tests.test_np_punto_chromium_copy tests.test_np_punto_raw_hotkey_diagnostic tests.test_np_punto_browser_bridge
