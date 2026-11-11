@@ -122,6 +122,36 @@
         if (!result || result.confidence < 0.95) return null;
         return { start, before: match[0], replacement: result.replacement, reason: result.reason };
     }
+    function findRunBeforeCaret(text, caret) {
+        // Ручное исправление совпадает с Ctrl+Ins настольной версии:
+        // меняем последний непрерывный фрагмент одной раскладки, включая
+        // пробелы и пунктуацию, но останавливаемся на другом языке и переносе.
+        if (typeof text !== "string" || !Number.isInteger(caret) ||
+            caret <= 0 || caret > text.length) return null;
+        let cursor = caret - 1;
+        while (cursor >= 0 && !lettersKind(text[cursor])) {
+            if (text[cursor] === "\r" || text[cursor] === "\n") return null;
+            cursor -= 1;
+        }
+        if (cursor < 0) return null;
+        const sourceKind = lettersKind(text[cursor]);
+        cursor -= 1;
+        while (cursor >= 0 && caret - cursor <= 10000) {
+            if (text[cursor] === "\r" || text[cursor] === "\n") break;
+            const kind = lettersKind(text[cursor]);
+            if (kind && kind !== sourceKind) break;
+            cursor -= 1;
+        }
+        let start = cursor + 1;
+        // Разделитель между словами разных языков остаётся на месте.
+        while (start < caret && !lettersKind(text[start])) start += 1;
+        const source = text.slice(start, caret);
+        if (!source || source.length > 10000) return null;
+        const replacement = convertText(source);
+        if (replacement === source) return null;
+        return { start, end: caret, before: source, replacement };
+    }
+
     function correctedSeparator(character, sourceWord, replacement) {
         // Преобразуем лишь явно отличающиеся физические Shift-клавиши,
         // когда исправленное слово перешло из EN в RU.
@@ -141,7 +171,8 @@
         });
     }
     return Object.freeze({
-        convertText, normalizeWords, candidate, findReplacement, correctedSeparator, isExcludedHost,
+        convertText, normalizeWords, candidate, findReplacement, findRunBeforeCaret,
+        correctedSeparator, isExcludedHost,
         lettersKind, defaultWords: Object.freeze(defaultWords.slice()),
     });
 });
