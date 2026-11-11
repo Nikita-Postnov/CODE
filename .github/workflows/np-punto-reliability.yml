@@ -14,6 +14,7 @@ on:
       - "tests/test_np_punto_hotkey_priority.py"
       - "tests/test_np_punto_chromium_copy.py"
       - "tests/test_np_punto_scintilla.py"
+      - "tests/test_np_punto_scintilla_native.py"
       - "tests/test_np_punto_raw_hotkey_diagnostic.py"
       - ".github/workflows/np-punto-reliability.yml"
   pull_request:
@@ -29,6 +30,7 @@ on:
       - "tests/test_np_punto_hotkey_priority.py"
       - "tests/test_np_punto_chromium_copy.py"
       - "tests/test_np_punto_scintilla.py"
+      - "tests/test_np_punto_scintilla_native.py"
       - "tests/test_np_punto_raw_hotkey_diagnostic.py"
       - ".github/workflows/np-punto-reliability.yml"
 
@@ -57,4 +59,4 @@ jobs:
       - name: Compile NP Punto
         run: python -m py_compile Other_dev/punto_like_work_safe.py
       - name: Validate NP Punto safety
-        run: python -m unittest -v tests.test_np_punto_reliability tests.test_np_punto_hotkey_priority tests.test_np_punto_chromium_copy tests.test_np_punto_scintilla tests.test_np_punto_raw_hotkey_diagnostic tests.test_np_punto_browser_bridge
+        run: python -m unittest -v tests.test_np_punto_reliability tests.test_np_punto_hotkey_priority tests.test_np_punto_chromium_copy tests.test_np_punto_scintilla tests.test_np_punto_scintilla_native tests.test_np_punto_raw_hotkey_diagnostic tests.test_np_punto_browser_bridge
