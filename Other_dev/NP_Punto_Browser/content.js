@@ -151,13 +151,21 @@
         return replaceInEditable(editor, info, found.start, caret, replacement, found.before + separator);
     }
 
+    function matchesInsertedSeparator(actual, separator) {
+        // Chrome может заменять пробел на U+00A0 в contenteditable,
+        // а InputEvent.data при этом содержит обычный U+0020.
+        return actual === separator ||
+            ((separator === " " || separator === "\u00a0") &&
+                (actual === " " || actual === "\u00a0"));
+    }
+
     function replaceAfterNativeInput(field, separator) {
         // В сложных редакторах нативная вставка должна завершиться до запуска
         // execCommand: изменение прямо из beforeinput может быть отклонено.
         if (isPlainField(field)) {
             const caret = field.selectionStart;
             if (caret === null || caret !== field.selectionEnd || caret < 1 ||
-                field.value[caret - 1] !== separator) return false;
+                !matchesInsertedSeparator(field.value[caret - 1], separator)) return false;
             const prefix = field.value.slice(0, caret - 1);
             const found = core.findReplacement(prefix, {
                 ...settings, autoEnabled: settings.enabled,
@@ -176,7 +184,7 @@
         if (!info || !info.range.collapsed) return false;
         const { node, range } = info;
         const caret = range.startOffset;
-        if (caret < 1 || node.data[caret - 1] !== separator) return false;
+        if (caret < 1 || !matchesInsertedSeparator(node.data[caret - 1], separator)) return false;
         const found = core.findReplacement(node.data.slice(0, caret - 1), {
             ...settings, autoEnabled: settings.enabled,
         });
@@ -190,7 +198,7 @@
     document.addEventListener("input", event => {
         if (applyingCorrection || event.isComposing || event.inputType !== "insertText" ||
             typeof event.data !== "string" ||
-            !/^[ .,!?;:&@#$^|~]$/u.test(event.data) ||
+            !/^[ \u00a0.,!?;:&@#$^|~]$/u.test(event.data) ||
             !(settings.enabled || settings.rulesEnabled)) return;
         const field = editingTarget(event);
         if (!field) return;
@@ -215,7 +223,7 @@
         if (event.isTrusted) lastChange = null;
         if (!(settings.enabled || settings.rulesEnabled) || event.defaultPrevented || event.isComposing ||
             event.inputType !== "insertText" || typeof event.data !== "string" ||
-            !/^[ .,!?;:&@#$^|~]$/u.test(event.data)) return;
+            !/^[ \u00a0.,!?;:&@#$^|~]$/u.test(event.data)) return;
         const field = editingTarget(event);
         if (!field) return;
         let didReplace = false;
