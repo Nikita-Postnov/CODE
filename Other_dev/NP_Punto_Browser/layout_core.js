@@ -142,7 +142,9 @@
             if (kind && kind !== sourceKind) break;
             cursor -= 1;
         }
-        const start = cursor + 1;
+        let start = cursor + 1;
+        // Разделитель между словами разных языков остаётся на месте.
+        while (start < caret && !lettersKind(text[start])) start += 1;
         const source = text.slice(start, caret);
         if (!source || source.length > 10000) return null;
         const replacement = convertText(source);
