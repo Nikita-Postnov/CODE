@@ -162,19 +162,24 @@ SCREENSHOT_HISTORY_DISPLAY_LIMIT = 150
 
 
 def load_capture_preferences() -> dict:
-    defaults = {"quick_actions": False, "history_enabled": False}
+    defaults = {"quick_actions": False, "history_enabled": False, "capture_target": "area"}
     try:
         data = json.loads(SCREENSHOT_HISTORY_SETTINGS.read_text(encoding="utf-8"))
     except (OSError, ValueError, TypeError):
         return defaults
     if not isinstance(data, dict):
         return defaults
-    return {name: data.get(name) is True for name in defaults}
+    result = {name: data.get(name) is True for name in ("quick_actions", "history_enabled")}
+    target = data.get("capture_target", "area")
+    result["capture_target"] = target if target in ("area", "window") else "area"
+    return result
 
 
 def save_capture_preferences(preferences: dict) -> bool:
     payload = {name: preferences.get(name) is True
                for name in ("quick_actions", "history_enabled")}
+    target = preferences.get("capture_target", "area")
+    payload["capture_target"] = target if target in ("area", "window") else "area"
     path = SCREENSHOT_HISTORY_SETTINGS
     temporary = None
     try:
@@ -197,6 +202,17 @@ def save_capture_preferences(preferences: dict) -> bool:
                 Path(temporary).unlink(missing_ok=True)
             except OSError:
                 log.debug("Не удалось удалить временные настройки", exc_info=True)
+
+
+def remember_capture_target(target: str) -> bool:
+    """Сохраняет выбранный объект захвата при переключении кнопкой или Shift+Tab."""
+    if target not in ("area", "window"):
+        return False
+    preferences = load_capture_preferences()
+    if preferences["capture_target"] == target:
+        return True
+    preferences["capture_target"] = target
+    return save_capture_preferences(preferences)
 
 
 def archive_screenshot(image: QImage) -> Optional[Path]:
@@ -1107,7 +1123,10 @@ class SelectionOverlay:
         if not self.mode_enabled(mode):
             return
         if mode != self.mode:
+            previous_target = self.capture_target()
             self.mode = mode
+            if self.switchable and self.capture_target() != previous_target:
+                remember_capture_target(self.capture_target())
             self.selected_window_hwnd = None
             self.selected_window_title = ""
             self._hover_window_g = (
@@ -4181,6 +4200,17 @@ def run_capture_flow(initial_mode: str = SelectionOverlay.MODE_SHOT, launcher=No
             record_ok, reason = False, "Запись уже открыта"
         else:
             record_ok, reason = True, ""
+        saved_target = load_capture_preferences().get("capture_target", "area")
+        if initial_mode in (SelectionOverlay.MODE_WINDOW,
+                            SelectionOverlay.MODE_RECORD_WINDOW,
+                            SelectionOverlay.MODE_OCR_WINDOW):
+            remember_capture_target("window")
+        elif saved_target == "window":
+            initial_mode = {
+                SelectionOverlay.MODE_SHOT: SelectionOverlay.MODE_WINDOW,
+                SelectionOverlay.MODE_RECORD: SelectionOverlay.MODE_RECORD_WINDOW,
+                SelectionOverlay.MODE_OCR: SelectionOverlay.MODE_OCR_WINDOW,
+            }.get(initial_mode, initial_mode)
         overlay = SelectionOverlay(
             frozen=True, switchable=True, mode=initial_mode,
             record_available=record_ok, record_unavailable_reason=reason,
@@ -4682,6 +4712,7 @@ class Launcher(QMainWindow):
     def _set_capture_preference(self, name: str, enabled: bool) -> None:
         if name not in ("quick_actions", "history_enabled"):
             return
+        self._capture_preferences.update(load_capture_preferences())
         previous = self._capture_preferences.copy()
         self._capture_preferences[name] = bool(enabled)
         if not save_capture_preferences(self._capture_preferences):
