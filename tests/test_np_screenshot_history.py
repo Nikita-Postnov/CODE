@@ -41,14 +41,16 @@ class HistoryStorageTests(unittest.TestCase):
 
     def test_history_and_quick_actions_disabled_by_default(self):
         self.assertEqual(shot.load_capture_preferences(),
-                         {"quick_actions": False, "history_enabled": False})
+                         {"quick_actions": False, "history_enabled": False,
+                          "capture_target": "area", "capture_kind": "shot"})
         self.assertFalse(shot.SCREENSHOT_HISTORY_DIR.exists())
 
     def test_preferences_are_portable_and_written_atomically(self):
         self.assertTrue(shot.save_capture_preferences(
             {"quick_actions": True, "history_enabled": False}))
         self.assertEqual(shot.load_capture_preferences(),
-                         {"quick_actions": True, "history_enabled": False})
+                         {"quick_actions": True, "history_enabled": False,
+                          "capture_target": "area", "capture_kind": "shot"})
         self.assertEqual(list(shot.SCREENSHOT_HISTORY_SETTINGS.parent.glob("*.tmp")), [])
 
     def test_broken_preferences_fail_closed_without_dropping_history(self):
@@ -56,6 +58,36 @@ class HistoryStorageTests(unittest.TestCase):
         shot.SCREENSHOT_HISTORY_SETTINGS.write_text("{not json", encoding="utf-8")
         self.assertFalse(shot.load_capture_preferences()["history_enabled"])
         self.assertEqual(shot.SCREENSHOT_HISTORY_SETTINGS.read_text(encoding="utf-8"), "{not json")
+
+    def test_capture_action_and_target_restore_after_restarting_capture(self):
+        self.assertTrue(shot.remember_capture_selection("ocr", "window"))
+        self.assertEqual(shot.load_capture_preferences()["capture_kind"], "ocr")
+        self.assertEqual(shot.load_capture_preferences()["capture_target"], "window")
+        self.assertEqual(shot.preferred_capture_mode(shot.SelectionOverlay.MODE_SHOT),
+                         shot.SelectionOverlay.MODE_OCR_WINDOW)
+        self.assertEqual(shot.preferred_capture_mode(shot.SelectionOverlay.MODE_RECORD),
+                         shot.SelectionOverlay.MODE_RECORD_WINDOW)
+        self.assertEqual(shot.preferred_capture_mode(shot.SelectionOverlay.MODE_WINDOW),
+                         shot.SelectionOverlay.MODE_WINDOW)
+
+    def test_switching_target_preserves_action_and_other_preferences(self):
+        self.assertTrue(shot.save_capture_preferences({
+            "quick_actions": True, "history_enabled": True,
+            "capture_kind": "record", "capture_target": "area",
+        }))
+        self.assertTrue(shot.remember_capture_target("window"))
+        self.assertEqual(shot.load_capture_preferences(), {
+            "quick_actions": True, "history_enabled": True,
+            "capture_kind": "record", "capture_target": "window",
+        })
+
+    def test_invalid_saved_capture_choice_uses_defaults(self):
+        shot.SCREENSHOT_HISTORY_SETTINGS.parent.mkdir(parents=True)
+        shot.SCREENSHOT_HISTORY_SETTINGS.write_text(
+            '{"capture_kind":"bad","capture_target":"bad"}', encoding="utf-8")
+        self.assertEqual(shot.load_capture_preferences()["capture_kind"], "shot")
+        self.assertEqual(shot.load_capture_preferences()["capture_target"], "area")
+        self.assertFalse(shot.remember_capture_selection("bad", "area"))
 
     def test_capture_archive_is_unique_and_persists_without_automatic_deletion(self):
         first = shot.archive_screenshot(sample_image())
@@ -170,6 +202,31 @@ class CaptureRoutingTests(unittest.TestCase):
     def close_launcher(self):
         self.launcher._real_quit = True
         self.launcher.close()
+
+    def test_overlay_button_changes_both_saved_action_and_target(self):
+        with patch.object(shot.SelectionOverlay, "mode_enabled", return_value=True):
+            overlay = shot.SelectionOverlay(frozen=False, switchable=True,
+                                            mode=shot.SelectionOverlay.MODE_SHOT)
+            try:
+                overlay.set_capture_kind("ocr")
+                self.assertEqual(shot.load_capture_preferences()["capture_kind"], "ocr")
+                overlay.toggle_target()
+                self.assertEqual(shot.load_capture_preferences()["capture_target"], "window")
+                overlay.toggle_mode()
+                self.assertEqual(shot.load_capture_preferences()["capture_kind"], "shot")
+            finally:
+                overlay.dispose()
+
+    def test_new_printscreen_uses_saved_action_and_target(self):
+        shot.remember_capture_selection("ocr", "window")
+        modes = []
+        def record_initial_mode(overlay):
+            modes.append(overlay.mode)
+            return None
+        with patch.object(shot, "_run_selection", side_effect=record_initial_mode), \
+             patch.object(shot.SelectionOverlay, "mode_enabled", return_value=True):
+            self.assertIsNone(shot.run_capture_flow(shot.SelectionOverlay.MODE_SHOT))
+        self.assertEqual(modes, [shot.SelectionOverlay.MODE_OCR_WINDOW])
 
     def test_normal_printscreen_still_opens_editor_and_does_not_archive(self):
         with patch.object(shot, "run_capture_flow", return_value=sample_image()), \
