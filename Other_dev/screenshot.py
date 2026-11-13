@@ -162,7 +162,8 @@ SCREENSHOT_HISTORY_DISPLAY_LIMIT = 150
 
 
 def load_capture_preferences() -> dict:
-    defaults = {"quick_actions": False, "history_enabled": False, "capture_target": "area"}
+    defaults = {"quick_actions": False, "history_enabled": False, "capture_target": "area",
+                "capture_kind": "shot"}
     try:
         data = json.loads(SCREENSHOT_HISTORY_SETTINGS.read_text(encoding="utf-8"))
     except (OSError, ValueError, TypeError):
@@ -172,6 +173,8 @@ def load_capture_preferences() -> dict:
     result = {name: data.get(name) is True for name in ("quick_actions", "history_enabled")}
     target = data.get("capture_target", "area")
     result["capture_target"] = target if target in ("area", "window") else "area"
+    kind = data.get("capture_kind", "shot")
+    result["capture_kind"] = kind if kind in ("shot", "record", "ocr") else "shot"
     return result
 
 
@@ -180,6 +183,8 @@ def save_capture_preferences(preferences: dict) -> bool:
                for name in ("quick_actions", "history_enabled")}
     target = preferences.get("capture_target", "area")
     payload["capture_target"] = target if target in ("area", "window") else "area"
+    kind = preferences.get("capture_kind", "shot")
+    payload["capture_kind"] = kind if kind in ("shot", "record", "ocr") else "shot"
     path = SCREENSHOT_HISTORY_SETTINGS
     temporary = None
     try:
@@ -204,15 +209,36 @@ def save_capture_preferences(preferences: dict) -> bool:
                 log.debug("Не удалось удалить временные настройки", exc_info=True)
 
 
-def remember_capture_target(target: str) -> bool:
-    """Сохраняет выбранный объект захвата при переключении кнопкой или Shift+Tab."""
-    if target not in ("area", "window"):
+def remember_capture_selection(kind: str, target: str) -> bool:
+    """Сохраняет действие и объект захвата после выбора на панели."""
+    if kind not in ("shot", "record", "ocr") or target not in ("area", "window"):
         return False
     preferences = load_capture_preferences()
-    if preferences["capture_target"] == target:
+    if preferences["capture_kind"] == kind and preferences["capture_target"] == target:
         return True
+    preferences["capture_kind"] = kind
     preferences["capture_target"] = target
     return save_capture_preferences(preferences)
+
+
+def remember_capture_target(target: str) -> bool:
+    """Совместимость со старым вызовом сохранения только объекта."""
+    return remember_capture_selection(load_capture_preferences()["capture_kind"], target)
+
+
+def preferred_capture_mode(initial_mode: str) -> str:
+    """Обычный PrintScreen восстанавливает оба выбора; отдельные команды — своё действие."""
+    preferences = load_capture_preferences()
+    mode_cls = SelectionOverlay
+    if initial_mode == mode_cls.MODE_SHOT:
+        return (mode_cls.mode_for_choice(
+            preferences["capture_kind"], preferences["capture_target"])
+            or initial_mode)
+    if initial_mode in (mode_cls.MODE_RECORD, mode_cls.MODE_OCR):
+        kind = "record" if initial_mode == mode_cls.MODE_RECORD else "ocr"
+        return (mode_cls.mode_for_choice(kind, preferences["capture_target"])
+                or initial_mode)
+    return initial_mode
 
 
 def archive_screenshot(image: QImage) -> Optional[Path]:
@@ -1123,10 +1149,9 @@ class SelectionOverlay:
         if not self.mode_enabled(mode):
             return
         if mode != self.mode:
-            previous_target = self.capture_target()
             self.mode = mode
-            if self.switchable and self.capture_target() != previous_target:
-                remember_capture_target(self.capture_target())
+            if self.switchable:
+                remember_capture_selection(self.capture_kind(), self.capture_target())
             self.selected_window_hwnd = None
             self.selected_window_title = ""
             self._hover_window_g = (
@@ -4200,21 +4225,14 @@ def run_capture_flow(initial_mode: str = SelectionOverlay.MODE_SHOT, launcher=No
             record_ok, reason = False, "Запись уже открыта"
         else:
             record_ok, reason = True, ""
-        saved_target = load_capture_preferences().get("capture_target", "area")
-        if initial_mode in (SelectionOverlay.MODE_WINDOW,
-                            SelectionOverlay.MODE_RECORD_WINDOW,
-                            SelectionOverlay.MODE_OCR_WINDOW):
-            remember_capture_target("window")
-        elif saved_target == "window":
-            initial_mode = {
-                SelectionOverlay.MODE_SHOT: SelectionOverlay.MODE_WINDOW,
-                SelectionOverlay.MODE_RECORD: SelectionOverlay.MODE_RECORD_WINDOW,
-                SelectionOverlay.MODE_OCR: SelectionOverlay.MODE_OCR_WINDOW,
-            }.get(initial_mode, initial_mode)
+        requested_mode = initial_mode
+        initial_mode = preferred_capture_mode(initial_mode)
         overlay = SelectionOverlay(
             frozen=True, switchable=True, mode=initial_mode,
             record_available=record_ok, record_unavailable_reason=reason,
         )
+        if requested_mode != SelectionOverlay.MODE_SHOT and overlay.mode == initial_mode:
+            remember_capture_selection(overlay.capture_kind(), overlay.capture_target())
         try:
             log.info("capture: overlay panes=%d shots=%s",
                      len(overlay._panes),
