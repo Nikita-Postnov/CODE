@@ -42,6 +42,7 @@ class HistoryStorageTests(unittest.TestCase):
     def test_history_and_quick_actions_disabled_by_default(self):
         self.assertEqual(shot.load_capture_preferences(),
                          {"quick_actions": False, "history_enabled": False,
+                          "edit_after_capture": True,
                           "capture_target": "area", "capture_kind": "shot"})
         self.assertFalse(shot.SCREENSHOT_HISTORY_DIR.exists())
 
@@ -50,6 +51,7 @@ class HistoryStorageTests(unittest.TestCase):
             {"quick_actions": True, "history_enabled": False}))
         self.assertEqual(shot.load_capture_preferences(),
                          {"quick_actions": True, "history_enabled": False,
+                          "edit_after_capture": True,
                           "capture_target": "area", "capture_kind": "shot"})
         self.assertEqual(list(shot.SCREENSHOT_HISTORY_SETTINGS.parent.glob("*.tmp")), [])
 
@@ -73,13 +75,30 @@ class HistoryStorageTests(unittest.TestCase):
     def test_switching_target_preserves_action_and_other_preferences(self):
         self.assertTrue(shot.save_capture_preferences({
             "quick_actions": True, "history_enabled": True,
+            "edit_after_capture": False,
             "capture_kind": "record", "capture_target": "area",
         }))
         self.assertTrue(shot.remember_capture_target("window"))
         self.assertEqual(shot.load_capture_preferences(), {
             "quick_actions": True, "history_enabled": True,
+            "edit_after_capture": False,
             "capture_kind": "record", "capture_target": "window",
         })
+
+    def test_editor_preference_round_trip_and_legacy_default(self):
+        self.assertTrue(shot.load_capture_preferences()["edit_after_capture"])
+        self.assertTrue(shot.save_capture_preferences({
+            "edit_after_capture": False, "history_enabled": True,
+            "capture_kind": "shot", "capture_target": "window",
+        }))
+        saved = shot.load_capture_preferences()
+        self.assertFalse(saved["edit_after_capture"])
+        self.assertTrue(saved["history_enabled"])
+        self.assertEqual(saved["capture_target"], "window")
+        self.assertTrue(shot.save_capture_preferences({
+            **saved, "edit_after_capture": True,
+        }))
+        self.assertTrue(shot.load_capture_preferences()["edit_after_capture"])
 
     def test_invalid_saved_capture_choice_uses_defaults(self):
         shot.SCREENSHOT_HISTORY_SETTINGS.parent.mkdir(parents=True)
@@ -251,6 +270,54 @@ class CaptureRoutingTests(unittest.TestCase):
         editor.assert_not_called()
         self.assertIsNotNone(self.launcher._quick_panel)
         self.launcher._quick_panel.close()
+
+    def test_editor_checkbox_disables_editor_and_keeps_clipboard(self):
+        self.assertTrue(self.launcher.edit_after_capture_check.isChecked())
+        self.launcher.edit_after_capture_check.setChecked(False)
+        self.assertFalse(shot.load_capture_preferences()["edit_after_capture"])
+        image = sample_image()
+        with patch.object(shot, "run_capture_flow", return_value=image), \
+             patch.object(self.launcher, "_open_editor_image") as editor:
+            self.launcher._capture(shot.SelectionOverlay.MODE_SHOT)
+        editor.assert_not_called()
+        self.assertEqual(QApplication.clipboard().image().size(), image.size())
+        self.assertIsNone(self.launcher._quick_panel)
+        self.assertFalse(shot.SCREENSHOT_HISTORY_DIR.exists())
+        self.launcher.edit_after_capture_check.setChecked(True)
+        self.assertTrue(shot.load_capture_preferences()["edit_after_capture"])
+        with patch.object(shot, "run_capture_flow", return_value=image), \
+             patch.object(self.launcher, "_open_editor_image") as editor:
+            self.launcher._capture(shot.SelectionOverlay.MODE_SHOT)
+        editor.assert_called_once()
+
+    def test_disabled_editor_keeps_history_and_quick_actions_independent(self):
+        self.launcher._set_capture_preference("edit_after_capture", False)
+        self.launcher._set_capture_preference("history_enabled", True)
+        image = sample_image()
+        with patch.object(shot, "run_capture_flow", return_value=image), \
+             patch.object(self.launcher, "_open_editor_image") as editor:
+            self.launcher._capture(shot.SelectionOverlay.MODE_WINDOW)
+        editor.assert_not_called()
+        self.assertEqual(len(shot.screenshot_history_files()), 1)
+
+        self.launcher._set_capture_preference("quick_actions", True)
+        with patch.object(shot, "run_capture_flow", return_value=image), \
+             patch.object(self.launcher, "_open_editor_image") as editor:
+            self.launcher._capture(shot.SelectionOverlay.MODE_SHOT)
+        editor.assert_not_called()
+        self.assertIsNotNone(self.launcher._quick_panel)
+        self.launcher._quick_panel.close()
+
+    def test_capture_from_open_editor_respects_shared_preference(self):
+        self.launcher._set_capture_preference("edit_after_capture", False)
+        editor = shot.EditorWindow(sample_image())
+        self.addCleanup(editor.close)
+        image = sample_image("#11ccbb")
+        with patch.object(shot, "_find_launcher", return_value=self.launcher), \
+             patch.object(shot, "run_capture_flow", return_value=image), \
+             patch.object(self.launcher, "_handle_captured_image") as handle:
+            editor._do_capture()
+        handle.assert_called_once_with(image)
 
     def test_cancelled_capture_creates_no_history(self):
         self.launcher._capture_preferences.update(

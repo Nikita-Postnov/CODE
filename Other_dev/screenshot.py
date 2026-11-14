@@ -162,7 +162,8 @@ SCREENSHOT_HISTORY_DISPLAY_LIMIT = 150
 
 
 def load_capture_preferences() -> dict:
-    defaults = {"quick_actions": False, "history_enabled": False, "capture_target": "area",
+    defaults = {"quick_actions": False, "history_enabled": False,
+                "edit_after_capture": True, "capture_target": "area",
                 "capture_kind": "shot"}
     try:
         data = json.loads(SCREENSHOT_HISTORY_SETTINGS.read_text(encoding="utf-8"))
@@ -170,7 +171,8 @@ def load_capture_preferences() -> dict:
         return defaults
     if not isinstance(data, dict):
         return defaults
-    result = {name: data.get(name) is True for name in ("quick_actions", "history_enabled")}
+    result = {name: data.get(name, name == "edit_after_capture") is True
+              for name in ("quick_actions", "history_enabled", "edit_after_capture")}
     target = data.get("capture_target", "area")
     result["capture_target"] = target if target in ("area", "window") else "area"
     kind = data.get("capture_kind", "shot")
@@ -179,8 +181,8 @@ def load_capture_preferences() -> dict:
 
 
 def save_capture_preferences(preferences: dict) -> bool:
-    payload = {name: preferences.get(name) is True
-               for name in ("quick_actions", "history_enabled")}
+    payload = {name: preferences.get(name, name == "edit_after_capture") is True
+               for name in ("quick_actions", "history_enabled", "edit_after_capture")}
     target = preferences.get("capture_target", "area")
     payload["capture_target"] = target if target in ("area", "window") else "area"
     kind = preferences.get("capture_kind", "shot")
@@ -4099,9 +4101,13 @@ class EditorWindow(QMainWindow):
         self.view.delete_selection()
 
     def _do_capture(self):
-        img = run_capture_flow(SelectionOverlay.MODE_SHOT, _find_launcher())
+        launcher = _find_launcher()
+        img = run_capture_flow(SelectionOverlay.MODE_SHOT, launcher)
         (self.showMaximized() if getattr(self, "_was_max", False) else self.showNormal())
         if img is None:
+            return
+        if launcher is not None:
+            launcher._handle_captured_image(img)
             return
         QApplication.clipboard().setImage(img, QClipboard.Clipboard)
         ed = EditorWindow(img)
@@ -4629,6 +4635,7 @@ class Launcher(QMainWindow):
         super().__init__()
         self.setWindowTitle("NPCore Скриншоты")
         self.resize(420, 180)
+        self._capture_preferences = load_capture_preferences()
         w = QWidget(self)
         self.setCentralWidget(w)
         v = QVBoxLayout(w)
@@ -4667,6 +4674,14 @@ class Launcher(QMainWindow):
         btn_history = QPushButton("История скриншотов")
         btn_history.clicked.connect(self.open_history)
         v.addWidget(btn_history)
+        self.edit_after_capture_check = QCheckBox("Открывать редактор после снимка")
+        self.edit_after_capture_check.setChecked(
+            self._capture_preferences["edit_after_capture"])
+        self.edit_after_capture_check.setToolTip(
+            "При отключении снимок копируется в буфер обмена без открытия редактора.")
+        self.edit_after_capture_check.toggled.connect(
+            lambda enabled: self._set_capture_preference("edit_after_capture", enabled))
+        v.addWidget(self.edit_after_capture_check)
         info = QLabel(
             "Инструменты: Переместиться (H), Перо (P), Маркер (M), Прямоуг. (R), Овал (O), "
             "Стрелка (A), Текст (T), Блюр (B), Пиксели (X), Обрезать (C), Редация (D), "
@@ -4679,7 +4694,6 @@ class Launcher(QMainWindow):
         v.addStretch(1)
         _setup_logging()
         self._editors: List[EditorWindow] = []
-        self._capture_preferences = load_capture_preferences()
         self._quick_panel: Optional[ScreenshotQuickActionsDialog] = None
         self._history_dialog: Optional[ScreenshotHistoryDialog] = None
         self._real_quit = False
@@ -4728,18 +4742,29 @@ class Launcher(QMainWindow):
         dialog.activateWindow()
 
     def _set_capture_preference(self, name: str, enabled: bool) -> None:
-        if name not in ("quick_actions", "history_enabled"):
+        if name not in ("quick_actions", "history_enabled", "edit_after_capture"):
             return
         self._capture_preferences.update(load_capture_preferences())
         previous = self._capture_preferences.copy()
         self._capture_preferences[name] = bool(enabled)
-        if not save_capture_preferences(self._capture_preferences):
+        saved = save_capture_preferences(self._capture_preferences)
+        if not saved:
             self._capture_preferences = previous
-            action = getattr(self, "act_tray_" + name, None)
-            if action is not None:
-                action.blockSignals(True)
-                action.setChecked(previous[name])
-                action.blockSignals(False)
+        action = getattr(self, "act_tray_" + name, None)
+        if action is not None:
+            blocked = action.blockSignals(True)
+            try:
+                action.setChecked(self._capture_preferences[name])
+            finally:
+                action.blockSignals(blocked)
+        if name == "edit_after_capture":
+            checkbox = self.edit_after_capture_check
+            blocked = checkbox.blockSignals(True)
+            try:
+                checkbox.setChecked(self._capture_preferences[name])
+            finally:
+                checkbox.blockSignals(blocked)
+        if not saved:
             QMessageBox.warning(self, "Настройки", "Не удалось сохранить настройки скриншотера.")
 
     def _init_tray(self):
@@ -4752,6 +4777,12 @@ class Launcher(QMainWindow):
         self.act_tray_window = m.addAction("Снимок отдельного окна", self.make_window_shot)
         self.act_tray_project = m.addAction("Открыть редактируемый проект", self._open_project)
         self.act_tray_history = m.addAction("История скриншотов", self.open_history)
+        self.act_tray_edit_after_capture = m.addAction("Открывать редактор после снимка")
+        self.act_tray_edit_after_capture.setCheckable(True)
+        self.act_tray_edit_after_capture.setChecked(
+            self._capture_preferences["edit_after_capture"])
+        self.act_tray_edit_after_capture.toggled.connect(
+            lambda enabled: self._set_capture_preference("edit_after_capture", enabled))
         self.act_tray_quick_actions = m.addAction("Быстрые действия после снимка")
         self.act_tray_quick_actions.setCheckable(True)
         self.act_tray_quick_actions.setChecked(self._capture_preferences["quick_actions"])
@@ -4920,25 +4951,29 @@ class Launcher(QMainWindow):
         self.hide()
         QTimer.singleShot(200, lambda: self._capture(SelectionOverlay.MODE_WINDOW))
 
+    def _handle_captured_image(self, img: QImage) -> None:
+        """Буфер, история и действия для всех способов создания снимка."""
+        QApplication.clipboard().setImage(img, QClipboard.Clipboard)
+        saved = None
+        if self._capture_preferences.get("history_enabled", False):
+            saved = archive_screenshot(img)
+            if saved is None:
+                log.error("Снимок создан, но не удалось сохранить его в историю")
+        if self._capture_preferences.get("quick_actions", False):
+            panel = ScreenshotQuickActionsDialog(img, self, history_path=saved)
+            self._quick_panel = panel
+            panel.destroyed.connect(lambda _object=None: setattr(self, "_quick_panel", None))
+            panel.show()
+            panel.activateWindow()
+        elif self._capture_preferences.get("edit_after_capture", True):
+            self._open_editor_image(img)
+
     def _capture(self, initial_mode: str) -> None:
         log.info("capture: _capture start mode=%s", initial_mode)
         img = run_capture_flow(initial_mode, self)
         log.info("capture: result %s", None if img is None else f"{img.width()}x{img.height()}")
         if img is not None:
-            QApplication.clipboard().setImage(img, QClipboard.Clipboard)
-            saved = None
-            if self._capture_preferences.get("history_enabled", False):
-                saved = archive_screenshot(img)
-                if saved is None:
-                    log.error("Снимок создан, но не удалось сохранить его в историю")
-            if self._capture_preferences.get("quick_actions", False):
-                panel = ScreenshotQuickActionsDialog(img, self, history_path=saved)
-                self._quick_panel = panel
-                panel.destroyed.connect(lambda _object=None: setattr(self, "_quick_panel", None))
-                panel.show()
-                panel.activateWindow()
-            else:
-                self._open_editor_image(img)
+            self._handle_captured_image(img)
         self.hide()
 
     def _open_project(self):
