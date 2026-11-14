@@ -170,6 +170,7 @@ class CaptureChoicesGuiTests(unittest.TestCase):
                  patch.object(shot.SelectionOverlay, "shots", return_value=[]), \
                  patch.object(shot.SelectionOverlay, "dispose"), \
                  patch.object(shot, "_run_selection", return_value=area), \
+                 patch.object(shot, "preferred_capture_mode", side_effect=lambda mode: mode), \
                  patch.object(shot, "ffmpeg_path", return_value="ffmpeg.exe"), \
                  patch.object(shot, "compose_region_from_shots", return_value=img), \
                  patch.object(shot, "_begin_recording") as record, \
