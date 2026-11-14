@@ -46,6 +46,13 @@ function harness(initial, rich = false, overrides = {}) {
         setStart(node, n) { this.startContainer = node; this.startOffset = n; this.collapsed = this.startOffset === this.endOffset; }
         setEnd(node, n) { this.endContainer = node; this.endOffset = n; this.collapsed = this.startOffset === this.endOffset; }
         collapse() { this.endContainer = this.startContainer; this.endOffset = this.startOffset; this.collapsed = true; }
+        toString() {
+            if (this.startContainer === this.endContainer &&
+                this.startContainer.nodeType === 3) {
+                return this.startContainer.data.slice(this.startOffset, this.endOffset);
+            }
+            return "";
+        }
     }
     const node = {nodeType:3, data:initial};
     const editor = new HTMLElement();
