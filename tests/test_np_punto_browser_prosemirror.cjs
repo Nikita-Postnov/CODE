@@ -30,6 +30,10 @@ function fixture(parts, position = "element-caret") {
             if (selector.includes("p, li") && this.tagName === "P") return true;
             return false;
         }
+        getAttribute(name) {
+            if (name === "contenteditable" && this.explicitContenteditable) return "true";
+            return null;
+        }
         closest(selector) {
             if (selector === "[contenteditable]") {
                 let current = this;
