@@ -101,16 +101,14 @@
         return { range, node };
     }
 
-    function replaceInEditable(editor, info, start, end, replacement, undoBefore = null) {
-        // Rich-text-редакторы (включая ProseMirror) требуют штатной команды ввода.
-        // Прямая замена TextNode не всегда обновляет их внутреннюю модель.
-        const { node, range } = info;
-        const previousText = node.data.slice(start, end);
+    function replaceEditableRange(editor, replaceRange, replacement, undoBefore = null) {
+        // В ProseMirror используем команду редактора, чтобы его модель
+        // обновилась вместе с DOM. Прямое изменение TextNode недопустимо.
         const selection = document.getSelection();
-        const savedRange = range.cloneRange();
-        const replaceRange = range.cloneRange();
-        replaceRange.setStart(node, start);
-        replaceRange.setEnd(node, end);
+        if (!selection || selection.rangeCount !== 1) return false;
+        const savedRange = selection.getRangeAt(0).cloneRange();
+        const previousText = replaceRange.toString();
+        if (!previousText || previousText.length > 10000) return false;
         selection.removeAllRanges();
         selection.addRange(replaceRange);
         let inserted = false;
@@ -128,13 +126,82 @@
         }
         if (!inserted) return false;
         const after = singleNodeSelection(editor);
-        if (after && after.range.collapsed) {
-            saveUndo(editor, after.range.startOffset - replacement.length,
+        const start = after ? after.range.startOffset - replacement.length : -1;
+        if (after && after.range.collapsed && start >= 0) {
+            saveUndo(editor, start,
                 undoBefore === null ? previousText : undoBefore, replacement, after.node);
         } else {
             lastChange = null;
         }
         return true;
+    }
+
+    function replaceInEditable(editor, info, start, end, replacement, undoBefore = null) {
+        const replaceRange = info.range.cloneRange();
+        replaceRange.setStart(info.node, start);
+        replaceRange.setEnd(info.node, end);
+        return replaceEditableRange(editor, replaceRange, replacement, undoBefore);
+    }
+
+    function richRangeBeforeCaret(editor) {
+        // ChatGPT иногда ставит каретку на границу <p>/<span> или делит
+        // одно слово между несколькими TextNode. Одноузловый путь выше
+        // такую позицию не видит.
+        const selection = document.getSelection();
+        if (!selection || selection.rangeCount !== 1) return null;
+        const caret = selection.getRangeAt(0);
+        if (!caret.collapsed || !editor.contains(caret.startContainer)) return null;
+        let block = caret.startContainer.nodeType === Node.TEXT_NODE
+            ? caret.startContainer.parentElement : caret.startContainer;
+        if (!block) return null;
+        while (block !== editor &&
+               !block.matches?.("p, li, h1, h2, h3, h4, h5, h6, blockquote")) {
+            block = block.parentElement;
+            if (!block) return null;
+        }
+        const prefixRange = caret.cloneRange();
+        prefixRange.selectNodeContents(block);
+        prefixRange.setEnd(caret.startContainer, caret.startOffset);
+        const prefix = prefixRange.toString();
+        if (!prefix || prefix.length > 10000) return null;
+        const found = core.findRunBeforeCaret(prefix, prefix.length);
+        if (!found) return null;
+
+        // Отсчитываем начало фрагмента по текстовым узлам внутри текущего
+        // абзаца; за границы абзаца и защищённых HTML-элементов не выходим.
+        const nodes = [];
+        function collect(node) {
+            if (node.nodeType === Node.TEXT_NODE) {
+                nodes.push(node);
+                return;
+            }
+            if (node !== block && node.matches?.(
+                "pre, code, [role='code'], [data-np-punto-off], [contenteditable='false']"
+            )) return;
+            for (const child of node.childNodes || []) collect(child);
+        }
+        collect(block);
+        let remaining = found.start;
+        let startNode = null, offset = 0;
+        for (const node of nodes) {
+            if (remaining <= node.data.length) {
+                startNode = node;
+                offset = remaining;
+                break;
+            }
+            remaining -= node.data.length;
+        }
+        if (!startNode) return null;
+        const replacementRange = caret.cloneRange();
+        try {
+            replacementRange.setStart(startNode, offset);
+        } catch (_error) {
+            return null;
+        }
+        // В том числе защищаемся от расхождения Range.toString()
+        // и последовательности текстовых узлов с <br> или виджетами.
+        if (replacementRange.toString() !== found.before) return null;
+        return { range: replacementRange, found };
     }
 
     function autoReplaceEditable(editor, separator) {
@@ -250,15 +317,16 @@
             learn(source, converted);
             return true;
         }
-        const info = singleNodeSelection(field);
-        if (!info || info.range.collapsed) return false;
-        const { node, range } = info;
-        const start = range.startOffset, end = range.endOffset;
-        if (end - start > 10000) return false;
-        const source = node.data.slice(start, end);
+        const selection = document.getSelection();
+        if (!selection || selection.rangeCount !== 1) return false;
+        const range = selection.getRangeAt(0);
+        if (range.collapsed || !field.contains(range.startContainer) ||
+            !field.contains(range.endContainer)) return false;
+        const source = range.toString();
+        if (!source || source.length > 10000 || /[\r\n]/u.test(source)) return false;
         const converted = core.convertText(source);
         if (source === converted) return false;
-        if (!replaceInEditable(field, info, start, end, converted)) return false;
+        if (!replaceEditableRange(field, range.cloneRange(), converted)) return false;
         learn(source, converted);
         return true;
     }
@@ -274,10 +342,16 @@
             return true;
         }
         const info = singleNodeSelection(field);
-        if (!info || !info.range.collapsed) return false;
-        const found = core.findRunBeforeCaret(info.node.data, info.range.startOffset);
-        if (!found) return false;
-        return replaceInEditable(field, info, found.start, found.end, found.replacement);
+        if (info && info.range.collapsed) {
+            const found = core.findRunBeforeCaret(info.node.data, info.range.startOffset);
+            if (found) {
+                return replaceInEditable(field, info,
+                    found.start, found.end, found.replacement);
+            }
+        }
+        const multi = richRangeBeforeCaret(field);
+        return !!multi && replaceEditableRange(field, multi.range,
+            multi.found.replacement, multi.found.before);
     }
 
     function learn(source, converted) {
