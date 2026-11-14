@@ -341,17 +341,16 @@
             saveUndo(field, found.start, found.before, found.replacement);
             return true;
         }
-        const info = singleNodeSelection(field);
-        if (info && info.range.collapsed) {
-            const found = core.findRunBeforeCaret(info.node.data, info.range.startOffset);
-            if (found) {
-                return replaceInEditable(field, info,
-                    found.start, found.end, found.replacement);
-            }
-        }
         const multi = richRangeBeforeCaret(field);
-        return !!multi && replaceEditableRange(field, multi.range,
-            multi.found.replacement, multi.found.before);
+        if (multi) {
+            return replaceEditableRange(field, multi.range,
+                multi.found.replacement, multi.found.before);
+        }
+        const info = singleNodeSelection(field);
+        if (!info || !info.range.collapsed) return false;
+        const found = core.findRunBeforeCaret(info.node.data, info.range.startOffset);
+        return !!found && replaceInEditable(field, info,
+            found.start, found.end, found.replacement);
     }
 
     function learn(source, converted) {
