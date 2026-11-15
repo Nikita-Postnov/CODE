@@ -10,8 +10,9 @@ const script = fs.readFileSync(
     path.join(__dirname, "../Other_dev/NP_Punto_Browser/content.js"), "utf8"
 );
 
-function fixture(parts, position = "element-caret") {
+function fixture(parts, position = "element-caret", overrides = {}) {
     const callbacks = new Map();
+    const pendingTimers = [];
     class HTMLElement {
         constructor(tag = "div") {
             this.tagName = tag.toUpperCase();
@@ -164,6 +165,7 @@ function fixture(parts, position = "element-caret") {
         addRange(range) { activeRange = range; this.rangeCount = 1; },
     };
     const document = {
+        activeElement: editor,
         addEventListener(name, callback) {
             if (!callbacks.has(name)) callbacks.set(name, []);
             callbacks.get(name).push(callback);
@@ -186,7 +188,7 @@ function fixture(parts, position = "element-caret") {
         runtime: { lastError: null },
         storage: {
             local: {
-                get(defaults, callback) { callback({ ...defaults, enabled: false }); },
+                get(defaults, callback) { callback({ ...defaults, enabled: false, ...overrides }); },
                 set() {},
             },
             onChanged: { addListener() {} },
@@ -195,7 +197,8 @@ function fixture(parts, position = "element-caret") {
     vm.runInNewContext(script, {
         document, chrome, NPPuntoCore: core, location: { hostname: "chatgpt.com" },
         HTMLElement, HTMLInputElement, HTMLTextAreaElement, InputEvent,
-        Node: { TEXT_NODE: 3 }, setTimeout,
+        Node: { TEXT_NODE: 3 },
+        setTimeout(callback) { pendingTimers.push(callback); return pendingTimers.length; },
     });
     function key(key, modifiers = {}) {
         let prevented = false;
@@ -215,7 +218,42 @@ function fixture(parts, position = "element-caret") {
         for (const callback of callbacks.get("keydown") || []) callback(event);
         return prevented;
     }
-    return { paragraph, selection, key, getText: () => textContent(paragraph) };
+    function typeSeparator(separator, nativeSeparator = separator) {
+        let prevented = false;
+        const event = {
+            target: paragraph,
+            composedPath: () => [paragraph, editor],
+            data: separator,
+            inputType: "insertText",
+            isTrusted: true,
+            isComposing: false,
+            defaultPrevented: false,
+            preventDefault() { prevented = true; },
+        };
+        for (const callback of callbacks.get("beforeinput") || []) callback(event);
+        if (!prevented) {
+            const caret = selection.getRangeAt(0);
+            assert.ok(caret.collapsed, "Typing requires a collapsed caret");
+            if (caret.startContainer.nodeType === 3) {
+                const node = caret.startContainer, offset = caret.startOffset;
+                node.data = node.data.slice(0, offset) + nativeSeparator + node.data.slice(offset);
+                selection.addRange(new Range(node, offset + nativeSeparator.length));
+            } else {
+                assert.equal(caret.startContainer, paragraph);
+                assert.equal(caret.startOffset, paragraph.childNodes.length);
+                const node = new TextNode(nativeSeparator);
+                paragraph.append(node);
+                selection.addRange(new Range(node, nativeSeparator.length));
+            }
+            for (const callback of callbacks.get("input") || []) callback(event);
+        }
+        return prevented;
+    }
+    function flushTimers() {
+        while (pendingTimers.length) pendingTimers.shift()();
+    }
+    return { paragraph, selection, key, typeSeparator, flushTimers,
+        getText: () => textContent(paragraph) };
 }
 
 test("Ctrl+Insert converts a split word at the end of a ProseMirror paragraph", () => {
@@ -240,4 +278,57 @@ test("A synthetic browser bridge shortcut handles the same ProseMirror caret", (
     const f = fixture(["gh", "bdtn"]);
     assert.equal(f.key("F8", { ctrlKey: true, altKey: true, shiftKey: true }), true);
     assert.equal(f.getText(), "привет");
+});
+
+test("Auto-layout correction handles a word split across ChatGPT text nodes on Space", () => {
+    const f = fixture(["ghb", "dtn"], "element-caret", { enabled: true });
+    assert.equal(f.typeSeparator(" "), true);
+    assert.equal(f.getText(), "привет ");
+});
+
+test("Auto-layout correction handles caret within last text node on Space", () => {
+    const f = fixture(["ghb", "dtn"], "text-caret", { enabled: true });
+    assert.equal(f.typeSeparator(" "), true);
+    assert.equal(f.getText(), "привет ");
+});
+
+test("Auto-layout correction handles a split known phrase on Space", () => {
+    const f = fixture(["xnj ", "ntgthm"], "element-caret", { enabled: true });
+    assert.equal(f.typeSeparator(" "), true);
+    assert.equal(f.getText(), "что теперь ");
+});
+
+test("Space does not auto-convert a known word while dictionary correction is disabled", () => {
+    const f = fixture(["ghb", "dtn"], "element-caret", { enabled: false });
+    assert.equal(f.typeSeparator(" "), false);
+    f.flushTimers();
+    assert.equal(f.getText(), "ghbdtn ");
+});
+
+test("Custom ChatGPT rule expands across text nodes after native Space", () => {
+    const f = fixture(["щ", "а"], "element-caret", {
+        enabled: false, rulesEnabled: true, rules: [{ from: "ща", to: "сейчас" }],
+    });
+    assert.equal(f.typeSeparator(" "), false);
+    assert.equal(f.getText(), "ща ");
+    f.flushTimers();
+    assert.equal(f.getText(), "сейчас ");
+});
+
+test("ChatGPT rule handles native NBSP after typing normal Space", () => {
+    const f = fixture(["ща"], "text-caret", {
+        enabled: false, rulesEnabled: true, rules: [{ from: "ща", to: "сейчас" }],
+    });
+    assert.equal(f.typeSeparator(" ", "\u00a0"), false);
+    f.flushTimers();
+    assert.equal(f.getText(), "сейчас ");
+});
+
+test("ChatGPT custom rules remain inactive when disabled in settings", () => {
+    const f = fixture(["щ", "а"], "element-caret", {
+        enabled: false, rulesEnabled: false, rules: [{ from: "ща", to: "сейчас" }],
+    });
+    assert.equal(f.typeSeparator(" "), false);
+    f.flushTimers();
+    assert.equal(f.getText(), "ща ");
 });
