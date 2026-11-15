@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "NP Punto Browser",
-  "version": "1.0.5",
+  "version": "1.0.6",
   "description": "Локальное исправление EN/RU раскладки в обычных текстовых полях Chrome и Edge",
   "permissions": [
     "storage"
