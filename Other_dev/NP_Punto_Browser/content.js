@@ -217,12 +217,25 @@
             // ProseMirror должен сначала обработать событие клавиатуры.
             return found?.reason === "rule" ? null : found;
         });
-        if (!matched) return false;
-        const found = matched.found;
+        if (matched) {
+            const found = matched.found;
+            const replacement = found.replacement +
+                core.correctedSeparator(separator, found.before, found.replacement);
+            return replaceEditableRange(editor, matched.range, replacement,
+                found.before + separator);
+        }
+        // Совместимость с простыми одноузловыми contenteditable, включая
+        // редакторы без стандартной структуры абзаца ProseMirror.
+        const info = singleNodeSelection(editor);
+        if (!info || !info.range.collapsed) return false;
+        const found = core.findReplacement(info.node.data.slice(0, info.range.startOffset), {
+            ...settings, autoEnabled: settings.enabled,
+        });
+        if (!found || found.reason === "rule") return false;
         const replacement = found.replacement +
             core.correctedSeparator(separator, found.before, found.replacement);
-        return replaceEditableRange(editor, matched.range, replacement,
-            found.before + separator);
+        return replaceInEditable(editor, info, found.start, info.range.startOffset,
+            replacement, found.before + separator);
     }
 
     function matchesInsertedSeparator(actual, separator) {
@@ -263,13 +276,27 @@
             if (!found) return null;
             return { ...found, before: found.before + actualSeparator };
         });
-        if (!matched) return false;
-        const found = matched.found;
-        const original = found.before;
+        if (matched) {
+            const found = matched.found;
+            const original = found.before;
+            const replacement = found.replacement +
+                (found.reason === "rule" ? separator :
+                    core.correctedSeparator(separator, original.slice(0, -1), found.replacement));
+            return replaceEditableRange(field, matched.range, replacement);
+        }
+        const info = singleNodeSelection(field);
+        if (!info || !info.range.collapsed) return false;
+        const caret = info.range.startOffset;
+        if (caret < 1 ||
+            !matchesInsertedSeparator(info.node.data[caret - 1], separator)) return false;
+        const found = core.findReplacement(info.node.data.slice(0, caret - 1), {
+            ...settings, autoEnabled: settings.enabled,
+        });
+        if (!found) return false;
         const replacement = found.replacement +
             (found.reason === "rule" ? separator :
-                core.correctedSeparator(separator, original.slice(0, -1), found.replacement));
-        return replaceEditableRange(field, matched.range, replacement);
+                core.correctedSeparator(separator, found.before, found.replacement));
+        return replaceInEditable(field, info, found.start, caret, replacement);
     }
 
     document.addEventListener("input", event => {
