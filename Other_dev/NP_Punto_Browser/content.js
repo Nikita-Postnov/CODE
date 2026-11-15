@@ -143,7 +143,8 @@
         return replaceEditableRange(editor, replaceRange, replacement, undoBefore);
     }
 
-    function richRangeBeforeCaret(editor) {
+    function richRangeBeforeCaret(editor, matchPrefix = prefix =>
+        core.findRunBeforeCaret(prefix, prefix.length)) {
         // ChatGPT иногда ставит каретку на границу <p>/<span> или делит
         // одно слово между несколькими TextNode. Одноузловый путь выше
         // такую позицию не видит.
@@ -164,8 +165,11 @@
         prefixRange.setEnd(caret.startContainer, caret.startOffset);
         const prefix = prefixRange.toString();
         if (!prefix || prefix.length > 10000) return null;
-        const found = core.findRunBeforeCaret(prefix, prefix.length);
-        if (!found) return null;
+        const found = matchPrefix(prefix);
+        if (!found || !Number.isInteger(found.start) ||
+            found.start < 0 || found.start >= prefix.length ||
+            found.before !== prefix.slice(found.start) ||
+            (found.end !== undefined && found.end !== prefix.length)) return null;
 
         // Отсчитываем начало фрагмента по текстовым узлам внутри текущего
         // абзаца; за границы абзаца и защищённых HTML-элементов не выходим.
@@ -205,17 +209,20 @@
     }
 
     function autoReplaceEditable(editor, separator) {
-        const info = singleNodeSelection(editor);
-        if (!info || !info.range.collapsed) return false;
-        const { node, range } = info;
-        const caret = range.startOffset;
-        const prefix = node.data.slice(0, caret);
-        const found = core.findReplacement(prefix, { ...settings, autoEnabled: settings.enabled });
-        if (!found || found.reason === "rule") return false;
+        const matched = richRangeBeforeCaret(editor, prefix => {
+            const found = core.findReplacement(prefix, {
+                ...settings, autoEnabled: settings.enabled,
+            });
+            // Правила выполняются после нативного ввода разделителя:
+            // ProseMirror должен сначала обработать событие клавиатуры.
+            return found?.reason === "rule" ? null : found;
+        });
+        if (!matched) return false;
+        const found = matched.found;
         const replacement = found.replacement +
-            (found.reason === "rule" ? separator :
-                core.correctedSeparator(separator, found.before, found.replacement));
-        return replaceInEditable(editor, info, found.start, caret, replacement, found.before + separator);
+            core.correctedSeparator(separator, found.before, found.replacement);
+        return replaceEditableRange(editor, matched.range, replacement,
+            found.before + separator);
     }
 
     function matchesInsertedSeparator(actual, separator) {
@@ -247,19 +254,22 @@
             return true;
         }
 
-        const info = singleNodeSelection(field);
-        if (!info || !info.range.collapsed) return false;
-        const { node, range } = info;
-        const caret = range.startOffset;
-        if (caret < 1 || !matchesInsertedSeparator(node.data[caret - 1], separator)) return false;
-        const found = core.findReplacement(node.data.slice(0, caret - 1), {
-            ...settings, autoEnabled: settings.enabled,
+        const matched = richRangeBeforeCaret(field, prefix => {
+            if (!prefix || !matchesInsertedSeparator(prefix.at(-1), separator)) return null;
+            const actualSeparator = prefix.at(-1);
+            const found = core.findReplacement(prefix.slice(0, -1), {
+                ...settings, autoEnabled: settings.enabled,
+            });
+            if (!found) return null;
+            return { ...found, before: found.before + actualSeparator };
         });
-        if (!found) return false;
+        if (!matched) return false;
+        const found = matched.found;
+        const original = found.before;
         const replacement = found.replacement +
             (found.reason === "rule" ? separator :
-                core.correctedSeparator(separator, found.before, found.replacement));
-        return replaceInEditable(field, info, found.start, caret, replacement);
+                core.correctedSeparator(separator, original.slice(0, -1), found.replacement));
+        return replaceEditableRange(field, matched.range, replacement);
     }
 
     document.addEventListener("input", event => {
