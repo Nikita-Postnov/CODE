@@ -4631,7 +4631,7 @@ $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Runtime.WindowsRuntime
 $asTask = ([System.WindowsRuntimeSystemExtensions].GetMethods() | Where-Object {
     $_.Name -eq 'AsTask' -and $_.GetParameters().Count -eq 1 -and
-    $_.GetParameters()[0].ParameterType.Name -eq 'IAsyncOperation`1' })[0]
+    $_.GetParameters()[0].ParameterType.Name -like 'IAsyncOperation*' })[0]
 function Await($op, [Type]$type) {
     $t = $asTask.MakeGenericMethod($type).Invoke($null, @($op))
     $t.Wait(-1) | Out-Null
@@ -4654,7 +4654,30 @@ function Engine($tag) {
 }
 function Recognize($engine) {
     $r = Await ($engine.RecognizeAsync($bitmap)) ([Windows.Media.Ocr.OcrResult])
-    return (($r.Lines | ForEach-Object { $_.Text }) -join "`n")
+    $lines = @()
+    foreach ($line in $r.Lines) {
+        $words = @()
+        foreach ($word in $line.Words) {
+            $wr = $word.BoundingRect
+            $words += [ordered]@{
+                text = [string]$word.Text
+                x = [int][math]::Round($wr.X)
+                y = [int][math]::Round($wr.Y)
+                width = [int][math]::Round($wr.Width)
+                height = [int][math]::Round($wr.Height)
+            }
+        }
+        $lr = $line.BoundingRect
+        $lines += [ordered]@{
+            text = [string]$line.Text
+            x = [int][math]::Round($lr.X)
+            y = [int][math]::Round($lr.Y)
+            width = [int][math]::Round($lr.Width)
+            height = [int][math]::Round($lr.Height)
+            words = $words
+        }
+    }
+    return ([ordered]@{ lines = $lines } | ConvertTo-Json -Depth 8 -Compress)
 }
 $ru = Engine 'ru-RU'
 $en = Engine 'en-US'
@@ -4665,15 +4688,15 @@ if ($null -eq $ru -and $null -eq $en) {
     exit 0
 }
 if ($null -eq $ru) { Recognize $en; exit 0 }
-$text = Recognize $ru
-# Русский модуль плохо читает чисто английский текст: если латиницы больше,
-# чем кириллицы, распознаём ещё раз английским.
+$json = Recognize $ru
+$data = $json | ConvertFrom-Json
+$text = (@($data.lines) | ForEach-Object { $_.text }) -join [Environment]::NewLine
 if ($null -ne $en) {
     $lat = ([regex]::Matches($text, '[A-Za-z]')).Count
     $cyr = ([regex]::Matches($text, '[А-Яа-яЁё]')).Count
-    if ($lat -gt $cyr) { $text = Recognize $en }
+    if ($lat -gt $cyr) { $json = Recognize $en }
 }
-$text
+$json
 """
 
 _OCR_NO_LANGUAGE_HINT = (
@@ -4694,8 +4717,143 @@ def _ocr_prepare_image(img: QImage) -> QImage:
     return CanvasView._flatten_on_white(img)
 
 
-def start_ocr(img: QImage, launcher=None) -> None:
-    """Распознаёт текст на картинке и кладёт его в буфер обмена (асинхронно)."""
+def format_ocr_paragraphs(payload: dict) -> str:
+    """Собирает строки OCR в абзацы, учитывая вертикальные интервалы между ними."""
+    lines = payload.get("lines", []) if isinstance(payload, dict) else []
+    result = []
+    previous_bottom = None
+    previous_height = 0
+    for line in lines if isinstance(lines, list) else []:
+        if not isinstance(line, dict):
+            continue
+        text = str(line.get("text", "")).strip()
+        if not text:
+            continue
+        try:
+            y = float(line.get("y", 0))
+            height = max(1.0, float(line.get("height", 16)))
+        except (TypeError, ValueError):
+            y, height = 0.0, 16.0
+        if previous_bottom is not None:
+            gap = y - previous_bottom
+            result.append("\n\n" if gap > max(10.0, previous_height * 0.85) else "\n")
+        result.append(text)
+        previous_bottom = y + height
+        previous_height = height
+    return "".join(result).strip()
+
+
+def ocr_layout_to_markdown_table(payload: dict) -> str:
+    """Пробует восстановить столбцы таблицы по горизонтальным координатам OCR-слов."""
+    lines = payload.get("lines", []) if isinstance(payload, dict) else []
+    word_rows = []
+    starts = []
+    heights = []
+    for line in lines if isinstance(lines, list) else []:
+        words = line.get("words", []) if isinstance(line, dict) else []
+        valid = [w for w in words if isinstance(w, dict) and str(w.get("text", "")).strip()]
+        valid.sort(key=lambda w: int(w.get("x", 0)))
+        if valid:
+            word_rows.append(valid)
+            starts.extend(int(w.get("x", 0)) for w in valid)
+            heights.extend(max(1, int(w.get("height", 14))) for w in valid)
+    if len(word_rows) < 2 or len(starts) < 4:
+        return ""
+    threshold = max(24, int(sorted(heights)[len(heights) // 2] * 2.2))
+    centers = []
+    counts = []
+    for x in sorted(starts):
+        if centers and abs(x - centers[-1]) <= threshold:
+            n = counts[-1] + 1
+            centers[-1] = (centers[-1] * counts[-1] + x) / n
+            counts[-1] = n
+        else:
+            centers.append(float(x))
+            counts.append(1)
+    if len(centers) < 2:
+        return ""
+    rows = []
+    for words in word_rows:
+        cells = [""] * len(centers)
+        for word in words:
+            x = int(word.get("x", 0))
+            index = min(range(len(centers)), key=lambda i: abs(centers[i] - x))
+            value = str(word.get("text", "")).strip()
+            cells[index] = (cells[index] + " " + value).strip()
+        if sum(bool(cell) for cell in cells) >= 2:
+            rows.append(cells)
+    if len(rows) < 2 or max(sum(bool(c) for c in row) for row in rows) < 2:
+        return ""
+    width = len(centers)
+    output = ["| " + " | ".join(cell.replace("|", "\\|") for cell in rows[0]) + " |",
+              "| " + " | ".join("---" for _ in range(width)) + " |"]
+    output.extend("| " + " | ".join(cell.replace("|", "\\|") for cell in row) + " |"
+                  for row in rows[1:])
+    return "\n".join(output)
+
+
+_ocr_dialogs: list[QDialog] = []
+
+
+class OCRResultDialog(QDialog):
+    """Результат OCR: редактирование, копирование, таблица, перевод и TXT."""
+
+    def __init__(self, text: str, payload: Optional[dict] = None, parent=None):
+        super().__init__(parent)
+        self.payload = payload or {}
+        self.setWindowTitle("Распознанный текст")
+        self.resize(760, 560)
+        layout = QVBoxLayout(self)
+        self.text_edit = QPlainTextEdit(self)
+        self.text_edit.setPlainText(text)
+        self.text_edit.setPlaceholderText("Распознанный текст…")
+        layout.addWidget(self.text_edit, 1)
+        actions = QHBoxLayout()
+        for title, handler in (
+            ("Копировать", self.copy_text),
+            ("Таблица", self.convert_table),
+            ("Перевести", self.translate_text),
+            ("Сохранить TXT", self.save_text),
+            ("Закрыть", self.close),
+        ):
+            button = QPushButton(title, self)
+            button.clicked.connect(handler)
+            actions.addWidget(button)
+        layout.addLayout(actions)
+
+    def copy_text(self) -> None:
+        QApplication.clipboard().setText(self.text_edit.toPlainText(), QClipboard.Clipboard)
+
+    def convert_table(self) -> None:
+        table = ocr_layout_to_markdown_table(self.payload)
+        if not table:
+            QMessageBox.information(self, "Таблица",
+                                    "Не удалось уверенно определить столбцы. Оставлен исходный текст.")
+            return
+        self.text_edit.setPlainText(table)
+
+    def translate_text(self) -> None:
+        text = self.text_edit.toPlainText().strip()
+        if not text:
+            return
+        encoded = bytes(QUrl.toPercentEncoding(text)).decode("ascii")
+        QDesktopServices.openUrl(QUrl(
+            "https://translate.google.com/?sl=auto&tl=ru&text=" + encoded + "&op=translate"))
+
+    def save_text(self) -> None:
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Сохранить распознанный текст", "Распознанный_текст.txt",
+            "Текст (*.txt)")
+        if not path:
+            return
+        try:
+            Path(path).write_text(self.text_edit.toPlainText(), encoding="utf-8")
+        except OSError as exc:
+            QMessageBox.warning(self, "Сохранение", str(exc))
+
+
+def start_ocr(img: QImage, launcher=None, history_path: Optional[Path] = None) -> None:
+    """Асинхронно распознаёт текст, сохраняет OCR-индекс истории и показывает результат."""
     tray = getattr(launcher, "tray", None) if launcher is not None else None
 
     def notify(title: str, text: str, warn: bool = False) -> None:
@@ -4751,9 +4909,26 @@ def start_ocr(img: QImage, launcher=None) -> None:
             elif not out:
                 notify("Распознавание текста", "Текст не найден.")
             else:
-                QApplication.clipboard().setText(out, QClipboard.Clipboard)
-                preview = out.replace("\n", " ")
+                payload = None
+                try:
+                    candidate = json.loads(out)
+                    if isinstance(candidate, dict) and isinstance(candidate.get("lines"), list):
+                        payload = candidate
+                except (ValueError, TypeError):
+                    pass
+                text = format_ocr_paragraphs(payload) if payload is not None else out
+                if history_path is not None:
+                    update_history_metadata(history_path, ocr_text=text)
+                QApplication.clipboard().setText(text, QClipboard.Clipboard)
+                preview = text.replace("\n", " ")
                 notify("Текст скопирован", preview[:120] + ("…" if len(preview) > 120 else ""))
+                dialog = OCRResultDialog(text, payload)
+                _ocr_dialogs.append(dialog)
+                dialog.destroyed.connect(lambda *_: _ocr_dialogs.remove(dialog)
+                                          if dialog in _ocr_dialogs else None)
+                dialog.show()
+                dialog.raise_()
+                dialog.activateWindow()
         finally:
             cleanup()
 
@@ -4766,7 +4941,6 @@ def start_ocr(img: QImage, launcher=None) -> None:
     proc.finished.connect(finished)
     proc.errorOccurred.connect(failed)
     proc.start()
-
 
 def _find_launcher() -> Optional["Launcher"]:
     app = QApplication.instance()
