@@ -4670,7 +4670,7 @@ def _scroll_overlap(previous: QImage, current: QImage) -> int:
     if content_width < 40 or max_shift < min_shift:
         return 0
 
-    def row_masks(image: QImage) -> list[tuple[int, int, int]]:
+    def row_masks(image: QImage) -> tuple[list[tuple[int, int, int]], list[bytes]]:
         crop = image.copy(left, 0, content_width, height)
         if crop.width() != sample_width:
             crop = crop.scaled(sample_width, height, Qt.IgnoreAspectRatio,
@@ -4679,6 +4679,7 @@ def _scroll_overlap(previous: QImage, current: QImage) -> int:
         raw = bytes(mono.constBits())
         stride = mono.bytesPerLine()
         output: list[tuple[int, int, int]] = []
+        pixels_rows: list[bytes] = []
         # Два порога дают устойчивость к различиям сглаживания глифов.
         for y in range(height):
             start = y * stride
@@ -4693,10 +4694,11 @@ def _scroll_overlap(previous: QImage, current: QImage) -> int:
             # цветного/градиентного содержимого.
             line = raw[start:start + sample_width]
             output.append((dark, soft, max(line) - min(line)))
-        return output
+            pixels_rows.append(line)
+        return output, pixels_rows
 
-    a = row_masks(previous)
-    b = row_masks(current)
+    (a, pixels_a) = row_masks(previous)
+    (b, pixels_b) = row_masks(current)
 
     def row_luminance(image: QImage) -> list[int]:
         # Для графиков/градиентов без текста дополнительно используем яркость
@@ -4777,25 +4779,73 @@ def _scroll_overlap(previous: QImage, current: QImage) -> int:
         log.info("scroll alignment: нет информативных текстовых строк")
         return gradient_fallback()
     evaluated.sort()
-    best, _, shift = evaluated[0]
-    if best > .34:
-        log.info("scroll alignment: лучшее текстовое совпадение слишком слабое (%.3f)",
-                 best)
+    best_mask = evaluated[0][0]
+    if best_mask > .60:
+        log.info("scroll alignment: текстовые маски недостаточно близки (%.3f)",
+                 best_mask)
         return gradient_fallback()
 
-    # Отдельная проверка уникальности не допускает ложного сдвига на строку
-    # выше/ниже в таблицах с повторяющимися одинаковыми элементами.
-    competing = [
-        (quality, other_shift) for quality, _, other_shift in evaluated[1:]
-        if abs(other_shift - shift) >= 3
-        and quality <= max(.045, best * 1.22 + .025)
-    ]
-    if competing:
-        log.info("scroll alignment: неоднозначный сдвиг %s, варианты %s",
-                 shift, competing[:3])
+    # Двоичные маски могут считать одинаковыми строки с повторяющимся
+    # шаблоном, хотя номера, даты и отдельные слова в них разные.
+    # Для кандидатов дополнительно проверяем САМИ оттенки пикселей букв.
+    # Реальные исходные кадры при этом не масштабируются и не изменяются.
+    finalists = [
+        candidate for candidate in evaluated
+        if candidate[0] <= min(.60, best_mask + .17)
+    ][:100]
+
+    def raster_quality(shift: int) -> tuple[float, int]:
+        row_errors: list[float] = []
+        for y in range(top + shift, bottom, 3):
+            if (a[y][1] | b[y - shift][1]).bit_count() < 3:
+                continue
+            ra, rb = pixels_a[y], pixels_b[y - shift]
+            mismatch = 0
+            active = 0
+            for x in range(sample_width):
+                va, vb = ra[x], rb[x]
+                if va < 239 or vb < 239:
+                    mismatch += abs(va - vb)
+                    active += 1
+            if active >= 4:
+                row_errors.append(mismatch / active)
+        if len(row_errors) < 10:
+            return float("inf"), len(row_errors)
+        row_errors.sort()
+        # Динамическая карточка может закрыть часть букв; убираем только
+        # худшие 10% строк, оставляя отличающиеся цифры и слова для проверки.
+        keep = max(10, round(len(row_errors) * .90))
+        return sum(row_errors[:keep]) / keep, len(row_errors)
+
+    verified: list[tuple[float, float, int, int]] = []
+    for mask_error, _, candidate_shift in finalists:
+        pixel_error, rows = raster_quality(candidate_shift)
+        if pixel_error != float("inf"):
+            verified.append((pixel_error, mask_error, -rows, candidate_shift))
+    if not verified:
+        return gradient_fallback()
+    verified.sort()
+    pixel_error, mask_error, _, shift = verified[0]
+    if pixel_error > 29:
+        log.info("scroll alignment: нет достоверного пиксельного совпадения "
+                 "(pixel=%.2f, mask=%.3f)", pixel_error, mask_error)
         return 0
 
-    log.info("scroll alignment: сдвиг=%s px, ошибка=%.3f", shift, best)
+    # Разрешаем близкие варианты в пределах 2 пикселей, но не повторение
+    # одинаковых строк в другой части документа.
+    competing = [
+        (quality, other_shift)
+        for quality, _, _, other_shift in verified[1:]
+        if abs(other_shift - shift) >= 3
+        and quality <= pixel_error + max(1.3, pixel_error * .12)
+    ]
+    if competing:
+        log.info("scroll alignment: неоднозначное пиксельное совпадение %s "
+                 "(%.2f), варианты %s", shift, pixel_error, competing[:4])
+        return 0
+
+    log.info("scroll alignment: сдвиг=%s, пиксельная ошибка=%.2f, маска=%.3f",
+             shift, pixel_error, mask_error)
     return shift
 
 
