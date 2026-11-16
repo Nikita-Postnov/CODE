@@ -1,0 +1,28 @@
+name: Screenshot three workflows
+
+on:
+  push:
+    branches:
+      - feature/screenshot-scroll-pin-compare-20261116
+  workflow_dispatch:
+
+jobs:
+  screenshot-windows:
+    name: Syntax and PySide6 regression on Windows
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install Qt
+        run: python -m pip install PySide6
+      - name: Compile
+        run: python -m compileall -q Other_dev/screenshot.py Other_dev/tests/test_screenshot_three_workflows.py
+      - name: Test
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python -m unittest discover -s Other_dev/tests -p test_screenshot_three_workflows.py -v
