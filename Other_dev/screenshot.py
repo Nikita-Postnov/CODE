@@ -4646,89 +4646,108 @@ def compare_screenshot_images(before: QImage, after: QImage,
 
 
 def _scroll_overlap(previous: QImage, current: QImage) -> int:
-    """Точный сдвиг для длинного снимка, в исходных вертикальных пикселях.
+    """Вертикальное совмещение кадров с допуском к перерисовке текста.
 
-    Сравниваются целые строки, а не отдельные пиксели. Уменьшается только
-    ширина анализируемой копии, поэтому текст в результате не масштабируется
-    и шов не отклоняется на несколько пикселей из-за округления DPI.
-    Повторяющийся контент с несколькими равными смещениями не склеивается.
+    Точное побайтовое совпадение целой строки недостижимо, если браузер
+    перерисовал курсор, анимацию, видео или субпиксельные края шрифта.
+    Ищем минимум ошибки на нескольких текстурных строках по всей ширине
+    изображения, сохраняя вертикальную координату без масштабирования.
     """
     if previous.isNull() or current.isNull() or previous.size() != current.size():
         return 0
     width, height = previous.width(), previous.height()
     if width < 40 or height < 70:
         return 0
-    margin_x = max(1, round(width * 0.08))
-    cropped_width = width - 2 * margin_x
-    sample_width = min(cropped_width, 560)
 
-    def grayscale_rows(image: QImage) -> list[bytes]:
-        crop = image.copy(margin_x, 0, cropped_width, height)
-        if cropped_width > sample_width:
-            crop = crop.scaled(sample_width, height, Qt.IgnoreAspectRatio,
-                               Qt.FastTransformation)
-        gray = crop.convertToFormat(QImage.Format_Grayscale8)
-        buffer = bytes(gray.constBits())
+    margin = max(1, round(width * 0.07))
+    crop_w = width - 2 * margin
+    sample_w = min(164, crop_w)
+
+    def sample_rows(img: QImage) -> list[bytes]:
+        cropped = img.copy(margin, 0, crop_w, height)
+        if cropped.width() != sample_w:
+            cropped = cropped.scaled(sample_w, height, Qt.IgnoreAspectRatio,
+                                     Qt.FastTransformation)
+        gray = cropped.convertToFormat(QImage.Format_Grayscale8)
+        data = bytes(gray.constBits())
         stride = gray.bytesPerLine()
-        return [buffer[y * stride:y * stride + sample_width]
-                for y in range(height)]
+        return [data[y * stride:y * stride + sample_w] for y in range(height)]
 
-    a, b = grayscale_rows(previous), grayscale_rows(current)
-    top = max(8, round(height * .13))
-    bottom = height - max(8, round(height * .10))
-    min_shift = max(3, round(height * .018))
-    max_shift = min(round(height * .80), bottom - top - 24)
-    if max_shift < min_shift:
+    left, right = sample_rows(previous), sample_rows(current)
+    top = max(5, round(height * .10))
+    bottom = height - max(5, round(height * .10))
+    smallest = max(3, round(height * .012))
+    largest = min(round(height * .84), bottom - top - 18)
+    if largest <= smallest:
         return 0
 
-    # Из оценки исключаются однотонные строки, в которых нельзя найти текст,
-    # а также неподвижные верхние и нижние панели приложения.
+    xs = tuple(range(2, sample_w - 2, max(1, sample_w // 54)))
+    def texture(row: bytes, prev: bytes) -> bool:
+        sample = [row[x] for x in xs]
+        return (max(sample) - min(sample) >= 30 or
+                sum(abs(row[x] - prev[x]) >= 5 for x in xs) >= 5)
+
     informative = [
-        y for y in range(top, bottom)
-        if (max(a[y]) - min(a[y]) >= 35 or
-            (y > 0 and abs(a[y][sample_width // 2] -
-                           a[y - 1][sample_width // 2]) >= 2))
+        y for y in range(top + 1, bottom)
+        if texture(left[y], left[y - 1])
     ]
-    if len(informative) < 6:
+    if len(informative) < 7:
         return 0
 
-    # Сначала дешёвое сопоставление хешей, затем проверка целых строк
-    # у лучших кандидатов. Хеш здесь служит только для отбора.
-    ah = [hash(row) for row in a]
-    bh = [hash(row) for row in b]
-    scores: list[tuple[float, int, int]] = []
-    for shift in range(min_shift, max_shift + 1):
-        eligible = [y for y in informative if top <= y - shift < bottom]
-        if len(eligible) < 8:
-            continue
-        equal = sum(ah[y] == bh[y - shift] for y in eligible)
-        if equal >= 5:
-            scores.append((equal / len(eligible), equal, shift))
-    if not scores:
+    # На каждом сдвиге берём одинаково распределённые строки. Средняя ошибка
+    # по всему интервалу нужна, чтобы случайный блок одинакового фона не
+    # принимался за уверенно совпадающий текст.
+    sample_step = max(1, len(informative) // 65)
+    chosen = informative[::sample_step]
+
+    def mismatch(shift: int) -> tuple[float, int]:
+        ys = [y for y in chosen if top + 1 <= y - shift < bottom]
+        if len(ys) < 7:
+            return float("inf"), 0
+        error = 0
+        checked = 0
+        for y in ys:
+            lrow, rrow = left[y], right[y - shift]
+            for x in xs:
+                delta = abs(lrow[x] - rrow[x])
+                # Игнорируем незначительную разницу сглаживания шрифтов.
+                error += max(0, delta - 5)
+                checked += 1
+        return (error / max(1, checked), len(ys))
+
+    ranked = []
+    for shift in range(smallest, largest + 1):
+        score, count = mismatch(shift)
+        if count >= 7:
+            ranked.append((score, shift, count))
+    if not ranked:
+        return 0
+    ranked.sort()
+    best_score, best_shift, row_count = ranked[0]
+    # Большая средняя ошибка указывает на отсутствие общего содержимого,
+    # в отличие от корректного сдвига текста, где пиксели почти совпадают.
+    if best_score > 13:
+        log.info("scroll: сопоставление не подтверждено: ошибка %.2f", best_score)
         return 0
 
-    scores.sort(reverse=True)
-    best_ratio, _count, best_shift = scores[0]
-    if best_ratio < .70:
-        log.info("scroll: надёжное совпадение строк не найдено (%.2f)",
-                 best_ratio)
-        return 0
-
-    # Реально проверяем пиксельные строки, чтобы исключить коллизии хешей.
-    eligible = [y for y in informative if top <= y - best_shift < bottom]
-    equal_real = sum(a[y] == b[y - best_shift] for y in eligible)
-    if equal_real < 8 or equal_real / len(eligible) < .70:
-        return 0
-
-    # Слишком похожие периодические строки (например одинаковые элементы
-    # таблицы) не позволяют достоверно определить, где заканчивается слово.
-    for ratio, count, candidate in scores[1:]:
-        if ratio < best_ratio - .06:
+    # Проверяем отсутствие столь же хорошего второго решения, исключая
+    # соседние сдвиги (+/-2 px), которые отличаются из-за сглаживания.
+    for score, shift, _ in ranked[1:]:
+        if score > best_score + max(2.5, best_score * .30):
             break
-        if abs(candidate - best_shift) > 2 and count >= 7:
-            log.info("scroll: неоднозначный сдвиг %s или %s, склейка остановлена",
-                     best_shift, candidate)
+        if abs(shift - best_shift) > 2:
+            log.info("scroll: неоднозначный сдвиг %d / %d (%.2f / %.2f)",
+                     best_shift, shift, best_score, score)
             return 0
+
+    # Сдвиг должен объяснять реальное изменение лучше, чем неподвижный кадр;
+    # так не принимаем едва заметное изменение таймера за прокрутку.
+    zero_score, _ = mismatch(0)
+    if zero_score != float("inf") and zero_score <= best_score + 2:
+        log.info("scroll: обнаружено изменение, но движение вниз не подтверждено")
+        return 0
+    log.info("scroll: accepted alignment %d px (error %.2f, samples=%d)",
+             best_shift, best_score, row_count)
     return best_shift
 
 
@@ -5535,7 +5554,7 @@ class Launcher(QMainWindow):
         elif confirmed_steps == 0:
             message = (
                 (message + " ") if message else ""
-            ) + "Длинный снимок не создан: страница не была прокручена."
+            ) + "Длинный снимок не создан: ни один дополнительный кадр не удалось надёжно совместить."
         if message:
             log.info("Длинный снимок: %s", message)
             if hasattr(self, "tray"):
