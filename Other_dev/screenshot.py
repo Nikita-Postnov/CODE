@@ -4646,183 +4646,90 @@ def compare_screenshot_images(before: QImage, after: QImage,
 
 
 def _scroll_overlap(previous: QImage, current: QImage) -> int:
-    """Точно определить сдвиг двух кадров без размытия и порчи строк текста.
+    """Точный сдвиг для длинного снимка, в исходных вертикальных пикселях.
 
-    Поиск работает на уменьшенной по ширине копии, но сохраняет исходную
-    высоту: искомое смещение всегда выражено в РЕАЛЬНЫХ пикселях. Сначала
-    ищем совпадения характерных строк текста, затем проверяем совпадение
-    графических границ. Если надёжного совпадения нет, возвращаем 0.
+    Сравниваются целые строки, а не отдельные пиксели. Уменьшается только
+    ширина анализируемой копии, поэтому текст в результате не масштабируется
+    и шов не отклоняется на несколько пикселей из-за округления DPI.
+    Повторяющийся контент с несколькими равными смещениями не склеивается.
     """
     if previous.isNull() or current.isNull() or previous.size() != current.size():
         return 0
     width, height = previous.width(), previous.height()
     if width < 40 or height < 70:
         return 0
-
-    # Исключаем боковые поля; уменьшение только по горизонтали сохраняет
-    # вертикальную точность до одного пикселя на любом DPI Windows.
     margin_x = max(1, round(width * 0.08))
-    crop_w = width - 2 * margin_x
-    sample_w = min(560, crop_w)
+    cropped_width = width - 2 * margin_x
+    sample_width = min(cropped_width, 560)
 
-    def rows(image: QImage) -> list[bytes]:
-        narrow = image.copy(margin_x, 0, crop_w, height)
-        if narrow.width() > sample_w:
-            narrow = narrow.scaled(sample_w, height, Qt.IgnoreAspectRatio,
-                                   Qt.FastTransformation)
-        gray = narrow.convertToFormat(QImage.Format_Grayscale8)
-        raw = bytes(gray.constBits())
+    def grayscale_rows(image: QImage) -> list[bytes]:
+        crop = image.copy(margin_x, 0, cropped_width, height)
+        if cropped_width > sample_width:
+            crop = crop.scaled(sample_width, height, Qt.IgnoreAspectRatio,
+                               Qt.FastTransformation)
+        gray = crop.convertToFormat(QImage.Format_Grayscale8)
+        buffer = bytes(gray.constBits())
         stride = gray.bytesPerLine()
-        return [raw[y * stride:y * stride + sample_w]
+        return [buffer[y * stride:y * stride + sample_width]
                 for y in range(height)]
 
-    a = rows(previous)
-    b = rows(current)
-    top = max(8, round(height * 0.13))
-    bottom = height - max(8, round(height * 0.10))
-    min_shift = max(3, round(height * 0.018))
-    max_shift = min(round(height * 0.80), bottom - top - 24)
-    if max_shift <= min_shift:
+    a, b = grayscale_rows(previous), grayscale_rows(current)
+    top = max(8, round(height * .13))
+    bottom = height - max(8, round(height * .10))
+    min_shift = max(3, round(height * .018))
+    max_shift = min(round(height * .80), bottom - top - 24)
+    if max_shift < min_shift:
         return 0
 
-    # Стационарные панели (заголовки, навигация, нижние кнопки) исключены
-    # из сравнения. Белые/однотонные строки не дают ложных совпадений.
-    def textured(rows_data: list[bytes], y: int) -> bool:
-        row = rows_data[y]
-        return (max(row) - min(row) >= 35 or
-                (y > 0 and abs(row[sample_w // 2] -
-                               rows_data[y - 1][sample_w // 2]) >= 2))
-
-    informative_a = [
-        y for y in range(top, bottom) if textured(a, y)
+    # Из оценки исключаются однотонные строки, в которых нельзя найти текст,
+    # а также неподвижные верхние и нижние панели приложения.
+    informative = [
+        y for y in range(top, bottom)
+        if (max(a[y]) - min(a[y]) >= 35 or
+            (y > 0 and abs(a[y][sample_width // 2] -
+                           a[y - 1][sample_width // 2]) >= 2))
     ]
-    if len(informative_a) < 6:
+    if len(informative) < 6:
         return 0
 
-    index: dict[bytes, list[int]] = {}
-    for y in range(top, bottom):
-        row = b[y]
-        if textured(b, y):
-            index.setdefault(row, []).append(y)
-
-    votes: dict[int, int] = {}
-    for y in informative_a:
-        matches = index.get(a[y], ())
-        # Повторяющиеся одинаковые строки (границы таблиц, заливки) ненадёжны.
-        if len(matches) > 4:
+    # Сначала дешёвое сопоставление хешей, затем проверка целых строк
+    # у лучших кандидатов. Хеш здесь служит только для отбора.
+    ah = [hash(row) for row in a]
+    bh = [hash(row) for row in b]
+    scores: list[tuple[float, int, int]] = []
+    for shift in range(min_shift, max_shift + 1):
+        eligible = [y for y in informative if top <= y - shift < bottom]
+        if len(eligible) < 8:
             continue
-        for current_y in matches:
-            shift = y - current_y
-            if min_shift <= shift <= max_shift:
-                votes[shift] = votes.get(shift, 0) + 1
-
-    # Самая надёжная проверка: целые строки рисунка должны совпадать
-    # побайтово. Это отличает одинаковые шаблоны строк таблицы с РАЗНЫМИ
-    # числами и словами; короткая выборка пикселей может их не заметить.
-    exact_scores: list[tuple[float, int, int]] = []
-    for shift in votes:
-        comparable = [y for y in informative_a
-                      if top <= y - shift < bottom]
-        if len(comparable) < 8:
-            continue
-        equal = sum(1 for y in comparable if a[y] == b[y - shift])
-        exact_scores.append((equal / len(comparable), equal, shift))
-    exact_scores.sort(reverse=True)
-    log.warning("scroll debug: candidate ratios %s", exact_scores[:8])
-    if exact_scores:
-        ratio, equal_count, exact_shift = exact_scores[0]
-        if ratio >= 0.70 and equal_count >= 10:
-            ambiguous = any(
-                other_ratio >= ratio - 0.055 and abs(other_shift - exact_shift) > 3
-                for other_ratio, _, other_shift in exact_scores[1:]
-            )
-            if ambiguous:
-                log.warning("scroll: повторяющиеся строки, точное смещение неоднозначно")
-                return 0
-            return exact_shift
-
-    # При правильном сдвиге текстовые границы в двух кадрах совпадают.
-    # Сравниваем прежде всего переходы яркости — на белом фоне одинаковые
-    # пустые пиксели больше не способны скрыть порчу букв.
-    col_step = max(1, sample_w // 90)
-    xs = range(col_step, sample_w, col_step)
-
-    def difference(shift: int) -> tuple[float, int]:
-        valid_rows = [y for y in informative_a
-                      if top <= y - shift < bottom]
-        if len(valid_rows) < 6:
-            return float("inf"), 0
-        step_y = max(1, len(valid_rows) // 44)
-        total = 0
-        count = 0
-        for y in valid_rows[::step_y][:48]:
-            row_a = a[y]
-            row_b = b[y - shift]
-            for x in xs:
-                edge_a = abs(row_a[x] - row_a[x - col_step])
-                edge_b = abs(row_b[x] - row_b[x - col_step])
-                vertical_a = abs(row_a[x] - a[y - 1][x])
-                vertical_b = abs(row_b[x] - b[y - shift - 1][x])
-                if edge_a + edge_b >= 32 or vertical_a + vertical_b >= 6:
-                    total += abs(row_a[x] - row_b[x])
-                    count += 1
-        if count < 24:
-            return float("inf"), count
-        return total / count, count
-
-    # Хеш-сопоставление реальных строк обычно даёт точное значение сразу.
-    strong = sorted(votes, key=lambda value: votes[value], reverse=True)[:8]
-    checked: dict[int, tuple[float, int]] = {}
-    for shift in strong:
-        checked[shift] = difference(shift)
-    best = min(checked, key=lambda k: checked[k][0]) if checked else 0
-    if best and votes.get(best, 0) >= 7 and checked[best][0] <= 12:
-        return best
-
-    # Для приложений с субпиксельной отрисовкой/динамическим содержимым
-    # находим несколько приближённых сдвигов и уточняем пиксель в пиксель.
-    coarse_step = max(3, height // 170)
-    coarse: list[tuple[float, int]] = []
-    for shift in range(min_shift, max_shift + 1, coarse_step):
-        score, _ = difference(shift)
-        if score != float("inf"):
-            coarse.append((score, shift))
-    coarse.sort()
-    candidates = set(strong)
-    for _score, center in coarse[:5]:
-        for shift in range(max(min_shift, center - coarse_step - 2),
-                           min(max_shift, center + coarse_step + 2) + 1):
-            candidates.add(shift)
-    for shift in candidates:
-        if shift not in checked:
-            checked[shift] = difference(shift)
-    if not checked:
-        return 0
-    best = min(checked, key=lambda k: checked[k][0])
-    score, edge_count = checked[best]
-    # Небольшие сдвиги менее одного ряда текста, почти однотонное
-    # содержимое и сомнительное совпадение отбрасываем.
-    # Слабый пиксельный результат не даёт права разрезать текст.
-    # Для пограничных кадров нужна хотя бы часть совпадающих полных строк.
-    exact_ratio = next((ratio for ratio, _, shift in exact_scores
-                        if shift == best), 0.0)
-    if exact_ratio < 0.22:
-        return 0
-    if score > 10 or edge_count < 24:
-        log.warning("scroll: отказ от ненадёжной склейки (score=%.2f, edges=%s)",
-                    score, edge_count)
+        equal = sum(ah[y] == bh[y - shift] for y in eligible)
+        if equal >= 5:
+            scores.append((equal / len(eligible), equal, shift))
+    if not scores:
         return 0
 
-    # Два одинаково хороших, но удалённых сдвига означают повторяющийся
-    # контент: нельзя угадывать и сшивать слова в неверном месте.
-    alternatives = [
-        value for shift, (value, _) in checked.items()
-        if abs(shift - best) > 3
-    ]
-    if alternatives and min(alternatives) <= score + 2.5 and score >= 1.5:
-        log.warning("scroll: неоднозначное перекрытие, склейка остановлена")
+    scores.sort(reverse=True)
+    best_ratio, _count, best_shift = scores[0]
+    if best_ratio < .70:
+        log.info("scroll: надёжное совпадение строк не найдено (%.2f)",
+                 best_ratio)
         return 0
-    return best
+
+    # Реально проверяем пиксельные строки, чтобы исключить коллизии хешей.
+    eligible = [y for y in informative if top <= y - best_shift < bottom]
+    equal_real = sum(a[y] == b[y - best_shift] for y in eligible)
+    if equal_real < 8 or equal_real / len(eligible) < .70:
+        return 0
+
+    # Слишком похожие периодические строки (например одинаковые элементы
+    # таблицы) не позволяют достоверно определить, где заканчивается слово.
+    for ratio, count, candidate in scores[1:]:
+        if ratio < best_ratio - .06:
+            break
+        if abs(candidate - best_shift) > 2 and count >= 7:
+            log.info("scroll: неоднозначный сдвиг %s или %s, склейка остановлена",
+                     best_shift, candidate)
+            return 0
+    return best_shift
 
 
 def _stitch_scroll_frames(frames: list[QImage], scroll_steps: list[int]) -> QImage:
