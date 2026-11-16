@@ -4839,7 +4839,8 @@ class ScrollingCapturePanel(QWidget):
     finish_requested = Signal()
 
     def __init__(self, max_steps: int):
-        super().__init__(None, Qt.Tool | Qt.WindowStaysOnTopHint)
+        super().__init__(None, Qt.Tool | Qt.WindowStaysOnTopHint |
+                         Qt.WindowDoesNotAcceptFocus)
         self.setWindowTitle("Длинный снимок — выполнение")
         self.setAttribute(Qt.WA_ShowWithoutActivating, True)
         self.setAttribute(Qt.WA_DeleteOnClose, True)
@@ -4863,6 +4864,27 @@ class ScrollingCapturePanel(QWidget):
         if screen is not None:
             rect = screen.availableGeometry()
             self.move(rect.right() - self.width() - 24, rect.top() + 24)
+
+    def reposition_outside(self, capture_area: QRect):
+        """Предпочесть угол вне выбранного фрагмента, чтобы не ловить колесо мыши."""
+        screen = QGuiApplication.screenAt(capture_area.center()) or QGuiApplication.primaryScreen()
+        if screen is None:
+            return
+        bounds = screen.availableGeometry()
+        pad = 16
+        positions = [
+            QPoint(bounds.left() + pad, bounds.top() + pad),
+            QPoint(bounds.right() - self.width() - pad, bounds.top() + pad),
+            QPoint(bounds.left() + pad, bounds.bottom() - self.height() - pad),
+            QPoint(bounds.right() - self.width() - pad,
+                   bounds.bottom() - self.height() - pad),
+        ]
+        # Не закрываем центр прокручиваемого контента, если экран позволяет.
+        candidate = min(
+            positions,
+            key=lambda pos: QRect(pos, self.size()).intersected(capture_area).width()
+            * QRect(pos, self.size()).intersected(capture_area).height())
+        self.move(candidate)
 
     def set_progress(self, step: int, maximum: int):
         self.counter.setText(f"Прокруток: {step} из {maximum}")
@@ -4946,8 +4968,8 @@ class ScrollingScreenshotJob(QObject):
         if self._scroll_panel is not None:
             self._scroll_panel.hide()
         try:
-            # Два деления мыши вниз. Курсор расположен внутри выделения.
-            ctypes.windll.user32.mouse_event(0x0800, 0, 0, (-240) & 0xFFFFFFFF, 0)
+            # Один шаг мыши уменьшает риск пропуска перекрывающихся строк.
+            ctypes.windll.user32.mouse_event(0x0800, 0, 0, (-120) & 0xFFFFFFFF, 0)
             if self._scroll_panel is not None:
                 self._scroll_panel.show()
         except (OSError, AttributeError):
@@ -4983,11 +5005,7 @@ class ScrollingScreenshotJob(QObject):
                     return
                 # Нативный scrollbar служит подсказкой, но сам по себе
                 # не подтверждает конец страницы. Важна история движения.
-                if self._ever_scrolled or (
-                    self._last_scroll_state is not None and
-                    state_after is not None and
-                    state_after[0] >= state_after[1] and
-                    self._last_scroll_state[0] >= self._last_scroll_state[1]):
+                if self._ever_scrolled:
                     self._finish("end",
                                  "Содержимое не меняется после нескольких прокруток. "
                                  "Вероятно, достигнут конец страницы.")
@@ -5002,10 +5020,12 @@ class ScrollingScreenshotJob(QObject):
             offset = _scroll_overlap(self.frames[-1], frame)
             if offset <= 0:
                 self._alignment_retries += 1
-                if self._alignment_retries < 2:
+                if self._alignment_retries < 3:
                     self.status_changed.emit(
                         "Содержимое изменилось, уточняем совмещение кадров…")
-                    self._advance()
+                    # Повторяем кадр без прокрутки: иначе потеряем перекрытие
+                    # и сможем ошибочно обрезать текст.
+                    QTimer.singleShot(550, self._capture_next)
                     return
                 self._finish("alignment",
                              "Не удалось надёжно совместить кадры после "
@@ -5417,6 +5437,7 @@ class Launcher(QMainWindow):
             job = ScrollingScreenshotJob(rect, self)
             self._scroll_job = job
             panel = ScrollingCapturePanel(job.max_steps)
+            panel.reposition_outside(rect)
             self._scroll_panel = panel
             job.attach_panel(panel)
             panel.finish_requested.connect(job.stop)
