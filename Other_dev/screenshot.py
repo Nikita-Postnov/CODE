@@ -4898,6 +4898,10 @@ class ScrollingScreenshotJob(QObject):
         self.finish_reason: Optional[str] = None
         self._scroll_panel: Optional[ScrollingCapturePanel] = None
         self._last_scroll_state: Optional[tuple[int, int]] = None
+        self._idle_retries = 0
+        self._alignment_retries = 0
+        self._ever_scrolled = False
+        self.max_idle_retries = 3
 
     def attach_panel(self, panel: ScrollingCapturePanel):
         self._scroll_panel = panel
@@ -4936,16 +4940,16 @@ class ScrollingScreenshotJob(QObject):
             return
         QCursor.setPos(self.area.center())
         self._last_scroll_state = _windows_scroll_state(self.area.center())
-        if (self._last_scroll_state is not None and
-                self._last_scroll_state[0] >= self._last_scroll_state[1]):
-            self._finish("end", "Достигнут конец прокручиваемого содержимого.")
-            return
+        # Даже реальная Win32-полоса может относиться к родительскому окну,
+        # а не к прокручиваемой странице. Нужна проверка фактического движения.
         self.status_changed.emit("Прокрутка страницы и проверка изменений…")
         if self._scroll_panel is not None:
-            self._scroll_panel.show()
+            self._scroll_panel.hide()
         try:
             # Два деления мыши вниз. Курсор расположен внутри выделения.
             ctypes.windll.user32.mouse_event(0x0800, 0, 0, (-240) & 0xFFFFFFFF, 0)
+            if self._scroll_panel is not None:
+                self._scroll_panel.show()
         except (OSError, AttributeError):
             self._finish("error", "Windows не разрешила прокрутку окна.")
             return
@@ -4969,40 +4973,57 @@ class ScrollingScreenshotJob(QObject):
                 return
 
             state_after = _windows_scroll_state(self.area.center())
-            if (_scroll_body_unchanged(self.frames[-1], frame)):
-                if (self._last_scroll_state is not None and
-                        state_after is not None and
-                        state_after[0] >= state_after[1]):
-                    self._finish("end", "Достигнут конец прокручиваемого содержимого.")
-                elif (self._last_scroll_state is not None and
-                      state_after is not None and
-                      state_after[0] == self._last_scroll_state[0]):
-                    self._finish("no_movement",
-                                 "Прокрутка не сдвинула содержимое. "
-                                 "Проверь выбранную область.")
+            if _scroll_body_unchanged(self.frames[-1], frame):
+                self._idle_retries += 1
+                if self._idle_retries < self.max_idle_retries:
+                    self.status_changed.emit(
+                        f"Содержимое пока не изменилось. Повторная проверка "
+                        f"{self._idle_retries + 1} из {self.max_idle_retries}…")
+                    self._advance()
+                    return
+                # Нативный scrollbar служит подсказкой, но сам по себе
+                # не подтверждает конец страницы. Важна история движения.
+                if self._ever_scrolled or (
+                    self._last_scroll_state is not None and
+                    state_after is not None and
+                    state_after[0] >= state_after[1] and
+                    self._last_scroll_state[0] >= self._last_scroll_state[1]):
+                    self._finish("end",
+                                 "Содержимое не меняется после нескольких прокруток. "
+                                 "Вероятно, достигнут конец страницы.")
                 else:
                     self._finish("no_movement",
-                                 "Содержимое перестало изменяться: возможно, "
-                                 "достигнут конец страницы или окно не прокручивается.")
+                                 "После нескольких попыток содержимое не прокрутилось. "
+                                 "Проверь выбранную область и положение курсора.")
                 return
 
+            # Видимые изменения есть, даже если сравнение кадров не удалось.
+            self._idle_retries = 0
             offset = _scroll_overlap(self.frames[-1], frame)
             if offset <= 0:
+                self._alignment_retries += 1
+                if self._alignment_retries < 2:
+                    self.status_changed.emit(
+                        "Содержимое изменилось, уточняем совмещение кадров…")
+                    self._advance()
+                    return
                 self._finish("alignment",
-                             "Не удалось надёжно совместить кадры. "
-                             "Сохранена только часть снимка без повреждённых стыков.")
+                             "Не удалось надёжно совместить кадры после "
+                             "повторной попытки. Сохранены подтверждённые кадры.")
                 return
+            self._alignment_retries = 0
             if self.frames[0].height() + sum(self.steps) + offset > 16000:
                 self._finish("limit", "Достигнут предел высоты 16000 пикселей.")
                 return
             self.frames.append(frame)
             self.steps.append(offset)
+            self._ever_scrolled = True
             self.progress.emit(len(self.steps), self.max_steps)
             log.info("scroll: accepted shift=%s, captured=%s",
                      offset, len(self.frames))
-            if state_after is not None and state_after[0] >= state_after[1]:
-                self._finish("end", "Достигнут конец прокручиваемого содержимого.")
-                return
+            # Нельзя завершать по одному состоянию полосы прокрутки:
+            # браузер может отображать её самостоятельно, а Win32 вернуть
+            # данные другого элемента окна.
             self._advance()
         except Exception:
             log.exception("scroll: capture or stitching failed")
