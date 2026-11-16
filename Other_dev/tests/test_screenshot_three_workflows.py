@@ -21,6 +21,10 @@ from PySide6.QtWidgets import QApplication, QLabel, QScrollArea, QPushButton
 from screenshot import (
     PinnedScreenshotWindow,
     Launcher,
+    OCRResultDialog,
+    _npcore_normalize_server,
+    _npcore_pair_config,
+    _npcore_translate,
     ScrollingCapturePanel,
     ScrollingScreenshotJob,
     ScrollingReviewDialog,
@@ -496,6 +500,41 @@ class ScreenshotThreeWorkflowsTests(unittest.TestCase):
             self.assertTrue(any("Инструменты:" in text for text in labels))
         finally:
             window.close()
+
+    def test_npcore_pair_config_requires_https_and_valid_code(self):
+        code = "A" * 24
+        self.assertEqual(_npcore_pair_config('{"server":"https://npcore.example","code":"' + code + '"}'),
+                         ("https://npcore.example", code))
+        self.assertEqual(_npcore_pair_config("https://npcore.example " + code),
+                         ("https://npcore.example", code))
+        for value in ("http://npcore.example " + code,
+                      "https://npcore.example/path " + code,
+                      "https://npcore.example " + "x" * 23):
+            with self.assertRaises(ValueError):
+                _npcore_pair_config(value)
+
+    def test_npcore_translate_uses_paired_bearer_and_desk_endpoint(self):
+        expected = {"ok": True, "text": "Hello", "detected_language": "Russian"}
+        with patch("screenshot._npcore_load_link", return_value=("https://npcore.example", "T" * 43)), \\
+             patch("screenshot._npcore_http_json", return_value=expected) as request:
+            result = _npcore_translate("Привет", "en")
+        self.assertEqual(result, expected)
+        request.assert_called_once_with(
+            "POST", "https://npcore.example/api/desk/translate", "T" * 43,
+            {"text": "Привет", "source": "auto", "target": "en"}, timeout=75)
+
+    def test_ocr_dialog_shows_translation_inline_without_opening_browser(self):
+        dialog = OCRResultDialog("Hello world")
+        try:
+            self.assertEqual(dialog.target_language.currentData(), "ru")
+            self.assertFalse(dialog.translation_edit.isVisible())
+            dialog._translation_completed({"ok": True, "result": {
+                "text": "Привет, мир!", "detected_language": "English"}})
+            self.assertEqual(dialog.translation_edit.toPlainText(), "Привет, мир!")
+            self.assertIn("English", dialog.translation_status.text())
+            self.assertTrue(dialog.translation_edit.isVisible())
+        finally:
+            dialog.close()
 
     def test_default_capture_is_not_changed_by_new_features(self):
         preferences = load_capture_preferences()
