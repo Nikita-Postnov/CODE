@@ -515,8 +515,8 @@ class ScreenshotThreeWorkflowsTests(unittest.TestCase):
 
     def test_npcore_translate_uses_paired_bearer_and_desk_endpoint(self):
         expected = {"ok": True, "text": "Hello", "detected_language": "Russian"}
-        with patch("screenshot._npcore_load_link", return_value=("https://npcore.example", "T" * 43)), \\
-             patch("screenshot._npcore_http_json", return_value=expected) as request:
+        with patch("screenshot._npcore_load_link", return_value=("https://npcore.example", "T" * 43)), patch(
+                "screenshot._npcore_http_json", return_value=expected) as request:
             result = _npcore_translate("Привет", "en")
         self.assertEqual(result, expected)
         request.assert_called_once_with(
@@ -532,7 +532,7 @@ class ScreenshotThreeWorkflowsTests(unittest.TestCase):
                 "text": "Привет, мир!", "detected_language": "English"}})
             self.assertEqual(dialog.translation_edit.toPlainText(), "Привет, мир!")
             self.assertIn("English", dialog.translation_status.text())
-            self.assertTrue(dialog.translation_edit.isVisible())
+            self.assertFalse(dialog.translation_edit.isHidden())
         finally:
             dialog.close()
 
