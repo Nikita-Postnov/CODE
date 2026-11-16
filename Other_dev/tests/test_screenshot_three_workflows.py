@@ -211,6 +211,9 @@ class ScreenshotThreeWorkflowsTests(unittest.TestCase):
         second.fill(QColor("#556677"))
         dialog = ScrollingReviewDialog([first, second], [30], [10], "Проверка")
         try:
+            self.assertEqual(dialog.frame_strip.count(), 2)
+            dialog.frame_strip.setCurrentRow(1)
+            self.assertEqual(dialog.seam_combo.currentIndex(), 0)
             dialog.delta_spin.setValue(5)
             self.assertEqual(dialog.steps, [35])
             self.assertEqual(dialog.result_image().height(), 125)
