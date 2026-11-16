@@ -9,16 +9,18 @@ import os
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QImage
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QScrollArea, QPushButton
 
 from screenshot import (
     PinnedScreenshotWindow,
+    Launcher,
     _scroll_overlap,
     _stitch_scroll_frames,
     compare_screenshot_images,
@@ -100,6 +102,26 @@ class ScreenshotThreeWorkflowsTests(unittest.TestCase):
         try:
             self.assertTrue(bool(window.windowFlags() & Qt.WindowStaysOnTopHint))
             self.assertTrue(bool(window.windowFlags() & Qt.Tool))
+        finally:
+            window.close()
+
+    def test_launcher_has_scrollable_content_and_readable_buttons(self):
+        with patch.object(Launcher, "_init_tray"), patch.object(Launcher, "_install_global_hotkey"):
+            window = Launcher()
+        try:
+            container = window.centralWidget()
+            self.assertIsInstance(container, QScrollArea)
+            self.assertTrue(container.widgetResizable())
+            self.assertEqual(container.objectName(), "launcher_scroll_area")
+            content = container.widget()
+            buttons = content.findChildren(QPushButton)
+            self.assertGreaterEqual(len(buttons), 11)
+            self.assertTrue(all(button.minimumHeight() >= 38 for button in buttons))
+            self.assertGreater(window.height(), 300)
+            labels = [child.text() for child in content.findChildren(
+                __import__("PySide6.QtWidgets", fromlist=["QLabel"]).QLabel)]
+            self.assertTrue(any("PrintScreen" in text for text in labels))
+            self.assertTrue(any("Инструменты:" in text for text in labels))
         finally:
             window.close()
 
