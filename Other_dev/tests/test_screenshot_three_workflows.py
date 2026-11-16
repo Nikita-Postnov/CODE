@@ -89,7 +89,7 @@ class ScreenshotThreeWorkflowsTests(unittest.TestCase):
         font = QFont("Arial", 16)
         painter.setFont(font)
         for line_no, y in enumerate(range(40, source.height(), 27)):
-            painter.drawText(42, y, f"Проверка строк текста № {line_no:03d}: Алфавит-2026")
+            painter.drawText(42, y, f"№{line_no:03d} Проверка текста: Алфавит-2026")
             painter.drawLine(40, y + 2, 470, y + 2)
         painter.end()
         first = source.copy(0, 0, width, height)
@@ -110,7 +110,7 @@ class ScreenshotThreeWorkflowsTests(unittest.TestCase):
         painter.setPen(Qt.black)
         painter.setFont(QFont("Arial", 13))
         for y in range(25, source.height(), 24):
-            painter.drawText(25, y, f"Проверяем каждую строку при прокрутке {y}")
+            painter.drawText(25, y, f"#{y:04d} Проверяем каждую строку при прокрутке")
         painter.end()
         before = source.copy(0, 0, width, height)
         after = source.copy(0, offset, width, height)
