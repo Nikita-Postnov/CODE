@@ -5265,12 +5265,16 @@ def _stitch_scroll_frames(frames: list[QImage], scroll_steps: list[int],
         raise ValueError("Количество фиксированных полос не совпадает")
     width, height = frames[0].width(), frames[0].height()
     safe_steps = [max(0, min(height, int(offset))) for offset in scroll_steps]
+    initial_fixed_bottom = max([0] + [max(0, int(value)) for value in fixed_bottoms])
+    initial_fixed_bottom = min(max(0, height - 1), initial_fixed_bottom)
+    initial_height = height - initial_fixed_bottom
     extra = sum(safe_steps)
-    canvas = QImage(width, height + extra, QImage.Format_RGB32)
+    canvas = QImage(width, initial_height + extra, QImage.Format_RGB32)
     canvas.fill(QColor("white"))
     painter = QPainter(canvas)
-    painter.drawImage(0, 0, frames[0])
-    pos = height
+    painter.drawImage(QRect(0, 0, width, initial_height), frames[0],
+                      QRect(0, 0, width, initial_height))
+    pos = initial_height
     for frame, step, fixed_bottom in zip(frames[1:], safe_steps, fixed_bottoms):
         fixed_bottom = max(0, min(height - step, int(fixed_bottom)))
         source_y = height - fixed_bottom - step
