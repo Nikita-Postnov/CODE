@@ -4984,6 +4984,7 @@ class NPCoreConnectionDialog(QDialog):
         self.setWindowTitle("Подключение NP Screenshot к NPCore")
         self.setMinimumWidth(520)
         layout = QVBoxLayout(self)
+        self._pair_worker: Optional[_NPCoreWorker] = None
         self.status = QLabel(self)
         link = _npcore_load_link()
         self.status.setText(
@@ -5019,19 +5020,30 @@ class NPCoreConnectionDialog(QDialog):
         if not value:
             QMessageBox.information(self, "NPCore", "Вставь строку подключения из Mini App.")
             return
+        try:
+            _npcore_pair_config(value)
+        except ValueError as exc:
+            QMessageBox.warning(self, "NPCore", str(exc))
+            return
+        if self._pair_worker is not None and self._pair_worker.isRunning():
+            return
         self.connect_button.setEnabled(False)
         self.status.setText("Подключаюсь к NPCore…")
-        QApplication.processEvents()
-        try:
-            server, _token = _npcore_pair(value)
-        except Exception as exc:
+        self._pair_worker = _NPCoreWorker(lambda: _npcore_pair(value), QApplication.instance())
+        self._pair_worker.completed.connect(self._pair_completed)
+        self._pair_worker.finished.connect(self._pair_worker.deleteLater)
+        self._pair_worker.start()
+
+    def _pair_completed(self, response: dict) -> None:
+        self.connect_button.setEnabled(True)
+        self._pair_worker = None
+        if not response.get("ok"):
             self.status.setText("Подключение не выполнено.")
-            QMessageBox.warning(self, "NPCore", str(exc))
-            self.connect_button.setEnabled(True)
+            QMessageBox.warning(self, "NPCore", str(response.get("error") or "Ошибка подключения"))
             return
+        server, _token = response["result"]
         self.status.setText(f"Подключено к NPCore: {server}")
         self.disconnect_button.setEnabled(True)
-        self.connect_button.setEnabled(True)
         self.config.clear()
         QMessageBox.information(self, "NPCore", "NP Screenshot успешно подключён.")
 
