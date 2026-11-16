@@ -16,7 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QImage
-from PySide6.QtWidgets import QApplication, QScrollArea, QPushButton
+from PySide6.QtWidgets import QApplication, QLabel, QScrollArea, QPushButton
 
 from screenshot import (
     PinnedScreenshotWindow,
@@ -118,8 +118,7 @@ class ScreenshotThreeWorkflowsTests(unittest.TestCase):
             self.assertGreaterEqual(len(buttons), 11)
             self.assertTrue(all(button.minimumHeight() >= 38 for button in buttons))
             self.assertGreater(window.height(), 300)
-            labels = [child.text() for child in content.findChildren(
-                __import__("PySide6.QtWidgets", fromlist=["QLabel"]).QLabel)]
+            labels = [child.text() for child in content.findChildren(QLabel)]
             self.assertTrue(any("PrintScreen" in text for text in labels))
             self.assertTrue(any("Инструменты:" in text for text in labels))
         finally:
