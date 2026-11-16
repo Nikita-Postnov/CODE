@@ -4832,24 +4832,62 @@ def _scroll_overlap(previous: QImage, current: QImage) -> int:
     return best_shift
 
 
-def _stitch_scroll_frames(frames: list[QImage], scroll_steps: list[int]) -> QImage:
-    """Присоединить только новые нижние строки последующих кадров."""
+def _scroll_fixed_bands(before: QImage, after: QImage) -> tuple[int, int]:
+    """Оценивает неподвижные полосы сверху и снизу (например, sticky header/footer)."""
+    if before.isNull() or after.isNull() or before.size() != after.size():
+        return 0, 0
+    width, height = before.width(), before.height()
+    if width < 40 or height < 100:
+        return 0, 0
+    a = before.convertToFormat(QImage.Format_Grayscale8)
+    b = after.convertToFormat(QImage.Format_Grayscale8)
+    ba, bb = bytes(a.constBits()), bytes(b.constBits())
+    sa, sb = a.bytesPerLine(), b.bytesPerLine()
+
+    def stable(y: int) -> bool:
+        ra = ba[y * sa:y * sa + width]
+        rb = bb[y * sb:y * sb + width]
+        # Небольшие изменения курсора/анимации не мешают распознать закреплённую строку.
+        changed = sum(x != y for x, y in zip(ra, rb))
+        return changed <= max(2, int(width * 0.012))
+
+    limit = max(8, int(height * 0.24))
+    top = 0
+    while top < limit and stable(top):
+        top += 1
+    bottom = 0
+    while bottom < limit and stable(height - 1 - bottom):
+        bottom += 1
+    minimum = max(10, int(height * 0.025))
+    return (top if top >= minimum else 0,
+            bottom if bottom >= minimum else 0)
+
+
+def _stitch_scroll_frames(frames: list[QImage], scroll_steps: list[int],
+                          fixed_bottoms: Optional[list[int]] = None) -> QImage:
+    """Склеивает только новые строки, исключая повторный sticky footer."""
     if not frames:
         return QImage()
     if len(frames) - 1 != len(scroll_steps):
         raise ValueError("Количество кадров и смещений не совпадает")
+    if fixed_bottoms is None:
+        fixed_bottoms = [0] * len(scroll_steps)
+    if len(fixed_bottoms) != len(scroll_steps):
+        raise ValueError("Количество фиксированных полос не совпадает")
     width, height = frames[0].width(), frames[0].height()
-    extra = sum(max(0, min(height, offset)) for offset in scroll_steps)
+    safe_steps = [max(0, min(height, int(offset))) for offset in scroll_steps]
+    extra = sum(safe_steps)
     canvas = QImage(width, height + extra, QImage.Format_RGB32)
     canvas.fill(QColor("white"))
     painter = QPainter(canvas)
     painter.drawImage(0, 0, frames[0])
     pos = height
-    for frame, step in zip(frames[1:], scroll_steps):
-        step = max(0, min(height, int(step)))
+    for frame, step, fixed_bottom in zip(frames[1:], safe_steps, fixed_bottoms):
+        fixed_bottom = max(0, min(height - step, int(fixed_bottom)))
+        source_y = height - fixed_bottom - step
         if step:
             painter.drawImage(QRect(0, pos, width, step), frame,
-                              QRect(0, height - step, width, step))
+                              QRect(0, source_y, width, step))
             pos += step
     painter.end()
     return canvas
@@ -4979,6 +5017,7 @@ class ScrollingCapturePanel(QWidget):
     """Компактная немодальная панель; скрывается во время самого захвата."""
 
     finish_requested = Signal()
+    speed_changed = Signal(int)
 
     def __init__(self, max_steps: int):
         super().__init__(None, Qt.Tool | Qt.WindowStaysOnTopHint |
@@ -4987,7 +5026,7 @@ class ScrollingCapturePanel(QWidget):
         self.setAttribute(Qt.WA_ShowWithoutActivating, True)
         self.setAttribute(Qt.WA_DeleteOnClose, True)
         self._silent_close = False
-        self.resize(345, 116)
+        self.resize(365, 166)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(14, 10, 14, 10)
         layout.setSpacing(7)
@@ -4998,6 +5037,18 @@ class ScrollingCapturePanel(QWidget):
         self.status.setWordWrap(True)
         self.status.setObjectName("scroll_capture_status")
         layout.addWidget(self.status)
+        speed_row = QHBoxLayout()
+        self.speed_label = QLabel("Интервал прокрутки: 900 мс", self)
+        speed_row.addWidget(self.speed_label)
+        self.speed_slider = QSlider(Qt.Horizontal, self)
+        self.speed_slider.setRange(400, 1600)
+        self.speed_slider.setSingleStep(100)
+        self.speed_slider.setPageStep(200)
+        self.speed_slider.setValue(900)
+        self.speed_slider.setToolTip("Меньше значение — быстрее прокрутка; больше — больше времени на загрузку страницы.")
+        self.speed_slider.valueChanged.connect(self._on_speed_changed)
+        speed_row.addWidget(self.speed_slider, 1)
+        layout.addLayout(speed_row)
         button = QPushButton("Завершить и сохранить", self)
         button.setObjectName("scroll_capture_finish")
         button.clicked.connect(self.finish_requested.emit)
@@ -5026,6 +5077,10 @@ class ScrollingCapturePanel(QWidget):
             key=lambda pos: (QRect(pos, self.size()).intersected(capture_area).width()
                              * QRect(pos, self.size()).intersected(capture_area).height()))
         self.move(candidate)
+
+    def _on_speed_changed(self, value: int) -> None:
+        self.speed_label.setText(f"Интервал прокрутки: {value} мс")
+        self.speed_changed.emit(int(value))
 
     def set_progress(self, step: int, maximum: int):
         self.counter.setText(f"Прокруток: {step} из {maximum}")
@@ -5233,6 +5288,95 @@ class ScrollingScreenshotJob(QObject):
                  self.finish_reason, len(self.frames),
                  combined.width(), combined.height())
         self.completed.emit(combined, message)
+
+
+class ScrollingReviewDialog(QDialog):
+    """Предпросмотр длинного снимка с ручной коррекцией каждого шва."""
+
+    def __init__(self, frames: list[QImage], steps: list[int],
+                 fixed_bottoms: Optional[list[int]] = None,
+                 message: str = "", parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Проверка длинного скриншота")
+        self.resize(900, 700)
+        self.frames = [frame.copy() for frame in frames]
+        self.steps = [int(value) for value in steps]
+        self.fixed_bottoms = list(fixed_bottoms or [0] * len(self.steps))
+        if len(self.fixed_bottoms) != len(self.steps):
+            self.fixed_bottoms = [0] * len(self.steps)
+        self._applied_delta = 0
+        layout = QVBoxLayout(self)
+        self.message_label = QLabel(message or "Проверьте результат. При необходимости скорректируйте смещение между кадрами.", self)
+        self.message_label.setWordWrap(True)
+        layout.addWidget(self.message_label)
+        self.preview = QLabel(self)
+        self.preview.setAlignment(Qt.AlignCenter)
+        self.preview.setMinimumSize(600, 430)
+        self.preview.setStyleSheet("background:#202124;border:1px solid #555;border-radius:6px;")
+        layout.addWidget(self.preview, 1)
+        controls = QHBoxLayout()
+        controls.addWidget(QLabel("Шов:", self))
+        self.seam_combo = QComboBox(self)
+        for index, step in enumerate(self.steps):
+            self.seam_combo.addItem(f"Кадр {index + 1} → {index + 2}: {step} px", index)
+        self.seam_combo.currentIndexChanged.connect(self._select_seam)
+        controls.addWidget(self.seam_combo, 1)
+        controls.addWidget(QLabel("Коррекция, px:", self))
+        self.delta_spin = QSpinBox(self)
+        self.delta_spin.setRange(-240, 240)
+        self.delta_spin.setSuffix(" px")
+        self.delta_spin.valueChanged.connect(self._change_delta)
+        controls.addWidget(self.delta_spin)
+        layout.addLayout(controls)
+        buttons = QHBoxLayout()
+        buttons.addStretch(1)
+        self.cancel_btn = QPushButton("Отмена", self)
+        self.cancel_btn.clicked.connect(self.reject)
+        self.accept_btn = QPushButton("Использовать снимок", self)
+        self.accept_btn.setDefault(True)
+        self.accept_btn.clicked.connect(self.accept)
+        buttons.addWidget(self.cancel_btn)
+        buttons.addWidget(self.accept_btn)
+        layout.addLayout(buttons)
+        self._render_preview()
+
+    def _select_seam(self, _index: int) -> None:
+        self._applied_delta = 0
+        blocked = self.delta_spin.blockSignals(True)
+        self.delta_spin.setValue(0)
+        self.delta_spin.blockSignals(blocked)
+        self._render_preview()
+
+    def _change_delta(self, value: int) -> None:
+        index = self.seam_combo.currentData()
+        if index is None or not 0 <= int(index) < len(self.steps):
+            return
+        difference = int(value) - self._applied_delta
+        self.steps[int(index)] = max(1, min(self.frames[0].height(),
+                                            self.steps[int(index)] + difference))
+        self._applied_delta = int(value)
+        self.seam_combo.setItemText(int(index),
+                                    f"Кадр {int(index) + 1} → {int(index) + 2}: {self.steps[int(index)]} px")
+        self._render_preview()
+
+    def _render_preview(self) -> None:
+        image = _stitch_scroll_frames(self.frames, self.steps, self.fixed_bottoms)
+        if image.isNull():
+            self.preview.setText("Предпросмотр недоступен")
+            return
+        size = self.preview.size()
+        if size.width() < 100 or size.height() < 100:
+            size = QSize(800, 500)
+        preview = image.scaled(size - QSize(16, 16), Qt.KeepAspectRatio,
+                               Qt.SmoothTransformation)
+        self.preview.setPixmap(QPixmap.fromImage(preview))
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._render_preview()
+
+    def result_image(self) -> QImage:
+        return _stitch_scroll_frames(self.frames, self.steps, self.fixed_bottoms)
 
 
 class ScreenshotQuickActionsDialog(QDialog):
