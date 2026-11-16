@@ -23,6 +23,8 @@ from screenshot import (
     Launcher,
     ScrollingCapturePanel,
     ScrollingScreenshotJob,
+    ScrollingReviewDialog,
+    _scroll_fixed_bands,
     _scroll_body_unchanged,
     _windows_scroll_state,
     _scroll_overlap,
@@ -137,6 +139,64 @@ class ScreenshotThreeWorkflowsTests(unittest.TestCase):
         first.fill(Qt.white)
         second.fill(Qt.white)
         self.assertEqual(_scroll_overlap(first, second), 0)
+
+    def test_scroll_speed_slider_updates_job_delay(self):
+        panel = ScrollingCapturePanel(24)
+        values = []
+        panel.speed_changed.connect(values.append)
+        try:
+            self.assertEqual(panel.speed_slider.value(), 900)
+            panel.speed_slider.setValue(1200)
+            self.assertEqual(values, [1200])
+            job = ScrollingScreenshotJob(QRect(0, 0, 200, 200))
+            job.set_scroll_delay(1200)
+            self.assertEqual(job.scroll_delay_ms, 1200)
+            job.set_scroll_delay(100)
+            self.assertEqual(job.scroll_delay_ms, 400)
+        finally:
+            panel.close_silently()
+
+    def test_sticky_footer_is_detected_and_not_repeated_in_stitched_image(self):
+        width, height, offset, footer = 80, 100, 30, 10
+        before = QImage(width, height, QImage.Format_RGB32)
+        after = QImage(width, height, QImage.Format_RGB32)
+        painter = QPainter(before)
+        for y in range(height - footer):
+            painter.fillRect(0, y, width, 1, QColor(y, y, y))
+        painter.fillRect(0, height - footer, width, footer, QColor("#eeeeee"))
+        painter.end()
+        painter = QPainter(after)
+        for y in range(height - footer):
+            value = y + offset
+            painter.fillRect(0, y, width, 1, QColor(value, value, value))
+        painter.fillRect(0, height - footer, width, footer, QColor("#eeeeee"))
+        painter.end()
+
+        _fixed_top, fixed_bottom = _scroll_fixed_bands(before, after)
+        self.assertEqual(fixed_bottom, footer)
+        stitched = _stitch_scroll_frames([before, after], [offset], [fixed_bottom])
+        self.assertEqual(stitched.height(), height - footer + offset)
+        self.assertEqual(stitched.pixelColor(10, height - footer - 1),
+                         QColor(height - footer - 1, height - footer - 1, height - footer - 1))
+        self.assertEqual(stitched.pixelColor(10, height - footer),
+                         QColor(height - footer, height - footer, height - footer))
+        self.assertEqual(stitched.pixelColor(10, stitched.height() - 1),
+                         QColor(height + offset - footer - 1,
+                                height + offset - footer - 1,
+                                height + offset - footer - 1))
+
+    def test_scrolling_review_allows_manual_seam_adjustment(self):
+        first = QImage(80, 100, QImage.Format_RGB32)
+        second = QImage(80, 100, QImage.Format_RGB32)
+        first.fill(QColor("#334455"))
+        second.fill(QColor("#556677"))
+        dialog = ScrollingReviewDialog([first, second], [30], [10], "Проверка")
+        try:
+            dialog.delta_spin.setValue(5)
+            self.assertEqual(dialog.steps, [35])
+            self.assertEqual(dialog.result_image().height(), 125)
+        finally:
+            dialog.close()
 
     def test_body_unchanged_detects_stopped_scroll(self):
         before = QImage(430, 600, QImage.Format_RGB32)
