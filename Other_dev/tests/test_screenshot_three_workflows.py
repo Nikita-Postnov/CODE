@@ -115,9 +115,22 @@ class ScreenshotThreeWorkflowsTests(unittest.TestCase):
         source.fill(Qt.white)
         p = QPainter(source)
         p.setFont(QFont("Arial", 13))
+        paragraphs = [
+            "Избранная статья — литературное произведение",
+            "Новые материалы о музыке и путешествиях",
+            "История современной российской энциклопедии",
+            "Города и страны: культура, наука и архитектура",
+            "Биография автора и исторические источники",
+            "Научные открытия и важнейшие достижения",
+            "География древних поселений Европы",
+            "Энциклопедические сведения и полезные ссылки",
+            "Известные художники, литераторы и исследователи",
+            "Хронология событий и публикаций",
+            "Открытые знания и справочные материалы",
+        ]
         for i, y in enumerate(range(28, source.height(), 31)):
             p.setPen(QColor("#1d2a38") if i % 3 else QColor("#225fc0"))
-            p.drawText(45, y, f"Статья Википедии: {i:03d} Проверка текста и ссылок")
+            p.drawText(45, y, f"{i:03d}. {paragraphs[i % len(paragraphs)]}")
             p.setPen(QColor("#ccd2d7"))
             p.drawLine(40, y + 4, 510, y + 4)
         p.end()
@@ -175,7 +188,7 @@ class ScreenshotThreeWorkflowsTests(unittest.TestCase):
         p.setPen(Qt.black)
         p.setFont(QFont("Arial", 13))
         for i, y in enumerate(range(35, src.height(), 23)):
-            p.drawText(24, y, f"Фрагмент большой страницы, строка {i:04d}")
+            p.drawText(24, y, f"{i:04d} — Фрагмент страницы, строка {i:04d}")
         p.end()
         first = src.copy(0, 0, width, height)
         second = src.copy(0, shift, width, height)
