@@ -108,6 +108,106 @@ class ScreenshotThreeWorkflowsTests(unittest.TestCase):
             painter.end()
         self.assertEqual(_scroll_overlap(first, second), offset)
 
+    def test_wikipedia_like_page_with_dynamic_card_and_fixed_header(self):
+        """Текст после прокрутки должен совмещаться даже с обновлённым виджетом."""
+        width, height, shift = 640, 760, 133
+        source = QImage(width, height + shift + 150, QImage.Format_RGB32)
+        source.fill(Qt.white)
+        p = QPainter(source)
+        p.setFont(QFont("Arial", 13))
+        paragraphs = [
+            "Избранная статья — литературное произведение",
+            "Новые материалы о музыке и путешествиях",
+            "История современной российской энциклопедии",
+            "Города и страны: культура, наука и архитектура",
+            "Биография автора и исторические источники",
+            "Научные открытия и важнейшие достижения",
+            "География древних поселений Европы",
+            "Энциклопедические сведения и полезные ссылки",
+            "Известные художники, литераторы и исследователи",
+            "Хронология событий и публикаций",
+            "Открытые знания и справочные материалы",
+        ]
+        for i, y in enumerate(range(28, source.height(), 31)):
+            p.setPen(QColor("#1d2a38") if i % 3 else QColor("#225fc0"))
+            p.drawText(45, y, f"{i:03d}. {paragraphs[i % len(paragraphs)]}")
+            # Разнообразные ссылки, маркированные пункты и иллюстрации,
+            # как на реальной энциклопедической странице.
+            p.fillRect(46, y - 24, 6 + (i * 13) % 72, 4,
+                       QColor.fromRgb(35 + (i * 17) % 180, 96, 180))
+            p.setPen(QColor("#ccd2d7"))
+            p.drawLine(40, y + 4, 360 + (i * 17) % 145, y + 4)
+        p.end()
+        first = source.copy(0, 0, width, height)
+        second = source.copy(0, shift, width, height)
+        for frame in (first, second):
+            p = QPainter(frame)
+            p.fillRect(0, 0, width, 94, QColor("#e7ecf2"))
+            p.setPen(Qt.black)
+            p.drawText(24, 38, "Википедия | Искать | История")
+            p.end()
+        p = QPainter(second)
+        p.fillRect(325, 320, 250, 70, QColor("#f4dcbc"))
+        p.setPen(QColor("#663300"))
+        p.drawText(346, 352, "Обновлённый динамический блок")
+        # Имитация небольшого различия в сглаживании текста между кадрами.
+        p.fillRect(0, 100, width, height - 100, QColor(255, 255, 255, 8))
+        p.end()
+        self.assertEqual(_scroll_overlap(first, second), shift)
+
+    def test_text_alignment_tolerates_antialias_changes(self):
+        width, height, shift = 460, 540, 97
+        source = QImage(width, height + shift + 100, QImage.Format_RGB32)
+        source.fill(Qt.white)
+        p = QPainter(source)
+        p.setFont(QFont("Arial", 15))
+        p.setPen(QColor("#232323"))
+        for i, y in enumerate(range(28, source.height(), 26)):
+            p.drawText(30, y, f"Прокрутка страницы № {i:04d}")
+        p.end()
+        first = source.copy(0, 0, width, height)
+        second = source.copy(0, shift, width, height)
+        painter = QPainter(second)
+        painter.fillRect(0, 0, width, height, QColor(255, 255, 255, 12))
+        painter.end()
+        self.assertEqual(_scroll_overlap(first, second), shift)
+
+    def test_periodically_repeating_rows_cannot_be_matched_uniquely(self):
+        width, height = 400, 540
+        image = QImage(width, height, QImage.Format_RGB32)
+        image.fill(Qt.white)
+        p = QPainter(image)
+        p.setFont(QFont("Arial", 13))
+        p.setPen(Qt.black)
+        for y in range(24, height, 30):
+            p.drawText(35, y, "Одинаковый пункт таблицы")
+        p.end()
+        self.assertEqual(_scroll_overlap(image, image.copy()), 0)
+
+    def test_genuine_scrolled_frames_append_multiple_screenfuls(self):
+        width, height, shift = 460, 540, 103
+        src = QImage(width, height + shift + 100, QImage.Format_RGB32)
+        src.fill(Qt.white)
+        p = QPainter(src)
+        p.setPen(Qt.black)
+        p.setFont(QFont("Arial", 13))
+        for i, y in enumerate(range(35, src.height(), 23)):
+            p.drawText(24, y, f"{i:04d} — Фрагмент страницы, строка {i:04d}")
+            p.fillRect(25, y - 22, 12 + (i * 11) % 75, 4,
+                       QColor.fromRgb(40 + (i * 29) % 190, 77, 133))
+        p.end()
+        first = src.copy(0, 0, width, height)
+        second = src.copy(0, shift, width, height)
+        job = ScrollingScreenshotJob(QRect(0, 0, width, height))
+        job.frames.append(first)
+        with patch("screenshot.grab_region_highdpi", return_value=second), \
+             patch("screenshot._windows_scroll_state", return_value=None), \
+             patch.object(job, "_advance"):
+            job._take_next_frame()
+        self.assertIsNone(job.finish_reason)
+        self.assertEqual(job.steps, [shift])
+        self.assertEqual(len(job.frames), 2)
+
     def test_text_scroll_pixel_fidelity_without_scaling(self):
         width, height, offset = 450, 480, 173
         source = QImage(width, height + offset, QImage.Format_RGB32)
