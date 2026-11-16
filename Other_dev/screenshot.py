@@ -4824,6 +4824,10 @@ def _scroll_overlap(previous: QImage, current: QImage) -> int:
     if not verified:
         return gradient_fallback()
     verified.sort()
+    log.info("scroll diagnostic: finalists=%s, top pixel candidates=%s",
+             len(finalists),
+             [(round(px, 5), round(mask, 5), pos)
+              for px, mask, _, pos in verified[:18]])
     pixel_error, mask_error, _, shift = verified[0]
     if pixel_error > 29:
         log.info("scroll alignment: нет достоверного пиксельного совпадения "
