@@ -792,8 +792,10 @@ class SelectionOverlay:
               MODE_OCR, MODE_OCR_WINDOW)
     _ACTIONS = (MODE_SHOT, MODE_RECORD, MODE_OCR)
     _TARGETS = ("area", "window")
+    _ASPECT_RATIOS = (None, 16 / 9, 4 / 3, 1.0)
+    _ASPECT_LABELS = ("Свободно", "16:9", "4:3", "1:1")
     _BAR_BUTTONS = (
-        "kind:shot", "kind:record", "kind:ocr", "target:area", "target:window",
+        "kind:shot", "kind:record", "kind:ocr", "target:area", "target:window", "ratio",
     )
     _BAR_LABELS = {
         "kind:shot": "📷  Скриншот",
@@ -801,6 +803,7 @@ class SelectionOverlay:
         "kind:ocr": "🔤  Текст",
         "target:area": "▧  Область",
         "target:window": "▣  Окно",
+        "ratio": "⤢  Пропорции",
     }
 
     class _Pane(QWidget):
@@ -834,7 +837,8 @@ class SelectionOverlay:
                 SelectionOverlay._BAR_BUTTONS[:3],
                 SelectionOverlay._BAR_BUTTONS[3:],
             )
-            labels = SelectionOverlay._BAR_LABELS
+            labels = {key: self.mgr.bar_label(key)
+                      for key in SelectionOverlay._BAR_BUTTONS}
             h_btn = fm.height() + 2 * pad_y
             widths = {
                 key: fm.horizontalAdvance(labels[key]) + 2 * pad_x
@@ -887,6 +891,7 @@ class SelectionOverlay:
                 selected = (
                     (key == f"kind:{current_kind}")
                     or (key == f"target:{current_target}")
+                    or (key == "ratio" and self.mgr.aspect_ratio is not None)
                 )
                 enabled = self.mgr.capture_button_enabled(key)
                 bg = QColor(26, 115, 232) if selected else QColor(60, 64, 67)
@@ -896,7 +901,7 @@ class SelectionOverlay:
                 p.setBrush(bg)
                 p.drawRoundedRect(rect, 7, 7)
                 p.setPen(QColor(255, 255, 255) if enabled else QColor(130, 130, 130))
-                p.drawText(rect, Qt.AlignCenter, SelectionOverlay._BAR_LABELS[key])
+                p.drawText(rect, Qt.AlignCenter, self.mgr.bar_label(key))
 
             p.setFont(self._hint_font)
             p.setPen(QColor(185, 192, 206))
@@ -930,6 +935,11 @@ class SelectionOverlay:
                     self.mgr.toggle_target()
                 else:
                     self.mgr.toggle_mode()
+                return True
+            if (e.type() == QEvent.KeyPress and e.key() == Qt.Key_R
+                    and not (e.modifiers() & (Qt.ControlModifier | Qt.AltModifier))
+                    and self.mgr._origin_g is None):
+                self.mgr.cycle_aspect_ratio()
                 return True
             return super().event(e)
 
@@ -971,6 +981,39 @@ class SelectionOverlay:
         def keyPressEvent(self, e):
             if e.key() == Qt.Key_Escape:
                 self.mgr._cancel()
+
+        def _paint_magnifier(self, painter: QPainter) -> None:
+            if (self._frozen is None or self.mgr._origin_g is None
+                    or self.mgr._current_g is None):
+                return
+            dpr = max(1.0, float(self._frozen.devicePixelRatio()))
+            local = self.mgr._current_g - self.geometry().topLeft()
+            cx = round(local.x() * dpr)
+            cy = round(local.y() * dpr)
+            side = max(24, round(42 * dpr))
+            source = QRect(cx - side // 2, cy - side // 2, side, side).intersected(
+                QRect(0, 0, self._frozen.width(), self._frozen.height()))
+            if source.width() < 4 or source.height() < 4:
+                return
+            crop = self._frozen.copy(source)
+            size = 144
+            x = min(max(8, local.x() + 22), max(8, self.width() - size - 8))
+            y = min(max(8, local.y() + 22), max(8, self.height() - size - 8))
+            target = QRect(x, y, size, size)
+            painter.save()
+            painter.setRenderHint(QPainter.SmoothPixmapTransform, False)
+            painter.setPen(QPen(QColor(0, 0, 0, 230), 4))
+            painter.setBrush(QColor(24, 26, 30, 235))
+            painter.drawRoundedRect(target.adjusted(-3, -3, 3, 3), 7, 7)
+            painter.drawPixmap(target, crop)
+            painter.setPen(QPen(QColor(255, 255, 255, 220), 1))
+            painter.drawRect(target)
+            painter.setPen(QPen(QColor(255, 65, 65, 230), 1))
+            painter.drawLine(target.center().x(), target.top() + 5,
+                             target.center().x(), target.bottom() - 5)
+            painter.drawLine(target.left() + 5, target.center().y(),
+                             target.right() - 5, target.center().y())
+            painter.restore()
 
         def paintEvent(self, _):
             p = QPainter(self)
@@ -1019,7 +1062,8 @@ class SelectionOverlay:
                 p.setPen(QPen(frame, 1))
                 p.drawRect(r_local)
                 p.setBrush(Qt.NoBrush)
-                info = f"{r_global.width()} x {r_global.height()}"
+                info = (f"X: {r_global.left()}  Y: {r_global.top()}  "
+                        f"W: {r_global.width()}  H: {r_global.height()}")
                 if record:
                     info = "⏺ Запись · " + info
                 elif ocr:
@@ -1038,6 +1082,7 @@ class SelectionOverlay:
                 p.setPen(QColor(255, 255, 255))
                 p.drawText(rect.adjusted(6, 4, -6, -4), Qt.AlignLeft | Qt.AlignVCenter, info)
 
+            self._paint_magnifier(p)
             if self._bar_visible():
                 self._paint_bar(p)
             p.end()
@@ -1076,6 +1121,7 @@ class SelectionOverlay:
             self._panes[0].has_bar = True
         self._origin_g: Optional[QPoint] = None
         self._current_g: Optional[QPoint] = None
+        self.aspect_ratio: Optional[float] = None
         self.selection_made = lambda rect: None
 
     @classmethod
@@ -1110,9 +1156,23 @@ class SelectionOverlay:
             return self.mode_enabled(self.mode_for_choice(self.capture_kind(), choice))
         return False
 
+    def bar_label(self, key: str) -> str:
+        if key == "ratio":
+            index = self._ASPECT_RATIOS.index(self.aspect_ratio)
+            return "⤢  " + self._ASPECT_LABELS[index]
+        return self._BAR_LABELS.get(key, key)
+
+    def cycle_aspect_ratio(self) -> None:
+        current = self._ASPECT_RATIOS.index(self.aspect_ratio)
+        self.aspect_ratio = self._ASPECT_RATIOS[(current + 1) % len(self._ASPECT_RATIOS)]
+        for pane in self._panes:
+            pane.update()
+
     def choose_bar_button(self, key: str) -> None:
         group, _, value = key.partition(":")
-        if group == "kind" and value in self._ACTIONS:
+        if key == "ratio":
+            self.cycle_aspect_ratio()
+        elif group == "kind" and value in self._ACTIONS:
             self.set_capture_kind(value)
         elif group == "target" and value in self._TARGETS:
             self.set_capture_target(value)
@@ -1135,7 +1195,7 @@ class SelectionOverlay:
         if not self.record_available:
             warning = self._record_unavailable_reason or "Запись недоступна"
             return f"{action} · {warning} · Esc — отмена"
-        return f"{action} · Tab — действие · Shift+Tab — объект · Esc — отмена"
+        return f"{action} · Tab — действие · Shift+Tab — объект · R — пропорции · Esc — отмена"
 
     def mode_enabled(self, mode: Optional[str]) -> bool:
         if mode == self.MODE_RECORD:
@@ -1247,11 +1307,51 @@ class SelectionOverlay:
         self._origin_g = g
         self._current_g = g
 
+    def _snap_point_to_window(self, point: QPoint) -> QPoint:
+        if self.capture_target() != "area" or not self._windows:
+            return QPoint(point)
+        x, y = point.x(), point.y()
+        threshold = 9
+        best_x = (threshold + 1, x)
+        best_y = (threshold + 1, y)
+        for entry in self._windows:
+            rect = entry[1]
+            for edge in (rect.left(), rect.right()):
+                distance = abs(x - edge)
+                if distance < best_x[0]:
+                    best_x = (distance, edge)
+            for edge in (rect.top(), rect.bottom()):
+                distance = abs(y - edge)
+                if distance < best_y[0]:
+                    best_y = (distance, edge)
+        if best_x[0] <= threshold:
+            x = best_x[1]
+        if best_y[0] <= threshold:
+            y = best_y[1]
+        return QPoint(x, y)
+
+    def _constrain_selection_point(self, point: QPoint) -> QPoint:
+        ratio = self.aspect_ratio
+        if ratio is None or self._origin_g is None:
+            return QPoint(point)
+        dx, dy = point.x() - self._origin_g.x(), point.y() - self._origin_g.y()
+        if dx == 0 and dy == 0:
+            return QPoint(point)
+        width, height = abs(dx), abs(dy)
+        if width / max(1, height) > ratio:
+            height = max(1, round(width / ratio))
+        else:
+            width = max(1, round(height * ratio))
+        return QPoint(self._origin_g.x() + (width if dx >= 0 else -width),
+                      self._origin_g.y() + (height if dy >= 0 else -height))
+
     def _on_move(self, g: QPoint):
-        self._current_g = g
+        point = self._snap_point_to_window(g)
+        self._current_g = self._constrain_selection_point(point)
 
     def _on_release(self, g: QPoint):
-        self._current_g = g
+        self._on_move(g)
+        g = self._current_g
         rect = QRect(self._origin_g, self._current_g).normalized()
         if (self._frozen or self.switchable) and rect.width() < 4 and rect.height() < 4:
             screen = QGuiApplication.screenAt(g)
@@ -4960,6 +5060,8 @@ class ScrollingScreenshotJob(QObject):
         self._finished = False
         self.finish_reason: Optional[str] = None
         self._scroll_panel: Optional[ScrollingCapturePanel] = None
+        self.scroll_delay_ms = 900
+        self.fixed_bottoms: list[int] = []
         self._last_scroll_state: Optional[tuple[int, int]] = None
         self._idle_retries = 0
         self._alignment_retries = 0
@@ -4969,6 +5071,9 @@ class ScrollingScreenshotJob(QObject):
 
     def attach_panel(self, panel: ScrollingCapturePanel):
         self._scroll_panel = panel
+
+    def set_scroll_delay(self, milliseconds: int) -> None:
+        self.scroll_delay_ms = max(400, min(1600, int(milliseconds)))
 
     def start(self):
         if sys.platform != "win32":
@@ -5030,7 +5135,7 @@ class ScrollingScreenshotJob(QObject):
             self._finish("error", "Windows не разрешила прокрутку окна.")
             return
         QTimer.singleShot(230, self._show_scroll_panel)
-        QTimer.singleShot(900, self._capture_next)
+        QTimer.singleShot(self.scroll_delay_ms, self._capture_next)
 
     def _show_scroll_panel(self):
         if not self._finished and self._scroll_panel is not None:
@@ -5093,8 +5198,10 @@ class ScrollingScreenshotJob(QObject):
             if self.frames[0].height() + sum(self.steps) + offset > 16000:
                 self._finish("limit", "Достигнут предел высоты 16000 пикселей.")
                 return
+            _fixed_top, fixed_bottom = _scroll_fixed_bands(self.frames[-1], frame)
             self.frames.append(frame)
             self.steps.append(offset)
+            self.fixed_bottoms.append(fixed_bottom)
             self._ever_scrolled = True
             self.progress.emit(len(self.steps), self.max_steps)
             log.info("scroll: accepted shift=%s, captured=%s",
@@ -5116,7 +5223,7 @@ class ScrollingScreenshotJob(QObject):
             self._scroll_panel.hide()
         QCursor.setPos(self._cursor)
         try:
-            combined = _stitch_scroll_frames(self.frames, self.steps)
+            combined = _stitch_scroll_frames(self.frames, self.steps, self.fixed_bottoms)
         except Exception:
             log.exception("scroll: frame assembly failed")
             combined = QImage()
@@ -5501,6 +5608,7 @@ class Launcher(QMainWindow):
             panel.finish_requested.connect(job.stop)
             job.progress.connect(panel.set_progress)
             job.status_changed.connect(panel.set_status)
+            panel.speed_changed.connect(job.set_scroll_delay)
             job.completed.connect(self._on_scrolling_finished)
             job.start()
         except Exception:
@@ -5531,7 +5639,15 @@ class Launcher(QMainWindow):
         # обычный кадр за длинный снимок или изменять буфер обмена.
         confirmed_steps = len(job.steps) if job is not None else 0
         if not image.isNull() and confirmed_steps > 0:
-            self._handle_captured_image(image)
+            if job is not None and len(job.frames) == len(job.steps) + 1:
+                review = ScrollingReviewDialog(
+                    job.frames, job.steps, job.fixed_bottoms, message, self)
+                if review.exec() == QDialog.Accepted:
+                    image = review.result_image()
+                else:
+                    image = QImage()
+            if not image.isNull():
+                self._handle_captured_image(image, capture_kind="scroll")
         elif confirmed_steps == 0:
             message = (
                 (message + " ") if message else ""
@@ -5772,12 +5888,12 @@ class Launcher(QMainWindow):
         self.hide()
         QTimer.singleShot(200, lambda: self._capture(SelectionOverlay.MODE_WINDOW))
 
-    def _handle_captured_image(self, img: QImage) -> None:
+    def _handle_captured_image(self, img: QImage, capture_kind: str = "shot") -> None:
         """Буфер, история и действия для всех способов создания снимка."""
         QApplication.clipboard().setImage(img, QClipboard.Clipboard)
         saved = None
         if self._capture_preferences.get("history_enabled", False):
-            saved = archive_screenshot(img)
+            saved = archive_screenshot(img, kind=capture_kind)
             if saved is None:
                 log.error("Снимок создан, но не удалось сохранить его в историю")
         if self._capture_preferences.get("quick_actions", False):
