@@ -195,10 +195,8 @@ class ScreenshotThreeWorkflowsTests(unittest.TestCase):
         launcher._scroll_panel = None
         launcher._handle_captured_image = Mock()
         with patch("screenshot.ScrollingReviewDialog") as review:
-            review.return_value.exec.return_value = 1
-            review.return_value.result_image.return_value = frame.copy()
             launcher._on_scrolling_finished(frame, "Прокрутка не обнаружена")
-        review.assert_called_once()
+        review.assert_not_called()
         launcher._handle_captured_image.assert_called_once()
         self.assertEqual(launcher._handle_captured_image.call_args.kwargs["capture_kind"],
                          "shot")
@@ -307,7 +305,7 @@ class ScreenshotThreeWorkflowsTests(unittest.TestCase):
         finally:
             panel.close_silently()
 
-    def test_failed_long_capture_does_not_replace_clipboard_with_one_frame(self):
+    def test_failed_long_capture_preserves_first_frame_as_regular_screenshot(self):
         with patch.object(Launcher, "_init_tray"), \
              patch.object(Launcher, "_install_global_hotkey"):
             launcher = Launcher()
@@ -316,7 +314,8 @@ class ScreenshotThreeWorkflowsTests(unittest.TestCase):
         try:
             with patch.object(launcher, "_handle_captured_image") as finish:
                 launcher._on_scrolling_finished(frame.copy(), "Страница не прокрутилась.")
-            finish.assert_not_called()
+            finish.assert_called_once()
+            self.assertEqual(finish.call_args.kwargs["capture_kind"], "shot")
         finally:
             launcher.close()
 
