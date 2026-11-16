@@ -1141,7 +1141,7 @@ class SelectionOverlay:
                     or self.mgr._current_g is None):
                 return
             dpr = max(1.0, float(self._frozen.devicePixelRatio()))
-            local = self.mgr._current_g - self.geometry().topLeft()
+            local = self.mapFromGlobal(self.mgr._current_g)
             cx = round(local.x() * dpr)
             cy = round(local.y() * dpr)
             side = max(24, round(42 * dpr))
@@ -1303,6 +1303,8 @@ class SelectionOverlay:
         ) else "area")
 
     def capture_button_enabled(self, key: str) -> bool:
+        if key == "ratio":
+            return True
         group, _, choice = key.partition(":")
         if group == "kind" and choice in self._ACTIONS:
             return self.mode_enabled(self.mode_for_choice(choice, self.capture_target()))
