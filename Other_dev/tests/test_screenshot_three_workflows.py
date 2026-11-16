@@ -130,6 +130,54 @@ class ScreenshotThreeWorkflowsTests(unittest.TestCase):
             for x in (30, 120, 200, width - 10):
                 self.assertEqual(stitched.pixel(x, y), source.pixel(x, y))
 
+    def test_browser_text_scroll_with_small_dynamic_repaint(self):
+        """Частичная перерисовка браузером не должна обнулять длинный снимок."""
+        width, height, shift = 760, 710, 149
+        source = QImage(width, height + shift + 40, QImage.Format_RGB32)
+        source.fill(Qt.white)
+        painter = QPainter(source)
+        painter.setPen(QColor("#202122"))
+        painter.setFont(QFont("Arial", 15))
+        for n, y in enumerate(range(30, source.height(), 25)):
+            painter.drawText(45, y, f"Википедия — статья {n:03d}: проверка прокрутки")
+            painter.fillRect(55, y + 2, 20 + (n * 23) % 175, 3,
+                             QColor.fromRgb(40, 70, (n * 13) % 155 + 60))
+        painter.end()
+        before = source.copy(0, 0, width, height)
+        after = source.copy(0, shift, width, height)
+        # Постоянная шапка браузера, не участвующая в прокрутке.
+        for img in (before, after):
+            brush = QPainter(img)
+            brush.fillRect(0, 0, width, 60, QColor("#eeeeee"))
+            brush.end()
+        # В реальном браузере курсор, анимация, ссылки и виджеты могут
+        # перерисовываться иначе на каждом кадре.
+        repaint = QPainter(after)
+        repaint.fillRect(600, 280, 45, 45, QColor("#4488cc"))
+        repaint.fillRect(90, 480, 22, 28, QColor("#b5b5b5"))
+        repaint.end()
+        self.assertEqual(_scroll_overlap(before, after), shift)
+
+    def test_browser_scroll_without_exactly_matching_full_rows(self):
+        """Движение находится даже если каждая строка получила небольшой шум."""
+        width, height, shift = 500, 520, 113
+        source = QImage(width, height + shift + 30, QImage.Format_RGB32)
+        source.fill(Qt.white)
+        painter = QPainter(source)
+        painter.setPen(QColor("#171f29"))
+        painter.setFont(QFont("Arial", 14))
+        for n, y in enumerate(range(20, source.height(), 21)):
+            painter.drawText(20, y, f"Строка {n:03d}: длинный снимок страницы")
+        painter.end()
+        before = source.copy(0, 0, width, height)
+        after = source.copy(0, shift, width, height)
+        # Небольшие отличия рендеринга по горизонтальным полосам.
+        painter = QPainter(after)
+        for y in range(5, height, 13):
+            painter.fillRect(0, y, 3, 1, QColor("#f4f4f4"))
+        painter.end()
+        self.assertEqual(_scroll_overlap(before, after), shift)
+
     def test_no_false_match_on_repeated_uniform_background(self):
         """Белая или одноцветная область не должна превращаться в ложный длинный снимок."""
         first = QImage(400, 600, QImage.Format_RGB32)
