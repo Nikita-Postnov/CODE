@@ -98,6 +98,8 @@ from PySide6.QtWidgets import (
     QDialogButtonBox,
     QFormLayout,
     QSpinBox,
+    QLineEdit,
+    QPlainTextEdit,
 )
 
 log = logging.getLogger(__name__)
@@ -244,8 +246,86 @@ def preferred_capture_mode(initial_mode: str) -> str:
     return initial_mode
 
 
-def archive_screenshot(image: QImage) -> Optional[Path]:
-    """Сохраняем оригинал снимка в портативной истории, не удаляя старые записи."""
+def _history_metadata_path(path: Path) -> Optional[Path]:
+    candidate = Path(path)
+    try:
+        if (candidate.is_symlink() or candidate.suffix.lower() != ".png"
+                or candidate.parent.resolve() != SCREENSHOT_HISTORY_DIR.resolve()):
+            return None
+        return candidate.with_suffix(".json")
+    except OSError:
+        return None
+
+
+def load_history_metadata(path: Path) -> dict:
+    defaults = {"favorite": False, "tags": [], "category": "",
+                "project": "", "kind": "shot", "ocr_text": ""}
+    metadata_path = _history_metadata_path(path)
+    if metadata_path is None:
+        return defaults
+    try:
+        data = json.loads(metadata_path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            return defaults
+        result = defaults.copy()
+        result["favorite"] = data.get("favorite") is True
+        raw_tags = data.get("tags", [])
+        result["tags"] = [str(x)[:48] for x in raw_tags
+                          if isinstance(x, str)][:30] if isinstance(raw_tags, list) else []
+        for key, limit in (("category", 120), ("project", 120), ("ocr_text", 200_000)):
+            value = data.get(key, "")
+            result[key] = str(value)[:limit] if isinstance(value, str) else ""
+        kind = data.get("kind", "shot")
+        result["kind"] = kind if kind in ("shot", "scroll", "window") else "shot"
+        return result
+    except (OSError, ValueError, TypeError):
+        return defaults
+
+
+def save_history_metadata(path: Path, metadata: dict) -> bool:
+    metadata_path = _history_metadata_path(path)
+    if metadata_path is None or not isinstance(metadata, dict):
+        return False
+    current = load_history_metadata(path)
+    current.update({key: value for key, value in metadata.items()
+                    if key in ("favorite", "tags", "category", "project", "kind", "ocr_text")})
+    if not isinstance(current.get("tags"), list):
+        current["tags"] = []
+    current["tags"] = [str(x)[:48] for x in current["tags"] if str(x).strip()][:30]
+    current["favorite"] = current.get("favorite") is True
+    if current.get("kind") not in ("shot", "scroll", "window"):
+        current["kind"] = "shot"
+    for key, limit in (("category", 120), ("project", 120), ("ocr_text", 200_000)):
+        current[key] = str(current.get(key, ""))[:limit]
+    temporary = None
+    try:
+        metadata_path.parent.mkdir(parents=True, exist_ok=True)
+        fd, temporary = tempfile.mkstemp(prefix=".history_meta_", suffix=".tmp",
+                                         dir=str(metadata_path.parent))
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(current, handle, ensure_ascii=False, indent=2)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, metadata_path)
+        temporary = None
+        return True
+    except (OSError, ValueError, TypeError):
+        log.exception("Не удалось сохранить метаданные истории: %s", metadata_path)
+        return False
+    finally:
+        if temporary is not None:
+            try:
+                Path(temporary).unlink(missing_ok=True)
+            except OSError:
+                log.debug("Не удалось удалить временные метаданные", exc_info=True)
+
+
+def update_history_metadata(path: Path, **updates) -> bool:
+    return save_history_metadata(path, updates)
+
+
+def archive_screenshot(image: QImage, kind: str = "shot", project: str = "") -> Optional[Path]:
+    """Сохраняем оригинал снимка и метаданные в портативной истории."""
     if image.isNull():
         return None
     try:
@@ -254,6 +334,10 @@ def archive_screenshot(image: QImage) -> Optional[Path]:
                     + "_" + uuid.uuid4().hex[:12] + ".png")
         destination = SCREENSHOT_HISTORY_DIR / filename
         if save_image_atomically(image, destination, "PNG"):
+            save_history_metadata(destination, {
+                "kind": kind if kind in ("shot", "scroll", "window") else "shot",
+                "project": str(project or "")[:120],
+            })
             return destination
     except (OSError, RuntimeError):
         log.exception("Не удалось записать историю снимков")
@@ -5578,27 +5662,52 @@ class ScreenshotQuickActionsDialog(QDialog):
 
 
 class ScreenshotHistoryDialog(QDialog):
-    """Просмотр истории. Удаление происходит только после явного подтверждения."""
+    """Поиск и управление историей снимков, тегами, избранным и OCR-индексом."""
 
     def __init__(self, launcher: "Launcher"):
         super().__init__(None)
         self.launcher = launcher
         self.setWindowTitle("История скриншотов")
         self.setWindowIcon(_load_app_icon())
-        self.resize(850, 540)
+        self.resize(1040, 680)
         layout = QVBoxLayout(self)
         description = QLabel(
-            "Снимки хранятся в Data/ScreenshotHistory. "
-            "Автосохранение в историю включается отдельно в трее.", self)
+            "Поиск выполняется по имени, тегам, категории и распознанному тексту. "
+            "Для поиска по содержимому сначала запустите OCR для снимка.", self)
         description.setWordWrap(True)
         layout.addWidget(description)
+        filters = QHBoxLayout()
+        self.search_input = QLineEdit(self)
+        self.search_input.setPlaceholderText("Поиск по имени, OCR-тексту и тегам…")
+        self.search_input.textChanged.connect(self.refresh)
+        filters.addWidget(self.search_input, 1)
+        self.type_filter = QComboBox(self)
+        self.type_filter.addItem("Все типы", "all")
+        self.type_filter.addItem("Обычные снимки", "shot")
+        self.type_filter.addItem("Длинные снимки", "scroll")
+        self.type_filter.addItem("Снимки окон", "window")
+        self.type_filter.currentIndexChanged.connect(self.refresh)
+        filters.addWidget(self.type_filter)
+        self.category_filter = QComboBox(self)
+        self.category_filter.addItem("Все категории", "")
+        self.category_filter.currentIndexChanged.connect(self.refresh)
+        filters.addWidget(self.category_filter)
+        self.group_filter = QComboBox(self)
+        self.group_filter.addItem("Группировать по дате", "date")
+        self.group_filter.addItem("Группировать по проекту", "project")
+        self.group_filter.currentIndexChanged.connect(self.refresh)
+        filters.addWidget(self.group_filter)
+        self.favorites_only = QCheckBox("Избранное", self)
+        self.favorites_only.toggled.connect(self.refresh)
+        filters.addWidget(self.favorites_only)
+        layout.addLayout(filters)
         self.items = QListWidget(self)
         self.items.setViewMode(QListWidget.IconMode)
         self.items.setResizeMode(QListWidget.Adjust)
         self.items.setMovement(QListWidget.Static)
         self.items.setSelectionMode(QAbstractItemView.SingleSelection)
         self.items.setIconSize(QSize(152, 100))
-        self.items.setGridSize(QSize(180, 144))
+        self.items.setGridSize(QSize(190, 148))
         self.items.setSpacing(8)
         self.items.itemDoubleClicked.connect(lambda _item: self.open_selected())
         layout.addWidget(self.items, 1)
@@ -5606,9 +5715,13 @@ class ScreenshotHistoryDialog(QDialog):
         for title, handler in (
             ("Открыть в редакторе", self.open_selected),
             ("Копировать", self.copy_selected),
+            ("Избранное", self.toggle_favorite),
+            ("Теги", self.edit_tags),
+            ("Категория", self.edit_category),
+            ("Проект", self.edit_project),
+            ("Распознать текст", self.recognize_selected),
             ("Удалить", self.delete_selected),
             ("Открыть папку", self.open_folder),
-            ("Обновить", self.refresh),
         ):
             button = QPushButton(title, self)
             button.clicked.connect(handler)
@@ -5616,31 +5729,90 @@ class ScreenshotHistoryDialog(QDialog):
         layout.addLayout(actions)
         self.refresh()
 
-    def refresh(self) -> None:
+    def refresh(self, *_args) -> None:
+        selected = self._selected_path()
         self.items.clear()
-        paths = screenshot_history_files()
-        for path in paths:
-            reader = QImageReader(str(path))
-            source_size = reader.size()
-            if source_size.isValid():
-                source_size.scale(QSize(152, 100), Qt.KeepAspectRatio)
-                reader.setScaledSize(source_size)
-            preview = reader.read()
-            if preview.isNull():
+        records = []
+        query = self.search_input.text().strip().casefold()
+        kind_filter = self.type_filter.currentData()
+        category_filter = self.category_filter.currentData()
+        for path in screenshot_history_files(limit=5000):
+            metadata = load_history_metadata(path)
+            if kind_filter != "all" and metadata["kind"] != kind_filter:
                 continue
-            icon = QIcon(QPixmap.fromImage(preview))
-            entry = QListWidgetItem(icon, path.stem.replace("Screenshot_", ""))
-            entry.setToolTip(path.name)
-            entry.setData(Qt.UserRole, str(path))
-            self.items.addItem(entry)
-        if self.items.count() > 0:
-            self.items.setCurrentRow(0)
+            if category_filter and metadata["category"] != category_filter:
+                continue
+            if self.favorites_only.isChecked() and not metadata["favorite"]:
+                continue
+            searchable = " ".join((path.stem, metadata["ocr_text"],
+                                   metadata["category"], metadata["project"],
+                                   " ".join(metadata["tags"]))).casefold()
+            if query and query not in searchable:
+                continue
+            try:
+                modified = path.stat().st_mtime
+            except OSError:
+                continue
+            group = (metadata["project"] or "Без проекта"
+                     if self.group_filter.currentData() == "project"
+                     else time.strftime("%d.%m.%Y", time.localtime(modified)))
+            records.append((path, metadata, modified, group))
+        categories = sorted({meta["category"] for _path, meta, _mtime, _group in records
+                             if meta["category"]})
+        current_category = self.category_filter.currentData()
+        blocked = self.category_filter.blockSignals(True)
+        self.category_filter.clear()
+        self.category_filter.addItem("Все категории", "")
+        for category in categories:
+            self.category_filter.addItem(category, category)
+        index = self.category_filter.findData(current_category)
+        self.category_filter.setCurrentIndex(max(0, index))
+        self.category_filter.blockSignals(blocked)
+        grouped = {}
+        for record in records:
+            grouped.setdefault(record[3], []).append(record)
+        groups = sorted(grouped, key=lambda key: max(x[2] for x in grouped[key]),
+                        reverse=True)
+        first_item = None
+        for group in groups:
+            header = QListWidgetItem(f"— {group} —")
+            header.setFlags(Qt.NoItemFlags)
+            self.items.addItem(header)
+            for path, metadata, _modified, _group in sorted(
+                    grouped[group], key=lambda x: (x[2], x[0].name), reverse=True):
+                reader = QImageReader(str(path))
+                source_size = reader.size()
+                if source_size.isValid():
+                    source_size.scale(QSize(152, 100), Qt.KeepAspectRatio)
+                    reader.setScaledSize(source_size)
+                preview = reader.read()
+                if preview.isNull():
+                    continue
+                icon = QIcon(QPixmap.fromImage(preview))
+                prefix = "★ " if metadata["favorite"] else ""
+                title = prefix + path.stem.replace("Screenshot_", "")
+                entry = QListWidgetItem(icon, title)
+                entry.setToolTip(
+                    f"{path.name}\nТип: {metadata['kind']}\n"
+                    f"Категория: {metadata['category'] or '—'}\n"
+                    f"Проект: {metadata['project'] or '—'}\n"
+                    f"Теги: {', '.join(metadata['tags']) or '—'}\n"
+                    f"OCR: {'есть' if metadata['ocr_text'] else 'не индексирован'}")
+                entry.setData(Qt.UserRole, str(path))
+                self.items.addItem(entry)
+                if first_item is None or (selected is not None and path == selected):
+                    first_item = entry
+        if first_item is not None:
+            self.items.setCurrentItem(first_item)
 
     def _selected_path(self) -> Optional[Path]:
         item = self.items.currentItem()
         if item is None:
             return None
-        path = Path(str(item.data(Qt.UserRole)))
+        value = item.data(Qt.UserRole)
+        if not isinstance(value, str) or not value:
+            return None
+        path = Path(value)
         try:
             if (path.is_symlink() or
                     path.parent.resolve() != SCREENSHOT_HISTORY_DIR.resolve() or
@@ -5670,6 +5842,59 @@ class ScreenshotHistoryDialog(QDialog):
             return
         QApplication.clipboard().setImage(image, QClipboard.Clipboard)
 
+    def toggle_favorite(self) -> None:
+        path = self._selected_path()
+        if path is None:
+            return
+        metadata = load_history_metadata(path)
+        update_history_metadata(path, favorite=not metadata["favorite"])
+        self.refresh()
+
+    def edit_tags(self) -> None:
+        path = self._selected_path()
+        if path is None:
+            return
+        metadata = load_history_metadata(path)
+        value, ok = QInputDialog.getText(
+            self, "Теги", "Введите теги через запятую:",
+            text=", ".join(metadata["tags"]))
+        if ok:
+            tags = list(dict.fromkeys(x.strip() for x in value.split(",") if x.strip()))
+            update_history_metadata(path, tags=tags)
+            self.refresh()
+
+    def edit_category(self) -> None:
+        path = self._selected_path()
+        if path is None:
+            return
+        metadata = load_history_metadata(path)
+        value, ok = QInputDialog.getText(
+            self, "Категория", "Категория снимка:", text=metadata["category"])
+        if ok:
+            update_history_metadata(path, category=value.strip())
+            self.refresh()
+
+    def edit_project(self) -> None:
+        path = self._selected_path()
+        if path is None:
+            return
+        metadata = load_history_metadata(path)
+        value, ok = QInputDialog.getText(
+            self, "Проект", "Название проекта:", text=metadata["project"])
+        if ok:
+            update_history_metadata(path, project=value.strip())
+            self.refresh()
+
+    def recognize_selected(self) -> None:
+        path = self._selected_path()
+        if path is None:
+            return
+        image = QImage(str(path))
+        if image.isNull():
+            QMessageBox.warning(self, "История", "Не удалось прочитать снимок.")
+            return
+        start_ocr(image, self.launcher, history_path=path)
+
     def delete_selected(self) -> None:
         path = self._selected_path()
         if path is None:
@@ -5683,6 +5908,9 @@ class ScreenshotHistoryDialog(QDialog):
             return
         try:
             path.unlink()
+            metadata_path = path.with_suffix(".json")
+            if metadata_path.is_file() and not metadata_path.is_symlink():
+                metadata_path.unlink()
         except OSError:
             log.exception("Не удалось удалить снимок из истории: %s", path)
             QMessageBox.warning(self, "Ошибка", "Не удалось удалить снимок.")
