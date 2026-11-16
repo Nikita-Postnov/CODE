@@ -4694,6 +4694,45 @@ def _scroll_overlap(previous: QImage, current: QImage) -> int:
 
     a = row_masks(previous)
     b = row_masks(current)
+
+    def row_luminance(image: QImage) -> list[int]:
+        # Для графиков/градиентов без текста дополнительно используем яркость
+        # строки: двоичные текстовые маски в таком случае малоинформативны.
+        sample = image.copy(left, 0, content_width, height).scaled(
+            24, height, Qt.IgnoreAspectRatio, Qt.FastTransformation
+        ).convertToFormat(QImage.Format_Grayscale8)
+        data = bytes(sample.constBits())
+        stride = sample.bytesPerLine()
+        return [
+            sum(data[y * stride:y * stride + 24]) // 24
+            for y in range(height)
+        ]
+
+    def gradient_fallback() -> int:
+        la, lb = row_luminance(previous), row_luminance(current)
+        values = la[top:bottom]
+        if not values or max(values) - min(values) < 16:
+            return 0
+        candidates = []
+        for shift in range(min_shift, max_shift + 1):
+            first = top + shift
+            ys = range(first, bottom, 2)
+            count = len(ys)
+            if count < 30:
+                continue
+            error = sum(abs(la[y] - lb[y - shift]) for y in ys) / count
+            candidates.append((error, shift))
+        candidates.sort()
+        if not candidates or candidates[0][0] > 1.5:
+            return 0
+        best_error, best_shift = candidates[0]
+        if any(
+            abs(d - best_shift) >= 3 and err <= best_error + 1.8
+            for err, d in candidates[1:]
+        ):
+            return 0
+        return best_shift
+
     # Не ищем абсолютное совпадение всей области: анимации и реклама могут
     # менять отдельные строки при неподвижном основном тексте.
     def score(shift: int) -> tuple[float, int]:
@@ -4726,14 +4765,14 @@ def _scroll_overlap(previous: QImage, current: QImage) -> int:
         if mismatch != float("inf"):
             evaluated.append((mismatch, -informative, shift))
     if not evaluated:
-        log.info("scroll alignment: нет информативных строк")
-        return 0
+        log.info("scroll alignment: нет информативных текстовых строк")
+        return gradient_fallback()
     evaluated.sort()
     best, _, shift = evaluated[0]
     if best > .34:
-        log.info("scroll alignment: лучшее совпадение слишком слабое (%.3f)",
+        log.info("scroll alignment: лучшее текстовое совпадение слишком слабое (%.3f)",
                  best)
-        return 0
+        return gradient_fallback()
 
     # Отдельная проверка уникальности не допускает ложного сдвига на строку
     # выше/ниже в таблицах с повторяющимися одинаковыми элементами.
