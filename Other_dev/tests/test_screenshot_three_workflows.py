@@ -243,6 +243,25 @@ class ScreenshotThreeWorkflowsTests(unittest.TestCase):
         self.assertEqual(job.finish_reason, "end")
         self.assertIn("конец", output[0])
 
+    def test_native_bar_at_bottom_without_scroll_reports_no_movement(self):
+        job, frame = self._job_with_first_frame()
+        job._last_scroll_state = (100, 100)
+        with patch("screenshot.grab_region_highdpi", return_value=frame.copy()), \
+             patch("screenshot._scroll_body_unchanged", return_value=True), \
+             patch("screenshot._windows_scroll_state", return_value=(100, 100)), \
+             patch.object(job, "_advance"):
+            for _ in range(3):
+                job._take_next_frame()
+        self.assertEqual(job.finish_reason, "no_movement")
+
+    def test_scroll_panel_does_not_take_focus(self):
+        panel = ScrollingCapturePanel(24)
+        try:
+            self.assertTrue(bool(panel.windowFlags() & Qt.WindowDoesNotAcceptFocus))
+            panel.reposition_outside(QRect(0, 0, 200, 200))
+        finally:
+            panel.close_silently()
+
     def test_no_movement_is_distinct_from_end_of_page(self):
         job, frame = self._job_with_first_frame()
         job._last_scroll_state = (20, 100)
@@ -272,10 +291,15 @@ class ScreenshotThreeWorkflowsTests(unittest.TestCase):
              patch("screenshot._scroll_body_unchanged", return_value=False), \
              patch("screenshot._scroll_overlap", return_value=0), \
              patch("screenshot._windows_scroll_state", return_value=None), \
-             patch.object(job, "_advance"):
+             patch("screenshot.QTimer.singleShot") as timer, \
+             patch.object(job, "_advance") as advance:
             job._take_next_frame()
             self.assertIsNone(job.finish_reason)
             job._take_next_frame()
+            self.assertIsNone(job.finish_reason)
+            job._take_next_frame()
+            advance.assert_not_called()
+            self.assertEqual(timer.call_count, 2)
         self.assertEqual(job.finish_reason, "alignment")
         self.assertEqual(len(job.frames), 1)
         self.assertEqual(result[0].height(), 200)
