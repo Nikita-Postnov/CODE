@@ -6495,11 +6495,12 @@ class Launcher(QMainWindow):
         screen = QGuiApplication.primaryScreen()
         if screen is not None:
             available = screen.availableGeometry()
-            window_width = min(560, max(360, round(available.width() * 0.85)))
-            window_height = min(760, max(340, round(available.height() * 0.80)))
+            window_width = min(720, max(420, round(available.width() * 0.85)))
+            window_height = min(820, max(560, round(available.height() * 0.82)))
         else:
-            window_width, window_height = 520, 720
+            window_width, window_height = 680, 760
         self.resize(window_width, window_height)
+        self._capture_preferences = load_capture_preferences()
         self._capture_preferences = load_capture_preferences()
         scroll_area = QScrollArea(self)
         scroll_area.setObjectName("launcher_scroll_area")
@@ -6508,53 +6509,65 @@ class Launcher(QMainWindow):
         w = QWidget()
         w.setObjectName("launcher_scroll_content")
         v = QVBoxLayout(w)
-        v.setContentsMargins(18, 18, 18, 18)
-        v.setSpacing(10)
+        v.setContentsMargins(20, 18, 20, 18)
+        v.setSpacing(14)
         scroll_area.setWidget(w)
         self.setCentralWidget(scroll_area)
-        title = QLabel(
-            "<b>Скриншоты</b><br>"
-            "PrintScreen — выбор действия (Скриншот / Запись экрана / Текст) "
-            "и объекта (Область / Окно). Tab — действие; Shift+Tab — объект; "
-            "ПКМ или Esc — отмена.<br>"
-            "Shift+PrintScreen — сразу распознать текст в буфер обмена.<br>"
-            "В редакторе: Ctrl+S — сохранить, Ctrl+C — копировать, PrintScreen — новый снимок."
-        )
-        title.setWordWrap(True)
-        v.addWidget(title)
-        btn = QPushButton("Сделать скриншот")
-        btn.clicked.connect(self.make_shot)
-        v.addWidget(btn)
-        btn_window = QPushButton("Снимок отдельного окна")
-        btn_window.clicked.connect(self.make_window_shot)
-        v.addWidget(btn_window)
-        btn_rec = QPushButton("Запись экрана")
-        btn_rec.clicked.connect(self.start_recording)
-        v.addWidget(btn_rec)
-        btn_window_rec = QPushButton("Запись отдельного окна")
-        btn_window_rec.clicked.connect(self.start_window_recording)
-        v.addWidget(btn_window_rec)
-        btn_ocr = QPushButton("Распознать текст")
-        btn_ocr.clicked.connect(self.make_ocr)
-        v.addWidget(btn_ocr)
-        btn_open = QPushButton("Открыть изображение…")
-        btn_open.clicked.connect(self._open_image)
-        v.addWidget(btn_open)
-        btn_project = QPushButton("Открыть редактируемый проект…")
-        btn_project.clicked.connect(self._open_project)
-        v.addWidget(btn_project)
-        btn_scroll = QPushButton("Длинный снимок с прокруткой")
-        btn_scroll.clicked.connect(self.start_scrolling_capture)
-        v.addWidget(btn_scroll)
-        btn_pin = QPushButton("Закрепить изображение из буфера")
-        btn_pin.clicked.connect(self.pin_clipboard_image)
-        v.addWidget(btn_pin)
-        btn_compare = QPushButton("Сравнить два изображения")
-        btn_compare.clicked.connect(self.compare_two_files)
-        v.addWidget(btn_compare)
-        btn_history = QPushButton("История скриншотов")
-        btn_history.clicked.connect(self.open_history)
-        v.addWidget(btn_history)
+
+        header = QLabel(
+            "<div style='font-size:22px;font-weight:700'>NP Screenshot</div>"
+            "<div style='color:#89919c;margin-top:4px'>Захват экрана, запись, OCR и инструменты изображений</div>",
+            self)
+        header.setWordWrap(True)
+        v.addWidget(header)
+
+        def action_button(title, callback, primary=False):
+            button = QPushButton(title, self)
+            button.setMinimumHeight(42)
+            button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            button.clicked.connect(callback)
+            if primary:
+                button.setObjectName("screenshot_primary_action")
+            return button
+
+        def group_box(title, actions):
+            group = QGroupBox(title, w)
+            grid = QGridLayout(group)
+            grid.setContentsMargins(12, 16, 12, 12)
+            grid.setHorizontalSpacing(8)
+            grid.setVerticalSpacing(8)
+            for index, (label, callback, primary) in enumerate(actions):
+                grid.addWidget(action_button(label, callback, primary),
+                               index // 2, index % 2)
+            return group
+
+        v.addWidget(group_box("Захват", [
+            ("Скриншот области", self.make_shot, True),
+            ("Снимок окна", self.make_window_shot, False),
+            ("Длинный снимок", self.start_scrolling_capture, False),
+            ("Распознать текст", self.make_ocr, False),
+        ]))
+        v.addWidget(group_box("Запись экрана", [
+            ("Запись всего экрана", self.start_recording, True),
+            ("Запись отдельного окна", self.start_window_recording, False),
+        ]))
+        v.addWidget(group_box("Изображения и проекты", [
+            ("Открыть изображение…", self._open_image, False),
+            ("Открыть проект…", self._open_project, False),
+            ("Закрепить изображение из буфера", self.pin_clipboard_image, False),
+            ("Сравнить изображения", self.compare_two_files, False),
+        ]))
+        v.addWidget(group_box("Библиотека и подключение", [
+            ("История скриншотов", self.open_history, False),
+            ("Подключение к NPCore", self.open_npcore_connection, False),
+        ]))
+
+        self.npcore_status_label = QLabel(self)
+        self.npcore_status_label.setWordWrap(True)
+        self.npcore_status_label.setStyleSheet("color: palette(placeholder-text); padding: 2px 4px;")
+        self._refresh_npcore_status()
+        v.addWidget(self.npcore_status_label)
+
         self.edit_after_capture_check = QCheckBox("Открывать редактор после снимка")
         self.edit_after_capture_check.setChecked(
             self._capture_preferences["edit_after_capture"])
@@ -6563,22 +6576,38 @@ class Launcher(QMainWindow):
         self.edit_after_capture_check.toggled.connect(
             lambda enabled: self._set_capture_preference("edit_after_capture", enabled))
         v.addWidget(self.edit_after_capture_check)
+
         info = QLabel(
-            "Инструменты: Переместиться (H), Перо (P), Маркер (M), Прямоуг. (R), Овал (O), "
-            "Стрелка (A), Текст (T), Блюр (B), Пиксели (X), Обрезать (C), Редация (D), "
-            "Шаг (1), Заливка (F), Ластик (E), Затемнение (K), Выноска (Q), Линейка (U). "
-            "«⧉ Заливка форм» — заливка у прямоугольника и овала."
-        )
+            "Горячие клавиши: PrintScreen — выбор действия и объекта; "
+            "Shift+PrintScreen — OCR в буфер обмена. "
+            "В редакторе: Ctrl+S — сохранить, Ctrl+C — копировать, PrintScreen — новый снимок.",
+            self)
         info.setWordWrap(True)
-        info.setStyleSheet("color: gray;")
+        info.setStyleSheet("color: palette(placeholder-text); padding: 4px;")
         v.addWidget(info)
-        for button in (
-            btn, btn_window, btn_rec, btn_window_rec, btn_ocr,
-            btn_open, btn_project, btn_scroll, btn_pin, btn_compare, btn_history,
-        ):
-            button.setMinimumHeight(38)
-            button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         v.addStretch(1)
+        self.setStyleSheet(self.styleSheet() + """
+            QGroupBox {
+                border: 1px solid palette(mid);
+                border-radius: 10px;
+                margin-top: 10px;
+                padding-top: 8px;
+                font-weight: 600;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 12px;
+                padding: 0 5px;
+            }
+            QPushButton {
+                border-radius: 7px;
+                padding: 7px 10px;
+            }
+            QPushButton#screenshot_primary_action {
+                font-weight: 600;
+                border: 1px solid #397bd2;
+            }
+        """)
         _setup_logging()
         self._scroll_job: Optional[ScrollingScreenshotJob] = None
         self._scroll_panel: Optional[ScrollingCapturePanel] = None
@@ -6596,6 +6625,18 @@ class Launcher(QMainWindow):
         act_f8.triggered.connect(self.make_shot)
         self.addAction(act_f8)
         center_on_screen(self)
+
+    def _refresh_npcore_status(self) -> None:
+        if hasattr(self, "npcore_status_label"):
+            link = _npcore_load_link()
+            self.npcore_status_label.setText(
+                "NPCore подключён · " + link[0] if link else
+                "NPCore не подключён · ИИ-перевод доступен после подключения")
+
+    def open_npcore_connection(self) -> None:
+        dialog = NPCoreConnectionDialog(self)
+        dialog.exec()
+        self._refresh_npcore_status()
 
     def showEvent(self, e):
         super().showEvent(e)
