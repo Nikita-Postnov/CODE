@@ -9,7 +9,7 @@ import os
 import sys
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -23,6 +23,8 @@ from screenshot import (
     Launcher,
     ScrollingCapturePanel,
     ScrollingScreenshotJob,
+    ScrollingReviewDialog,
+    _scroll_fixed_bands,
     _scroll_body_unchanged,
     _windows_scroll_state,
     _scroll_overlap,
@@ -138,6 +140,84 @@ class ScreenshotThreeWorkflowsTests(unittest.TestCase):
         second.fill(Qt.white)
         self.assertEqual(_scroll_overlap(first, second), 0)
 
+    def test_scroll_speed_slider_updates_job_delay(self):
+        panel = ScrollingCapturePanel(24)
+        values = []
+        panel.speed_changed.connect(values.append)
+        try:
+            self.assertEqual(panel.speed_slider.value(), 900)
+            panel.speed_slider.setValue(1200)
+            self.assertEqual(values, [1200])
+            job = ScrollingScreenshotJob(QRect(0, 0, 200, 200))
+            job.set_scroll_delay(1200)
+            self.assertEqual(job.scroll_delay_ms, 1200)
+            job.set_scroll_delay(100)
+            self.assertEqual(job.scroll_delay_ms, 400)
+        finally:
+            panel.close_silently()
+
+    def test_sticky_footer_is_detected_and_not_repeated_in_stitched_image(self):
+        width, height, offset, footer = 80, 100, 30, 10
+        before = QImage(width, height, QImage.Format_RGB32)
+        after = QImage(width, height, QImage.Format_RGB32)
+        painter = QPainter(before)
+        for y in range(height - footer):
+            painter.fillRect(0, y, width, 1, QColor(y, y, y))
+        painter.fillRect(0, height - footer, width, footer, QColor("#eeeeee"))
+        painter.end()
+        painter = QPainter(after)
+        for y in range(height - footer):
+            value = y + offset
+            painter.fillRect(0, y, width, 1, QColor(value, value, value))
+        painter.fillRect(0, height - footer, width, footer, QColor("#eeeeee"))
+        painter.end()
+
+        _fixed_top, fixed_bottom = _scroll_fixed_bands(before, after)
+        self.assertEqual(fixed_bottom, footer)
+        stitched = _stitch_scroll_frames([before, after], [offset], [fixed_bottom])
+        self.assertEqual(stitched.height(), height - footer + offset)
+        self.assertEqual(stitched.pixelColor(10, height - footer - 1),
+                         QColor(height - footer - 1, height - footer - 1, height - footer - 1))
+        self.assertEqual(stitched.pixelColor(10, height - footer),
+                         QColor(height - footer, height - footer, height - footer))
+        self.assertEqual(stitched.pixelColor(10, stitched.height() - 1),
+                         QColor(height + offset - footer - 1,
+                                height + offset - footer - 1,
+                                height + offset - footer - 1))
+
+    def test_early_long_capture_preserves_first_frame_as_regular_screenshot(self):
+        job = ScrollingScreenshotJob(QRect(0, 0, 80, 60))
+        frame = QImage(80, 60, QImage.Format_RGB32)
+        frame.fill(QColor("#445566"))
+        job.frames.append(frame)
+        launcher = Launcher.__new__(Launcher)
+        launcher._scroll_job = job
+        launcher._scroll_panel = None
+        launcher._handle_captured_image = Mock()
+        with patch("screenshot.ScrollingReviewDialog") as review:
+            launcher._on_scrolling_finished(frame, "Прокрутка не обнаружена")
+        review.assert_not_called()
+        launcher._handle_captured_image.assert_called_once()
+        self.assertEqual(launcher._handle_captured_image.call_args.kwargs["capture_kind"],
+                         "shot")
+        self.assertFalse(launcher._handle_captured_image.call_args.args[0].isNull())
+
+    def test_scrolling_review_allows_manual_seam_adjustment(self):
+        first = QImage(80, 100, QImage.Format_RGB32)
+        second = QImage(80, 100, QImage.Format_RGB32)
+        first.fill(QColor("#334455"))
+        second.fill(QColor("#556677"))
+        dialog = ScrollingReviewDialog([first, second], [30], [10], "Проверка")
+        try:
+            self.assertEqual(dialog.frame_strip.count(), 2)
+            dialog.frame_strip.setCurrentRow(1)
+            self.assertEqual(dialog.seam_combo.currentIndex(), 0)
+            dialog.delta_spin.setValue(5)
+            self.assertEqual(dialog.steps, [35])
+            self.assertEqual(dialog.result_image().height(), 125)
+        finally:
+            dialog.close()
+
     def test_body_unchanged_detects_stopped_scroll(self):
         before = QImage(430, 600, QImage.Format_RGB32)
         before.fill(Qt.white)
@@ -225,7 +305,7 @@ class ScreenshotThreeWorkflowsTests(unittest.TestCase):
         finally:
             panel.close_silently()
 
-    def test_failed_long_capture_does_not_replace_clipboard_with_one_frame(self):
+    def test_failed_long_capture_preserves_first_frame_as_regular_screenshot(self):
         with patch.object(Launcher, "_init_tray"), \
              patch.object(Launcher, "_install_global_hotkey"):
             launcher = Launcher()
@@ -234,7 +314,8 @@ class ScreenshotThreeWorkflowsTests(unittest.TestCase):
         try:
             with patch.object(launcher, "_handle_captured_image") as finish:
                 launcher._on_scrolling_finished(frame.copy(), "Страница не прокрутилась.")
-            finish.assert_not_called()
+            finish.assert_called_once()
+            self.assertEqual(finish.call_args.kwargs["capture_kind"], "shot")
         finally:
             launcher.close()
 

@@ -98,6 +98,8 @@ from PySide6.QtWidgets import (
     QDialogButtonBox,
     QFormLayout,
     QSpinBox,
+    QLineEdit,
+    QPlainTextEdit,
 )
 
 log = logging.getLogger(__name__)
@@ -244,8 +246,86 @@ def preferred_capture_mode(initial_mode: str) -> str:
     return initial_mode
 
 
-def archive_screenshot(image: QImage) -> Optional[Path]:
-    """Сохраняем оригинал снимка в портативной истории, не удаляя старые записи."""
+def _history_metadata_path(path: Path) -> Optional[Path]:
+    candidate = Path(path)
+    try:
+        if (candidate.is_symlink() or candidate.suffix.lower() != ".png"
+                or candidate.parent.resolve() != SCREENSHOT_HISTORY_DIR.resolve()):
+            return None
+        return candidate.with_suffix(".json")
+    except OSError:
+        return None
+
+
+def load_history_metadata(path: Path) -> dict:
+    defaults = {"favorite": False, "tags": [], "category": "",
+                "project": "", "kind": "shot", "ocr_text": ""}
+    metadata_path = _history_metadata_path(path)
+    if metadata_path is None:
+        return defaults
+    try:
+        data = json.loads(metadata_path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            return defaults
+        result = defaults.copy()
+        result["favorite"] = data.get("favorite") is True
+        raw_tags = data.get("tags", [])
+        result["tags"] = [str(x)[:48] for x in raw_tags
+                          if isinstance(x, str)][:30] if isinstance(raw_tags, list) else []
+        for key, limit in (("category", 120), ("project", 120), ("ocr_text", 200_000)):
+            value = data.get(key, "")
+            result[key] = str(value)[:limit] if isinstance(value, str) else ""
+        kind = data.get("kind", "shot")
+        result["kind"] = kind if kind in ("shot", "scroll", "window") else "shot"
+        return result
+    except (OSError, ValueError, TypeError):
+        return defaults
+
+
+def save_history_metadata(path: Path, metadata: dict) -> bool:
+    metadata_path = _history_metadata_path(path)
+    if metadata_path is None or not isinstance(metadata, dict):
+        return False
+    current = load_history_metadata(path)
+    current.update({key: value for key, value in metadata.items()
+                    if key in ("favorite", "tags", "category", "project", "kind", "ocr_text")})
+    if not isinstance(current.get("tags"), list):
+        current["tags"] = []
+    current["tags"] = [str(x)[:48] for x in current["tags"] if str(x).strip()][:30]
+    current["favorite"] = current.get("favorite") is True
+    if current.get("kind") not in ("shot", "scroll", "window"):
+        current["kind"] = "shot"
+    for key, limit in (("category", 120), ("project", 120), ("ocr_text", 200_000)):
+        current[key] = str(current.get(key, ""))[:limit]
+    temporary = None
+    try:
+        metadata_path.parent.mkdir(parents=True, exist_ok=True)
+        fd, temporary = tempfile.mkstemp(prefix=".history_meta_", suffix=".tmp",
+                                         dir=str(metadata_path.parent))
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(current, handle, ensure_ascii=False, indent=2)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, metadata_path)
+        temporary = None
+        return True
+    except (OSError, ValueError, TypeError):
+        log.exception("Не удалось сохранить метаданные истории: %s", metadata_path)
+        return False
+    finally:
+        if temporary is not None:
+            try:
+                Path(temporary).unlink(missing_ok=True)
+            except OSError:
+                log.debug("Не удалось удалить временные метаданные", exc_info=True)
+
+
+def update_history_metadata(path: Path, **updates) -> bool:
+    return save_history_metadata(path, updates)
+
+
+def archive_screenshot(image: QImage, kind: str = "shot", project: str = "") -> Optional[Path]:
+    """Сохраняем оригинал снимка и метаданные в портативной истории."""
     if image.isNull():
         return None
     try:
@@ -254,6 +334,10 @@ def archive_screenshot(image: QImage) -> Optional[Path]:
                     + "_" + uuid.uuid4().hex[:12] + ".png")
         destination = SCREENSHOT_HISTORY_DIR / filename
         if save_image_atomically(image, destination, "PNG"):
+            save_history_metadata(destination, {
+                "kind": kind if kind in ("shot", "scroll", "window") else "shot",
+                "project": str(project or "")[:120],
+            })
             return destination
     except (OSError, RuntimeError):
         log.exception("Не удалось записать историю снимков")
@@ -475,6 +559,76 @@ def _normalized_image(img: QImage) -> QImage:
         out = out.copy()
         out.setDevicePixelRatio(1.0)
     return out
+
+
+def draw_spotlight(p: QPainter, rect: QRect, canvas_size: QSize) -> None:
+    """Затемняет изображение вокруг выбранного прямоугольника."""
+    bounds = QRect(0, 0, canvas_size.width(), canvas_size.height())
+    hole = QRect(rect).normalized().intersected(bounds)
+    if hole.isEmpty():
+        return
+    p.save()
+    p.setPen(Qt.NoPen)
+    p.setBrush(QColor(0, 0, 0, 158))
+    if hole.top() > 0:
+        p.drawRect(QRect(bounds.left(), bounds.top(), bounds.width(), hole.top()))
+    if hole.bottom() < bounds.bottom():
+        p.drawRect(QRect(bounds.left(), hole.bottom() + 1, bounds.width(), bounds.bottom() - hole.bottom()))
+    if hole.left() > 0:
+        p.drawRect(QRect(bounds.left(), hole.top(), hole.left(), hole.height()))
+    if hole.right() < bounds.right():
+        p.drawRect(QRect(hole.right() + 1, hole.top(), bounds.right() - hole.right(), hole.height()))
+    p.setPen(QPen(QColor(255, 210, 70, 235), 2))
+    p.setBrush(Qt.NoBrush)
+    p.drawRect(hole)
+    p.restore()
+
+
+def draw_ruler(p: QPainter, start: QPoint, end: QPoint, color: QColor, width: int = 2) -> None:
+    """Линейка с засечками и точной длиной в пикселях."""
+    dx, dy = end.x() - start.x(), end.y() - start.y()
+    distance = math.hypot(dx, dy)
+    if distance < 1:
+        return
+    nx, ny = -dy / distance, dx / distance
+    tick = max(5.0, float(width) * 2.5)
+    p.save()
+    p.setRenderHint(QPainter.Antialiasing, True)
+    p.setPen(QPen(color, max(1, width), Qt.SolidLine, Qt.RoundCap))
+    p.drawLine(QPointF(start), QPointF(end))
+    for point in (start, end):
+        p.drawLine(QPointF(point.x() - nx * tick, point.y() - ny * tick),
+                   QPointF(point.x() + nx * tick, point.y() + ny * tick))
+    label = f"{distance:.1f} px"
+    font = QFont(); font.setBold(True); font.setPointSize(10)
+    metrics = QFontMetrics(font)
+    text_rect = QRectF((start.x() + end.x()) / 2 - metrics.horizontalAdvance(label) / 2 - 7,
+                       (start.y() + end.y()) / 2 - metrics.height() - 10,
+                       metrics.horizontalAdvance(label) + 14, metrics.height() + 8)
+    p.setFont(font); p.setPen(Qt.NoPen); p.setBrush(QColor(20, 24, 32, 220))
+    p.drawRoundedRect(text_rect, 5, 5)
+    p.setPen(QColor(255, 255, 255)); p.drawText(text_rect, Qt.AlignCenter, label)
+    p.restore()
+
+
+def draw_callout(p: QPainter, rect: QRect, text: str, color: QColor) -> None:
+    """Рисует поясняющую выноску с текстом и указателем."""
+    r = QRect(rect).normalized()
+    if r.width() < 24 or r.height() < 22:
+        return
+    p.save(); p.setRenderHint(QPainter.Antialiasing, True)
+    tail = QPainterPath()
+    tail.moveTo(r.left() + 24, r.bottom() - 1)
+    tail.lineTo(r.left() + 8, r.bottom() + 18)
+    tail.lineTo(r.left() + 48, r.bottom() - 1)
+    tail.closeSubpath()
+    p.setPen(QPen(QColor(70, 58, 25), 2)); p.setBrush(QColor(255, 244, 190, 245))
+    p.drawPath(tail); p.drawRoundedRect(r, 8, 8)
+    p.setPen(QColor(45, 42, 32))
+    font = QFont(); font.setPointSize(11); p.setFont(font)
+    p.drawText(r.adjusted(12, 8, -12, -8),
+               Qt.AlignLeft | Qt.AlignVCenter | Qt.TextWordWrap, text)
+    p.restore()
 
 
 def draw_arrow(p: QPainter, start: QPointF, end: QPointF, color: QColor, width: int):
@@ -792,8 +946,10 @@ class SelectionOverlay:
               MODE_OCR, MODE_OCR_WINDOW)
     _ACTIONS = (MODE_SHOT, MODE_RECORD, MODE_OCR)
     _TARGETS = ("area", "window")
+    _ASPECT_RATIOS = (None, 16 / 9, 4 / 3, 1.0)
+    _ASPECT_LABELS = ("Свободно", "16:9", "4:3", "1:1")
     _BAR_BUTTONS = (
-        "kind:shot", "kind:record", "kind:ocr", "target:area", "target:window",
+        "kind:shot", "kind:record", "kind:ocr", "target:area", "target:window", "ratio",
     )
     _BAR_LABELS = {
         "kind:shot": "📷  Скриншот",
@@ -801,6 +957,7 @@ class SelectionOverlay:
         "kind:ocr": "🔤  Текст",
         "target:area": "▧  Область",
         "target:window": "▣  Окно",
+        "ratio": "⤢  Пропорции",
     }
 
     class _Pane(QWidget):
@@ -834,7 +991,8 @@ class SelectionOverlay:
                 SelectionOverlay._BAR_BUTTONS[:3],
                 SelectionOverlay._BAR_BUTTONS[3:],
             )
-            labels = SelectionOverlay._BAR_LABELS
+            labels = {key: self.mgr.bar_label(key)
+                      for key in SelectionOverlay._BAR_BUTTONS}
             h_btn = fm.height() + 2 * pad_y
             widths = {
                 key: fm.horizontalAdvance(labels[key]) + 2 * pad_x
@@ -887,6 +1045,7 @@ class SelectionOverlay:
                 selected = (
                     (key == f"kind:{current_kind}")
                     or (key == f"target:{current_target}")
+                    or (key == "ratio" and self.mgr.aspect_ratio is not None)
                 )
                 enabled = self.mgr.capture_button_enabled(key)
                 bg = QColor(26, 115, 232) if selected else QColor(60, 64, 67)
@@ -896,7 +1055,7 @@ class SelectionOverlay:
                 p.setBrush(bg)
                 p.drawRoundedRect(rect, 7, 7)
                 p.setPen(QColor(255, 255, 255) if enabled else QColor(130, 130, 130))
-                p.drawText(rect, Qt.AlignCenter, SelectionOverlay._BAR_LABELS[key])
+                p.drawText(rect, Qt.AlignCenter, self.mgr.bar_label(key))
 
             p.setFont(self._hint_font)
             p.setPen(QColor(185, 192, 206))
@@ -930,6 +1089,11 @@ class SelectionOverlay:
                     self.mgr.toggle_target()
                 else:
                     self.mgr.toggle_mode()
+                return True
+            if (e.type() == QEvent.KeyPress and e.key() == Qt.Key_R
+                    and not (e.modifiers() & (Qt.ControlModifier | Qt.AltModifier))
+                    and self.mgr._origin_g is None):
+                self.mgr.cycle_aspect_ratio()
                 return True
             return super().event(e)
 
@@ -971,6 +1135,39 @@ class SelectionOverlay:
         def keyPressEvent(self, e):
             if e.key() == Qt.Key_Escape:
                 self.mgr._cancel()
+
+        def _paint_magnifier(self, painter: QPainter) -> None:
+            if (self._frozen is None or self.mgr._origin_g is None
+                    or self.mgr._current_g is None):
+                return
+            dpr = max(1.0, float(self._frozen.devicePixelRatio()))
+            local = self.mapFromGlobal(self.mgr._current_g)
+            cx = round(local.x() * dpr)
+            cy = round(local.y() * dpr)
+            side = max(24, round(42 * dpr))
+            source = QRect(cx - side // 2, cy - side // 2, side, side).intersected(
+                QRect(0, 0, self._frozen.width(), self._frozen.height()))
+            if source.width() < 4 or source.height() < 4:
+                return
+            crop = self._frozen.copy(source)
+            size = 144
+            x = min(max(8, local.x() + 22), max(8, self.width() - size - 8))
+            y = min(max(8, local.y() + 22), max(8, self.height() - size - 8))
+            target = QRect(x, y, size, size)
+            painter.save()
+            painter.setRenderHint(QPainter.SmoothPixmapTransform, False)
+            painter.setPen(QPen(QColor(0, 0, 0, 230), 4))
+            painter.setBrush(QColor(24, 26, 30, 235))
+            painter.drawRoundedRect(target.adjusted(-3, -3, 3, 3), 7, 7)
+            painter.drawPixmap(target, crop)
+            painter.setPen(QPen(QColor(255, 255, 255, 220), 1))
+            painter.drawRect(target)
+            painter.setPen(QPen(QColor(255, 65, 65, 230), 1))
+            painter.drawLine(target.center().x(), target.top() + 5,
+                             target.center().x(), target.bottom() - 5)
+            painter.drawLine(target.left() + 5, target.center().y(),
+                             target.right() - 5, target.center().y())
+            painter.restore()
 
         def paintEvent(self, _):
             p = QPainter(self)
@@ -1019,7 +1216,8 @@ class SelectionOverlay:
                 p.setPen(QPen(frame, 1))
                 p.drawRect(r_local)
                 p.setBrush(Qt.NoBrush)
-                info = f"{r_global.width()} x {r_global.height()}"
+                info = (f"X: {r_global.left()}  Y: {r_global.top()}  "
+                        f"W: {r_global.width()}  H: {r_global.height()}")
                 if record:
                     info = "⏺ Запись · " + info
                 elif ocr:
@@ -1038,6 +1236,7 @@ class SelectionOverlay:
                 p.setPen(QColor(255, 255, 255))
                 p.drawText(rect.adjusted(6, 4, -6, -4), Qt.AlignLeft | Qt.AlignVCenter, info)
 
+            self._paint_magnifier(p)
             if self._bar_visible():
                 self._paint_bar(p)
             p.end()
@@ -1076,6 +1275,7 @@ class SelectionOverlay:
             self._panes[0].has_bar = True
         self._origin_g: Optional[QPoint] = None
         self._current_g: Optional[QPoint] = None
+        self.aspect_ratio: Optional[float] = None
         self.selection_made = lambda rect: None
 
     @classmethod
@@ -1103,6 +1303,8 @@ class SelectionOverlay:
         ) else "area")
 
     def capture_button_enabled(self, key: str) -> bool:
+        if key == "ratio":
+            return True
         group, _, choice = key.partition(":")
         if group == "kind" and choice in self._ACTIONS:
             return self.mode_enabled(self.mode_for_choice(choice, self.capture_target()))
@@ -1110,9 +1312,23 @@ class SelectionOverlay:
             return self.mode_enabled(self.mode_for_choice(self.capture_kind(), choice))
         return False
 
+    def bar_label(self, key: str) -> str:
+        if key == "ratio":
+            index = self._ASPECT_RATIOS.index(self.aspect_ratio)
+            return "⤢  " + self._ASPECT_LABELS[index]
+        return self._BAR_LABELS.get(key, key)
+
+    def cycle_aspect_ratio(self) -> None:
+        current = self._ASPECT_RATIOS.index(self.aspect_ratio)
+        self.aspect_ratio = self._ASPECT_RATIOS[(current + 1) % len(self._ASPECT_RATIOS)]
+        for pane in self._panes:
+            pane.update()
+
     def choose_bar_button(self, key: str) -> None:
         group, _, value = key.partition(":")
-        if group == "kind" and value in self._ACTIONS:
+        if key == "ratio":
+            self.cycle_aspect_ratio()
+        elif group == "kind" and value in self._ACTIONS:
             self.set_capture_kind(value)
         elif group == "target" and value in self._TARGETS:
             self.set_capture_target(value)
@@ -1135,7 +1351,7 @@ class SelectionOverlay:
         if not self.record_available:
             warning = self._record_unavailable_reason or "Запись недоступна"
             return f"{action} · {warning} · Esc — отмена"
-        return f"{action} · Tab — действие · Shift+Tab — объект · Esc — отмена"
+        return f"{action} · Tab — действие · Shift+Tab — объект · R — пропорции · Esc — отмена"
 
     def mode_enabled(self, mode: Optional[str]) -> bool:
         if mode == self.MODE_RECORD:
@@ -1247,11 +1463,51 @@ class SelectionOverlay:
         self._origin_g = g
         self._current_g = g
 
+    def _snap_point_to_window(self, point: QPoint) -> QPoint:
+        if self.capture_target() != "area" or not self._windows:
+            return QPoint(point)
+        x, y = point.x(), point.y()
+        threshold = 9
+        best_x = (threshold + 1, x)
+        best_y = (threshold + 1, y)
+        for entry in self._windows:
+            rect = entry[1]
+            for edge in (rect.left(), rect.right()):
+                distance = abs(x - edge)
+                if distance < best_x[0]:
+                    best_x = (distance, edge)
+            for edge in (rect.top(), rect.bottom()):
+                distance = abs(y - edge)
+                if distance < best_y[0]:
+                    best_y = (distance, edge)
+        if best_x[0] <= threshold:
+            x = best_x[1]
+        if best_y[0] <= threshold:
+            y = best_y[1]
+        return QPoint(x, y)
+
+    def _constrain_selection_point(self, point: QPoint) -> QPoint:
+        ratio = self.aspect_ratio
+        if ratio is None or self._origin_g is None:
+            return QPoint(point)
+        dx, dy = point.x() - self._origin_g.x(), point.y() - self._origin_g.y()
+        if dx == 0 and dy == 0:
+            return QPoint(point)
+        width, height = abs(dx), abs(dy)
+        if width / max(1, height) > ratio:
+            height = max(1, round(width / ratio))
+        else:
+            width = max(1, round(height * ratio))
+        return QPoint(self._origin_g.x() + (width if dx >= 0 else -width),
+                      self._origin_g.y() + (height if dy >= 0 else -height))
+
     def _on_move(self, g: QPoint):
-        self._current_g = g
+        point = self._snap_point_to_window(g)
+        self._current_g = self._constrain_selection_point(point)
 
     def _on_release(self, g: QPoint):
-        self._current_g = g
+        self._on_move(g)
+        g = self._current_g
         rect = QRect(self._origin_g, self._current_g).normalized()
         if (self._frozen or self.switchable) and rect.width() < 4 and rect.height() < 4:
             screen = QGuiApplication.screenAt(g)
@@ -1282,6 +1538,9 @@ class Tool(Enum):
     STEP = auto()
     FILL = auto()
     ERASER = auto()
+    SPOTLIGHT = auto()
+    CALLOUT = auto()
+    RULER = auto()
 
 
 class StickerItem(QGraphicsItem):
@@ -2685,6 +2944,7 @@ class CanvasView(QGraphicsView):
                     Tool.PEN, Tool.HIGHLIGHT, Tool.RECT, Tool.ELLIPSE,
                     Tool.ARROW, Tool.BLUR, Tool.PIXELATE, Tool.ERASER,
                     Tool.CROP, Tool.REDACT, Tool.STEP, Tool.FILL, Tool.TEXT,
+                    Tool.SPOTLIGHT, Tool.CALLOUT, Tool.RULER,
                 )
                 is_drawing_tool = self.tool in DRAWING_TOOLS
 
@@ -2780,6 +3040,9 @@ class CanvasView(QGraphicsView):
                 Tool.ARROW,
                 Tool.CROP,
                 Tool.REDACT,
+                Tool.SPOTLIGHT,
+                Tool.CALLOUT,
+                Tool.RULER,
             ):
                 self._start_pos = img_pos
             elif self.tool == Tool.FILL:
@@ -2893,7 +3156,8 @@ class CanvasView(QGraphicsView):
             return
         if (
             self._start_pos is not None
-            and self.tool in (Tool.RECT, Tool.ELLIPSE, Tool.ARROW, Tool.CROP, Tool.REDACT)
+            and self.tool in (Tool.RECT, Tool.ELLIPSE, Tool.ARROW, Tool.CROP, Tool.REDACT,
+                              Tool.SPOTLIGHT, Tool.CALLOUT, Tool.RULER)
         ):
             cur = self.viewport_to_image(e.position().toPoint())
             self._update_shape_preview(self._start_pos, cur, bool(e.modifiers() & Qt.ShiftModifier))
@@ -2906,6 +3170,27 @@ class CanvasView(QGraphicsView):
         """Рисует превью фигуры так же, как раньше рисовалось на копии картинки."""
         tool = self.tool
         thickness = max(1, self.thickness)
+        if tool == Tool.SPOTLIGHT:
+            bounds = QRectF(0, 0, self.bg_img.width(), self.bg_img.height())
+            self.preview_item.set_shape(
+                bounds, lambda p: draw_spotlight(p, self._rect_from_points(start, cur, False),
+                                                 self.bg_img.size()))
+            return
+        if tool == Tool.RULER:
+            a, b = QPoint(start), QPoint(cur)
+            color = QColor(self.color)
+            pad = max(18, thickness * 4)
+            bounds = QRectF(a, b).normalized().adjusted(-pad, -pad, pad, pad)
+            self.preview_item.set_shape(bounds,
+                lambda p: draw_ruler(p, a, b, color, thickness))
+            return
+        if tool == Tool.CALLOUT:
+            r = self._rect_from_points(start, cur, False)
+            color = QColor(self.color)
+            bounds = QRectF(r).adjusted(-2, -2, 52, 22)
+            self.preview_item.set_shape(bounds,
+                lambda p: draw_callout(p, r, "Текст пояснения", color))
+            return
         if tool == Tool.ARROW:
             a, b = QPointF(start), QPointF(cur)
             color = QColor(self.color)
@@ -2966,7 +3251,8 @@ class CanvasView(QGraphicsView):
 
             if (
                 self._start_pos is not None
-                and self.tool in (Tool.RECT, Tool.ELLIPSE, Tool.ARROW, Tool.CROP, Tool.REDACT)
+                and self.tool in (Tool.RECT, Tool.ELLIPSE, Tool.ARROW, Tool.CROP, Tool.REDACT,
+                                  Tool.SPOTLIGHT, Tool.CALLOUT, Tool.RULER)
             ):
                 cur = self.viewport_to_image(e.position().toPoint())
 
@@ -2994,6 +3280,32 @@ class CanvasView(QGraphicsView):
                         self._refresh()
                         # через fit_to_view, чтобы обновились зум в статусе и сглаживание
                         self.fit_to_view()
+                elif self.tool == Tool.SPOTLIGHT:
+                    r = self._rect_from_points(self._start_pos, cur, False)
+                    if r.width() > 3 and r.height() > 3:
+                        self.push_undo()
+                        painter = QPainter(self.ov_img)
+                        draw_spotlight(painter, r, self.bg_img.size())
+                        painter.end()
+                        self._refresh()
+                elif self.tool == Tool.RULER:
+                    if self._start_pos != cur:
+                        self.push_undo()
+                        painter = QPainter(self.ov_img)
+                        draw_ruler(painter, self._start_pos, cur, self.color,
+                                   max(1, self.thickness))
+                        painter.end()
+                        self._refresh(self._rect_from_points(self._start_pos, cur, False).adjusted(-24, -24, 24, 24))
+                elif self.tool == Tool.CALLOUT:
+                    r = self._rect_from_points(self._start_pos, cur, False)
+                    if r.width() >= 50 and r.height() >= 30:
+                        text, ok = QInputDialog.getText(self, "Выноска", "Текст пояснения:")
+                        if ok and text.strip():
+                            self.push_undo()
+                            painter = QPainter(self.ov_img)
+                            draw_callout(painter, r, text.strip(), self.color)
+                            painter.end()
+                            self._refresh(r.adjusted(-4, -4, 54, 24))
                 else:
                     r = self._rect_from_points(
                         self._start_pos, cur, bool(e.modifiers() & Qt.ShiftModifier)
@@ -3826,8 +4138,8 @@ class EditorWindow(QMainWindow):
                 self.view.set_tool(t)
 
             group = ("Выбор" if t == Tool.PAN else
-                     "Рисование" if t in (Tool.PEN, Tool.HIGHLIGHT, Tool.TEXT, Tool.STEP) else
-                     "Фигуры" if t in (Tool.RECT, Tool.ELLIPSE, Tool.ARROW) else
+                     "Рисование" if t in (Tool.PEN, Tool.HIGHLIGHT, Tool.TEXT, Tool.STEP, Tool.CALLOUT) else
+                     "Фигуры" if t in (Tool.RECT, Tool.ELLIPSE, Tool.ARROW, Tool.RULER) else
                      "Обработка")
             act = add_action(tool_menus[group], label, cb, shortcut, checkable=True)
             self.group_actions.append(act)
@@ -3848,12 +4160,17 @@ class EditorWindow(QMainWindow):
         a_filltool = tool_action(t1, "🪣 Заливка",    Tool.FILL, "F")
         a_filltool.setToolTip("Ведро: ЛКМ — заливка в верхнем слое, Alt+ЛКМ — заливка фона. «Допуск» = чувствительность к цвету.")
         a_eraser = tool_action(t1, "⌫ Ластик",       Tool.ERASER, "E")
+        a_spotlight = tool_action(t1, "◉ Затемнение вокруг", Tool.SPOTLIGHT, "K")
+        a_callout = tool_action(t1, "💬 Выноска", Tool.CALLOUT, "Q")
+        a_ruler = tool_action(t1, "📏 Линейка", Tool.RULER, "U")
         _tool_action_map: dict[Tool, QAction] = {
             Tool.PAN: a_pan, Tool.PEN: a_pen, Tool.HIGHLIGHT: a_high,
             Tool.RECT: a_rect, Tool.ELLIPSE: a_ell, Tool.ARROW: a_arrow,
             Tool.TEXT: a_text, Tool.BLUR: a_blur, Tool.PIXELATE: a_pix,
             Tool.CROP: a_crop, Tool.REDACT: a_redact, Tool.STEP: a_step,
             Tool.FILL: a_filltool, Tool.ERASER: a_eraser,
+            Tool.SPOTLIGHT: a_spotlight, Tool.CALLOUT: a_callout,
+            Tool.RULER: a_ruler,
         }
         saved_tool = self.view.tool
         restored_action = _tool_action_map.get(saved_tool, a_pen)
@@ -4316,7 +4633,7 @@ $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Runtime.WindowsRuntime
 $asTask = ([System.WindowsRuntimeSystemExtensions].GetMethods() | Where-Object {
     $_.Name -eq 'AsTask' -and $_.GetParameters().Count -eq 1 -and
-    $_.GetParameters()[0].ParameterType.Name -eq 'IAsyncOperation`1' })[0]
+    $_.GetParameters()[0].ParameterType.Name -like 'IAsyncOperation*' })[0]
 function Await($op, [Type]$type) {
     $t = $asTask.MakeGenericMethod($type).Invoke($null, @($op))
     $t.Wait(-1) | Out-Null
@@ -4339,7 +4656,30 @@ function Engine($tag) {
 }
 function Recognize($engine) {
     $r = Await ($engine.RecognizeAsync($bitmap)) ([Windows.Media.Ocr.OcrResult])
-    return (($r.Lines | ForEach-Object { $_.Text }) -join "`n")
+    $lines = @()
+    foreach ($line in $r.Lines) {
+        $words = @()
+        foreach ($word in $line.Words) {
+            $wr = $word.BoundingRect
+            $words += [ordered]@{
+                text = [string]$word.Text
+                x = [int][math]::Round($wr.X)
+                y = [int][math]::Round($wr.Y)
+                width = [int][math]::Round($wr.Width)
+                height = [int][math]::Round($wr.Height)
+            }
+        }
+        $lr = $line.BoundingRect
+        $lines += [ordered]@{
+            text = [string]$line.Text
+            x = [int][math]::Round($lr.X)
+            y = [int][math]::Round($lr.Y)
+            width = [int][math]::Round($lr.Width)
+            height = [int][math]::Round($lr.Height)
+            words = $words
+        }
+    }
+    return ([ordered]@{ lines = $lines } | ConvertTo-Json -Depth 8 -Compress)
 }
 $ru = Engine 'ru-RU'
 $en = Engine 'en-US'
@@ -4350,15 +4690,15 @@ if ($null -eq $ru -and $null -eq $en) {
     exit 0
 }
 if ($null -eq $ru) { Recognize $en; exit 0 }
-$text = Recognize $ru
-# Русский модуль плохо читает чисто английский текст: если латиницы больше,
-# чем кириллицы, распознаём ещё раз английским.
+$json = Recognize $ru
+$data = $json | ConvertFrom-Json
+$text = (@($data.lines) | ForEach-Object { $_.text }) -join [Environment]::NewLine
 if ($null -ne $en) {
     $lat = ([regex]::Matches($text, '[A-Za-z]')).Count
     $cyr = ([regex]::Matches($text, '[А-Яа-яЁё]')).Count
-    if ($lat -gt $cyr) { $text = Recognize $en }
+    if ($lat -gt $cyr) { $json = Recognize $en }
 }
-$text
+$json
 """
 
 _OCR_NO_LANGUAGE_HINT = (
@@ -4379,8 +4719,160 @@ def _ocr_prepare_image(img: QImage) -> QImage:
     return CanvasView._flatten_on_white(img)
 
 
-def start_ocr(img: QImage, launcher=None) -> None:
-    """Распознаёт текст на картинке и кладёт его в буфер обмена (асинхронно)."""
+def format_ocr_paragraphs(payload: dict) -> str:
+    """Собирает строки OCR в абзацы, учитывая вертикальные интервалы между ними."""
+    lines = payload.get("lines", []) if isinstance(payload, dict) else []
+    result = []
+    previous_bottom = None
+    previous_height = 0
+    for line in lines if isinstance(lines, list) else []:
+        if not isinstance(line, dict):
+            continue
+        text = str(line.get("text", "")).strip()
+        if not text:
+            continue
+        try:
+            y = float(line.get("y", 0))
+            height = max(1.0, float(line.get("height", 16)))
+        except (TypeError, ValueError):
+            y, height = 0.0, 16.0
+        if previous_bottom is not None:
+            gap = y - previous_bottom
+            result.append("\n\n" if gap > max(10.0, previous_height * 0.85) else "\n")
+        result.append(text)
+        previous_bottom = y + height
+        previous_height = height
+    return "".join(result).strip()
+
+
+def ocr_layout_to_markdown_table(payload: dict) -> str:
+    """Пробует восстановить столбцы таблицы по координатам и промежуткам между словами."""
+    lines = payload.get("lines", []) if isinstance(payload, dict) else []
+    raw_rows = []
+    all_heights = []
+    for line in lines if isinstance(lines, list) else []:
+        words = line.get("words", []) if isinstance(line, dict) else []
+        valid = [w for w in words if isinstance(w, dict) and str(w.get("text", "")).strip()]
+        valid.sort(key=lambda w: int(w.get("x", 0)))
+        if not valid:
+            continue
+        row_cells = []
+        cell_words = []
+        previous_right = None
+        for word in valid:
+            x = int(word.get("x", 0))
+            width = max(1, int(word.get("width", 1)))
+            height = max(1, int(word.get("height", 14)))
+            all_heights.append(height)
+            gap_limit = max(18, round(height * 1.35))
+            if previous_right is not None and x - previous_right > gap_limit:
+                row_cells.append((cell_words[0][0], " ".join(item[1] for item in cell_words)))
+                cell_words = []
+            cell_words.append((x, str(word.get("text", "")).strip()))
+            previous_right = x + width
+        if cell_words:
+            row_cells.append((cell_words[0][0], " ".join(item[1] for item in cell_words)))
+        if len(row_cells) >= 2:
+            raw_rows.append(row_cells)
+    if len(raw_rows) < 2:
+        return ""
+    median_height = sorted(all_heights)[len(all_heights) // 2] if all_heights else 14
+    cluster_gap = max(28, round(median_height * 2.6))
+    centers = []
+    counts = []
+    for row in raw_rows:
+        for x, _text in row:
+            if centers and min(abs(x - center) for center in centers) <= cluster_gap:
+                index = min(range(len(centers)), key=lambda i: abs(x - centers[i]))
+                n = counts[index] + 1
+                centers[index] = (centers[index] * counts[index] + x) / n
+                counts[index] = n
+            else:
+                centers.append(float(x))
+                counts.append(1)
+    centers.sort()
+    if len(centers) < 2 or len(centers) > 12:
+        return ""
+    rows = []
+    for raw_row in raw_rows:
+        cells = [""] * len(centers)
+        for x, text in raw_row:
+            index = min(range(len(centers)), key=lambda i: abs(centers[i] - x))
+            cells[index] = (cells[index] + " " + text).strip()
+        if sum(bool(cell) for cell in cells) >= 2:
+            rows.append(cells)
+    if len(rows) < 2 or max(sum(bool(c) for c in row) for row in rows) < 2:
+        return ""
+    width = len(centers)
+    output = ["| " + " | ".join(cell.replace("|", "\\|") for cell in rows[0]) + " |",
+              "| " + " | ".join("---" for _ in range(width)) + " |"]
+    output.extend("| " + " | ".join(cell.replace("|", "\\|") for cell in row) + " |"
+                  for row in rows[1:])
+    return "\n".join(output)
+
+_ocr_dialogs: list[QDialog] = []
+
+
+class OCRResultDialog(QDialog):
+    """Результат OCR: редактирование, копирование, таблица, перевод и TXT."""
+
+    def __init__(self, text: str, payload: Optional[dict] = None, parent=None):
+        super().__init__(parent)
+        self.payload = payload or {}
+        self.setWindowTitle("Распознанный текст")
+        self.resize(760, 560)
+        layout = QVBoxLayout(self)
+        self.text_edit = QPlainTextEdit(self)
+        self.text_edit.setPlainText(text)
+        self.text_edit.setPlaceholderText("Распознанный текст…")
+        layout.addWidget(self.text_edit, 1)
+        actions = QHBoxLayout()
+        for title, handler in (
+            ("Копировать", self.copy_text),
+            ("Таблица", self.convert_table),
+            ("Перевести", self.translate_text),
+            ("Сохранить TXT", self.save_text),
+            ("Закрыть", self.close),
+        ):
+            button = QPushButton(title, self)
+            button.clicked.connect(handler)
+            actions.addWidget(button)
+        layout.addLayout(actions)
+
+    def copy_text(self) -> None:
+        QApplication.clipboard().setText(self.text_edit.toPlainText(), QClipboard.Clipboard)
+
+    def convert_table(self) -> None:
+        table = ocr_layout_to_markdown_table(self.payload)
+        if not table:
+            QMessageBox.information(self, "Таблица",
+                                    "Не удалось уверенно определить столбцы. Оставлен исходный текст.")
+            return
+        self.text_edit.setPlainText(table)
+
+    def translate_text(self) -> None:
+        selected = self.text_edit.textCursor().selectedText().replace("\u2029", "\n").strip()
+        text = selected or self.text_edit.toPlainText().strip()
+        if not text:
+            return
+        encoded = bytes(QUrl.toPercentEncoding(text)).decode("ascii")
+        QDesktopServices.openUrl(QUrl(
+            "https://translate.google.com/?sl=auto&tl=ru&text=" + encoded + "&op=translate"))
+
+    def save_text(self) -> None:
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Сохранить распознанный текст", "Распознанный_текст.txt",
+            "Текст (*.txt)")
+        if not path:
+            return
+        try:
+            Path(path).write_text(self.text_edit.toPlainText(), encoding="utf-8")
+        except OSError as exc:
+            QMessageBox.warning(self, "Сохранение", str(exc))
+
+
+def start_ocr(img: QImage, launcher=None, history_path: Optional[Path] = None) -> None:
+    """Асинхронно распознаёт текст, сохраняет OCR-индекс истории и показывает результат."""
     tray = getattr(launcher, "tray", None) if launcher is not None else None
 
     def notify(title: str, text: str, warn: bool = False) -> None:
@@ -4436,9 +4928,29 @@ def start_ocr(img: QImage, launcher=None) -> None:
             elif not out:
                 notify("Распознавание текста", "Текст не найден.")
             else:
-                QApplication.clipboard().setText(out, QClipboard.Clipboard)
-                preview = out.replace("\n", " ")
+                payload = None
+                try:
+                    candidate = json.loads(out)
+                    if isinstance(candidate, dict) and isinstance(candidate.get("lines"), list):
+                        payload = candidate
+                except (ValueError, TypeError):
+                    pass
+                text = format_ocr_paragraphs(payload) if payload is not None else out
+                if not text.strip():
+                    notify("Распознавание текста", "Текст не найден.")
+                    return
+                if history_path is not None:
+                    update_history_metadata(history_path, ocr_text=text)
+                QApplication.clipboard().setText(text, QClipboard.Clipboard)
+                preview = text.replace("\n", " ")
                 notify("Текст скопирован", preview[:120] + ("…" if len(preview) > 120 else ""))
+                dialog = OCRResultDialog(text, payload)
+                _ocr_dialogs.append(dialog)
+                dialog.destroyed.connect(lambda *_: _ocr_dialogs.remove(dialog)
+                                          if dialog in _ocr_dialogs else None)
+                dialog.show()
+                dialog.raise_()
+                dialog.activateWindow()
         finally:
             cleanup()
 
@@ -4451,7 +4963,6 @@ def start_ocr(img: QImage, launcher=None) -> None:
     proc.finished.connect(finished)
     proc.errorOccurred.connect(failed)
     proc.start()
-
 
 def _find_launcher() -> Optional["Launcher"]:
     app = QApplication.instance()
@@ -4732,24 +5243,68 @@ def _scroll_overlap(previous: QImage, current: QImage) -> int:
     return best_shift
 
 
-def _stitch_scroll_frames(frames: list[QImage], scroll_steps: list[int]) -> QImage:
-    """Присоединить только новые нижние строки последующих кадров."""
+def _scroll_fixed_bands(before: QImage, after: QImage) -> tuple[int, int]:
+    """Оценивает неподвижные полосы сверху и снизу (например, sticky header/footer)."""
+    if before.isNull() or after.isNull() or before.size() != after.size():
+        return 0, 0
+    width, height = before.width(), before.height()
+    if width < 40 or height < 100:
+        return 0, 0
+    a = before.convertToFormat(QImage.Format_Grayscale8)
+    b = after.convertToFormat(QImage.Format_Grayscale8)
+    ba, bb = bytes(a.constBits()), bytes(b.constBits())
+    sa, sb = a.bytesPerLine(), b.bytesPerLine()
+
+    def stable(y: int) -> bool:
+        ra = ba[y * sa:y * sa + width]
+        rb = bb[y * sb:y * sb + width]
+        # Небольшие изменения курсора/анимации не мешают распознать закреплённую строку.
+        changed = sum(x != y for x, y in zip(ra, rb))
+        return changed <= max(2, int(width * 0.012))
+
+    limit = max(8, int(height * 0.24))
+    top = 0
+    while top < limit and stable(top):
+        top += 1
+    bottom = 0
+    while bottom < limit and stable(height - 1 - bottom):
+        bottom += 1
+    minimum = max(10, int(height * 0.025))
+    return (top if top >= minimum else 0,
+            bottom if bottom >= minimum else 0)
+
+
+def _stitch_scroll_frames(frames: list[QImage], scroll_steps: list[int],
+                          fixed_bottoms: Optional[list[int]] = None) -> QImage:
+    """Склеивает только новые строки, исключая повторный sticky footer."""
     if not frames:
         return QImage()
     if len(frames) - 1 != len(scroll_steps):
         raise ValueError("Количество кадров и смещений не совпадает")
+    if fixed_bottoms is None:
+        fixed_bottoms = [0] * len(scroll_steps)
+    if len(fixed_bottoms) < len(scroll_steps):
+        fixed_bottoms = list(fixed_bottoms) + [0] * (len(scroll_steps) - len(fixed_bottoms))
+    elif len(fixed_bottoms) > len(scroll_steps):
+        raise ValueError("Количество фиксированных полос не совпадает")
     width, height = frames[0].width(), frames[0].height()
-    extra = sum(max(0, min(height, offset)) for offset in scroll_steps)
-    canvas = QImage(width, height + extra, QImage.Format_RGB32)
+    safe_steps = [max(0, min(height, int(offset))) for offset in scroll_steps]
+    initial_fixed_bottom = max([0] + [max(0, int(value)) for value in fixed_bottoms])
+    initial_fixed_bottom = min(max(0, height - 1), initial_fixed_bottom)
+    initial_height = height - initial_fixed_bottom
+    extra = sum(safe_steps)
+    canvas = QImage(width, initial_height + extra, QImage.Format_RGB32)
     canvas.fill(QColor("white"))
     painter = QPainter(canvas)
-    painter.drawImage(0, 0, frames[0])
-    pos = height
-    for frame, step in zip(frames[1:], scroll_steps):
-        step = max(0, min(height, int(step)))
+    painter.drawImage(QRect(0, 0, width, initial_height), frames[0],
+                      QRect(0, 0, width, initial_height))
+    pos = initial_height
+    for frame, step, fixed_bottom in zip(frames[1:], safe_steps, fixed_bottoms):
+        fixed_bottom = max(0, min(height - step, int(fixed_bottom)))
+        source_y = height - fixed_bottom - step
         if step:
             painter.drawImage(QRect(0, pos, width, step), frame,
-                              QRect(0, height - step, width, step))
+                              QRect(0, source_y, width, step))
             pos += step
     painter.end()
     return canvas
@@ -4879,6 +5434,7 @@ class ScrollingCapturePanel(QWidget):
     """Компактная немодальная панель; скрывается во время самого захвата."""
 
     finish_requested = Signal()
+    speed_changed = Signal(int)
 
     def __init__(self, max_steps: int):
         super().__init__(None, Qt.Tool | Qt.WindowStaysOnTopHint |
@@ -4887,7 +5443,7 @@ class ScrollingCapturePanel(QWidget):
         self.setAttribute(Qt.WA_ShowWithoutActivating, True)
         self.setAttribute(Qt.WA_DeleteOnClose, True)
         self._silent_close = False
-        self.resize(345, 116)
+        self.resize(365, 166)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(14, 10, 14, 10)
         layout.setSpacing(7)
@@ -4898,6 +5454,18 @@ class ScrollingCapturePanel(QWidget):
         self.status.setWordWrap(True)
         self.status.setObjectName("scroll_capture_status")
         layout.addWidget(self.status)
+        speed_row = QHBoxLayout()
+        self.speed_label = QLabel("Интервал прокрутки: 900 мс", self)
+        speed_row.addWidget(self.speed_label)
+        self.speed_slider = QSlider(Qt.Horizontal, self)
+        self.speed_slider.setRange(400, 1600)
+        self.speed_slider.setSingleStep(100)
+        self.speed_slider.setPageStep(200)
+        self.speed_slider.setValue(900)
+        self.speed_slider.setToolTip("Меньше значение — быстрее прокрутка; больше — больше времени на загрузку страницы.")
+        self.speed_slider.valueChanged.connect(self._on_speed_changed)
+        speed_row.addWidget(self.speed_slider, 1)
+        layout.addLayout(speed_row)
         button = QPushButton("Завершить и сохранить", self)
         button.setObjectName("scroll_capture_finish")
         button.clicked.connect(self.finish_requested.emit)
@@ -4926,6 +5494,10 @@ class ScrollingCapturePanel(QWidget):
             key=lambda pos: (QRect(pos, self.size()).intersected(capture_area).width()
                              * QRect(pos, self.size()).intersected(capture_area).height()))
         self.move(candidate)
+
+    def _on_speed_changed(self, value: int) -> None:
+        self.speed_label.setText(f"Интервал прокрутки: {value} мс")
+        self.speed_changed.emit(int(value))
 
     def set_progress(self, step: int, maximum: int):
         self.counter.setText(f"Прокруток: {step} из {maximum}")
@@ -4960,6 +5532,8 @@ class ScrollingScreenshotJob(QObject):
         self._finished = False
         self.finish_reason: Optional[str] = None
         self._scroll_panel: Optional[ScrollingCapturePanel] = None
+        self.scroll_delay_ms = 900
+        self.fixed_bottoms: list[int] = []
         self._last_scroll_state: Optional[tuple[int, int]] = None
         self._idle_retries = 0
         self._alignment_retries = 0
@@ -4969,6 +5543,9 @@ class ScrollingScreenshotJob(QObject):
 
     def attach_panel(self, panel: ScrollingCapturePanel):
         self._scroll_panel = panel
+
+    def set_scroll_delay(self, milliseconds: int) -> None:
+        self.scroll_delay_ms = max(400, min(1600, int(milliseconds)))
 
     def start(self):
         if sys.platform != "win32":
@@ -5030,7 +5607,7 @@ class ScrollingScreenshotJob(QObject):
             self._finish("error", "Windows не разрешила прокрутку окна.")
             return
         QTimer.singleShot(230, self._show_scroll_panel)
-        QTimer.singleShot(900, self._capture_next)
+        QTimer.singleShot(self.scroll_delay_ms, self._capture_next)
 
     def _show_scroll_panel(self):
         if not self._finished and self._scroll_panel is not None:
@@ -5093,8 +5670,10 @@ class ScrollingScreenshotJob(QObject):
             if self.frames[0].height() + sum(self.steps) + offset > 16000:
                 self._finish("limit", "Достигнут предел высоты 16000 пикселей.")
                 return
+            _fixed_top, fixed_bottom = _scroll_fixed_bands(self.frames[-1], frame)
             self.frames.append(frame)
             self.steps.append(offset)
+            self.fixed_bottoms.append(fixed_bottom)
             self._ever_scrolled = True
             self.progress.emit(len(self.steps), self.max_steps)
             log.info("scroll: accepted shift=%s, captured=%s",
@@ -5116,7 +5695,7 @@ class ScrollingScreenshotJob(QObject):
             self._scroll_panel.hide()
         QCursor.setPos(self._cursor)
         try:
-            combined = _stitch_scroll_frames(self.frames, self.steps)
+            combined = _stitch_scroll_frames(self.frames, self.steps, self.fixed_bottoms)
         except Exception:
             log.exception("scroll: frame assembly failed")
             combined = QImage()
@@ -5126,6 +5705,123 @@ class ScrollingScreenshotJob(QObject):
                  self.finish_reason, len(self.frames),
                  combined.width(), combined.height())
         self.completed.emit(combined, message)
+
+
+class ScrollingReviewDialog(QDialog):
+    """Предпросмотр длинного снимка с ручной коррекцией каждого шва."""
+
+    def __init__(self, frames: list[QImage], steps: list[int],
+                 fixed_bottoms: Optional[list[int]] = None,
+                 message: str = "", parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Проверка длинного скриншота")
+        self.resize(900, 700)
+        self.frames = [frame.copy() for frame in frames]
+        self.steps = [int(value) for value in steps]
+        self.fixed_bottoms = list(fixed_bottoms or [0] * len(self.steps))
+        if len(self.fixed_bottoms) != len(self.steps):
+            self.fixed_bottoms = [0] * len(self.steps)
+        self._applied_delta = 0
+        layout = QVBoxLayout(self)
+        self.message_label = QLabel(message or "Проверьте результат. При необходимости скорректируйте смещение между кадрами.", self)
+        self.message_label.setWordWrap(True)
+        layout.addWidget(self.message_label)
+        self.frame_strip = QListWidget(self)
+        self.frame_strip.setViewMode(QListWidget.IconMode)
+        self.frame_strip.setFlow(QListWidget.LeftToRight)
+        self.frame_strip.setMovement(QListWidget.Static)
+        self.frame_strip.setMaximumHeight(112)
+        self.frame_strip.setIconSize(QSize(112, 72))
+        self.frame_strip.setGridSize(QSize(132, 96))
+        self.frame_strip.setSelectionMode(QAbstractItemView.SingleSelection)
+        for index, frame in enumerate(self.frames):
+            thumbnail = frame.scaled(QSize(112, 72), Qt.KeepAspectRatio,
+                                     Qt.SmoothTransformation)
+            item = QListWidgetItem(QIcon(QPixmap.fromImage(thumbnail)),
+                                   f"Кадр {index + 1}")
+            item.setData(Qt.UserRole, index)
+            self.frame_strip.addItem(item)
+        self.frame_strip.itemClicked.connect(self._select_frame)
+        if self.frame_strip.count():
+            self.frame_strip.setCurrentRow(0)
+        layout.addWidget(self.frame_strip)
+        self.preview = QLabel(self)
+        self.preview.setAlignment(Qt.AlignCenter)
+        self.preview.setMinimumSize(600, 430)
+        self.preview.setStyleSheet("background:#202124;border:1px solid #555;border-radius:6px;")
+        layout.addWidget(self.preview, 1)
+        controls = QHBoxLayout()
+        controls.addWidget(QLabel("Шов:", self))
+        self.seam_combo = QComboBox(self)
+        for index, step in enumerate(self.steps):
+            self.seam_combo.addItem(f"Кадр {index + 1} → {index + 2}: {step} px", index)
+        self.seam_combo.currentIndexChanged.connect(self._select_seam)
+        controls.addWidget(self.seam_combo, 1)
+        self.delta_spin_enabled = bool(self.steps)
+        controls.addWidget(QLabel("Коррекция, px:", self))
+        self.delta_spin = QSpinBox(self)
+        self.delta_spin.setRange(-240, 240)
+        self.delta_spin.setSuffix(" px")
+        self.delta_spin.setEnabled(self.delta_spin_enabled)
+        self.delta_spin.valueChanged.connect(self._change_delta)
+        controls.addWidget(self.delta_spin)
+        layout.addLayout(controls)
+        buttons = QHBoxLayout()
+        buttons.addStretch(1)
+        self.cancel_btn = QPushButton("Отмена", self)
+        self.cancel_btn.clicked.connect(self.reject)
+        self.accept_btn = QPushButton("Использовать снимок", self)
+        self.accept_btn.setDefault(True)
+        self.accept_btn.clicked.connect(self.accept)
+        buttons.addWidget(self.cancel_btn)
+        buttons.addWidget(self.accept_btn)
+        layout.addLayout(buttons)
+        self._render_preview()
+
+    def _select_frame(self, item: QListWidgetItem) -> None:
+        if not self.steps:
+            return
+        frame_index = int(item.data(Qt.UserRole) or 0)
+        seam_index = min(max(0, frame_index - 1), len(self.steps) - 1)
+        self.seam_combo.setCurrentIndex(seam_index)
+
+    def _select_seam(self, _index: int) -> None:
+        self._applied_delta = 0
+        blocked = self.delta_spin.blockSignals(True)
+        self.delta_spin.setValue(0)
+        self.delta_spin.blockSignals(blocked)
+        self._render_preview()
+
+    def _change_delta(self, value: int) -> None:
+        index = self.seam_combo.currentData()
+        if index is None or not 0 <= int(index) < len(self.steps):
+            return
+        difference = int(value) - self._applied_delta
+        self.steps[int(index)] = max(1, min(self.frames[0].height(),
+                                            self.steps[int(index)] + difference))
+        self._applied_delta = int(value)
+        self.seam_combo.setItemText(int(index),
+                                    f"Кадр {int(index) + 1} → {int(index) + 2}: {self.steps[int(index)]} px")
+        self._render_preview()
+
+    def _render_preview(self) -> None:
+        image = _stitch_scroll_frames(self.frames, self.steps, self.fixed_bottoms)
+        if image.isNull():
+            self.preview.setText("Предпросмотр недоступен")
+            return
+        size = self.preview.size()
+        if size.width() < 100 or size.height() < 100:
+            size = QSize(800, 500)
+        preview = image.scaled(size - QSize(16, 16), Qt.KeepAspectRatio,
+                               Qt.SmoothTransformation)
+        self.preview.setPixmap(QPixmap.fromImage(preview))
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._render_preview()
+
+    def result_image(self) -> QImage:
+        return _stitch_scroll_frames(self.frames, self.steps, self.fixed_bottoms)
 
 
 class ScreenshotQuickActionsDialog(QDialog):
@@ -5196,27 +5892,55 @@ class ScreenshotQuickActionsDialog(QDialog):
 
 
 class ScreenshotHistoryDialog(QDialog):
-    """Просмотр истории. Удаление происходит только после явного подтверждения."""
+    """Поиск и управление историей снимков, тегами, избранным и OCR-индексом."""
 
     def __init__(self, launcher: "Launcher"):
         super().__init__(None)
         self.launcher = launcher
         self.setWindowTitle("История скриншотов")
         self.setWindowIcon(_load_app_icon())
-        self.resize(850, 540)
+        self.resize(1040, 680)
         layout = QVBoxLayout(self)
         description = QLabel(
-            "Снимки хранятся в Data/ScreenshotHistory. "
-            "Автосохранение в историю включается отдельно в трее.", self)
+            "Поиск выполняется по имени, тегам, категории и распознанному тексту. "
+            "Для поиска по содержимому сначала запустите OCR для снимка.", self)
         description.setWordWrap(True)
         layout.addWidget(description)
+        filters = QHBoxLayout()
+        self.search_input = QLineEdit(self)
+        self.search_input.setPlaceholderText("Поиск по имени, OCR-тексту и тегам…")
+        self.search_input.textChanged.connect(self.refresh)
+        filters.addWidget(self.search_input, 1)
+        self.type_filter = QComboBox(self)
+        self.type_filter.addItem("Все типы", "all")
+        self.type_filter.addItem("Обычные снимки", "shot")
+        self.type_filter.addItem("Длинные снимки", "scroll")
+        self.type_filter.addItem("Снимки окон", "window")
+        self.type_filter.currentIndexChanged.connect(self.refresh)
+        filters.addWidget(self.type_filter)
+        self.category_filter = QComboBox(self)
+        self.category_filter.addItem("Все категории", "")
+        self.category_filter.currentIndexChanged.connect(self.refresh)
+        filters.addWidget(self.category_filter)
+        self.group_filter = QComboBox(self)
+        self.group_filter.addItem("Группировать по дате", "date")
+        self.group_filter.addItem("Группировать по проекту", "project")
+        self.group_filter.currentIndexChanged.connect(self.refresh)
+        filters.addWidget(self.group_filter)
+        self.favorites_only = QCheckBox("Избранное", self)
+        self.favorites_only.toggled.connect(self.refresh)
+        filters.addWidget(self.favorites_only)
+        self.refresh_btn = QPushButton("Обновить", self)
+        self.refresh_btn.clicked.connect(self.refresh)
+        filters.addWidget(self.refresh_btn)
+        layout.addLayout(filters)
         self.items = QListWidget(self)
         self.items.setViewMode(QListWidget.IconMode)
         self.items.setResizeMode(QListWidget.Adjust)
         self.items.setMovement(QListWidget.Static)
         self.items.setSelectionMode(QAbstractItemView.SingleSelection)
         self.items.setIconSize(QSize(152, 100))
-        self.items.setGridSize(QSize(180, 144))
+        self.items.setGridSize(QSize(190, 148))
         self.items.setSpacing(8)
         self.items.itemDoubleClicked.connect(lambda _item: self.open_selected())
         layout.addWidget(self.items, 1)
@@ -5224,9 +5948,13 @@ class ScreenshotHistoryDialog(QDialog):
         for title, handler in (
             ("Открыть в редакторе", self.open_selected),
             ("Копировать", self.copy_selected),
+            ("Избранное", self.toggle_favorite),
+            ("Теги", self.edit_tags),
+            ("Категория", self.edit_category),
+            ("Проект", self.edit_project),
+            ("Распознать текст", self.recognize_selected),
             ("Удалить", self.delete_selected),
             ("Открыть папку", self.open_folder),
-            ("Обновить", self.refresh),
         ):
             button = QPushButton(title, self)
             button.clicked.connect(handler)
@@ -5234,31 +5962,90 @@ class ScreenshotHistoryDialog(QDialog):
         layout.addLayout(actions)
         self.refresh()
 
-    def refresh(self) -> None:
+    def refresh(self, *_args) -> None:
+        selected = self._selected_path()
         self.items.clear()
-        paths = screenshot_history_files()
-        for path in paths:
-            reader = QImageReader(str(path))
-            source_size = reader.size()
-            if source_size.isValid():
-                source_size.scale(QSize(152, 100), Qt.KeepAspectRatio)
-                reader.setScaledSize(source_size)
-            preview = reader.read()
-            if preview.isNull():
+        records = []
+        query = self.search_input.text().strip().casefold()
+        kind_filter = self.type_filter.currentData()
+        category_filter = self.category_filter.currentData()
+        for path in screenshot_history_files(limit=5000):
+            metadata = load_history_metadata(path)
+            if kind_filter != "all" and metadata["kind"] != kind_filter:
                 continue
-            icon = QIcon(QPixmap.fromImage(preview))
-            entry = QListWidgetItem(icon, path.stem.replace("Screenshot_", ""))
-            entry.setToolTip(path.name)
-            entry.setData(Qt.UserRole, str(path))
-            self.items.addItem(entry)
-        if self.items.count() > 0:
-            self.items.setCurrentRow(0)
+            if category_filter and metadata["category"] != category_filter:
+                continue
+            if self.favorites_only.isChecked() and not metadata["favorite"]:
+                continue
+            searchable = " ".join((path.stem, metadata["ocr_text"],
+                                   metadata["category"], metadata["project"],
+                                   " ".join(metadata["tags"]))).casefold()
+            if query and query not in searchable:
+                continue
+            try:
+                modified = path.stat().st_mtime
+            except OSError:
+                continue
+            group = (metadata["project"] or "Без проекта"
+                     if self.group_filter.currentData() == "project"
+                     else time.strftime("%d.%m.%Y", time.localtime(modified)))
+            records.append((path, metadata, modified, group))
+        categories = sorted({meta["category"] for _path, meta, _mtime, _group in records
+                             if meta["category"]})
+        current_category = self.category_filter.currentData()
+        blocked = self.category_filter.blockSignals(True)
+        self.category_filter.clear()
+        self.category_filter.addItem("Все категории", "")
+        for category in categories:
+            self.category_filter.addItem(category, category)
+        index = self.category_filter.findData(current_category)
+        self.category_filter.setCurrentIndex(max(0, index))
+        self.category_filter.blockSignals(blocked)
+        grouped = {}
+        for record in records:
+            grouped.setdefault(record[3], []).append(record)
+        groups = sorted(grouped, key=lambda key: max(x[2] for x in grouped[key]),
+                        reverse=True)
+        first_item = None
+        for group in groups:
+            header = QListWidgetItem(f"— {group} —")
+            header.setFlags(Qt.NoItemFlags)
+            self.items.addItem(header)
+            for path, metadata, _modified, _group in sorted(
+                    grouped[group], key=lambda x: (x[2], x[0].name), reverse=True):
+                reader = QImageReader(str(path))
+                source_size = reader.size()
+                if source_size.isValid():
+                    source_size.scale(QSize(152, 100), Qt.KeepAspectRatio)
+                    reader.setScaledSize(source_size)
+                preview = reader.read()
+                if preview.isNull():
+                    continue
+                icon = QIcon(QPixmap.fromImage(preview))
+                prefix = "★ " if metadata["favorite"] else ""
+                title = prefix + path.stem.replace("Screenshot_", "")
+                entry = QListWidgetItem(icon, title)
+                entry.setToolTip(
+                    f"{path.name}\nТип: {metadata['kind']}\n"
+                    f"Категория: {metadata['category'] or '—'}\n"
+                    f"Проект: {metadata['project'] or '—'}\n"
+                    f"Теги: {', '.join(metadata['tags']) or '—'}\n"
+                    f"OCR: {'есть' if metadata['ocr_text'] else 'не индексирован'}")
+                entry.setData(Qt.UserRole, str(path))
+                self.items.addItem(entry)
+                if first_item is None or (selected is not None and path == selected):
+                    first_item = entry
+        if first_item is not None:
+            self.items.setCurrentItem(first_item)
 
     def _selected_path(self) -> Optional[Path]:
         item = self.items.currentItem()
         if item is None:
             return None
-        path = Path(str(item.data(Qt.UserRole)))
+        value = item.data(Qt.UserRole)
+        if not isinstance(value, str) or not value:
+            return None
+        path = Path(value)
         try:
             if (path.is_symlink() or
                     path.parent.resolve() != SCREENSHOT_HISTORY_DIR.resolve() or
@@ -5288,6 +6075,59 @@ class ScreenshotHistoryDialog(QDialog):
             return
         QApplication.clipboard().setImage(image, QClipboard.Clipboard)
 
+    def toggle_favorite(self) -> None:
+        path = self._selected_path()
+        if path is None:
+            return
+        metadata = load_history_metadata(path)
+        update_history_metadata(path, favorite=not metadata["favorite"])
+        self.refresh()
+
+    def edit_tags(self) -> None:
+        path = self._selected_path()
+        if path is None:
+            return
+        metadata = load_history_metadata(path)
+        value, ok = QInputDialog.getText(
+            self, "Теги", "Введите теги через запятую:",
+            text=", ".join(metadata["tags"]))
+        if ok:
+            tags = list(dict.fromkeys(x.strip() for x in value.split(",") if x.strip()))
+            update_history_metadata(path, tags=tags)
+            self.refresh()
+
+    def edit_category(self) -> None:
+        path = self._selected_path()
+        if path is None:
+            return
+        metadata = load_history_metadata(path)
+        value, ok = QInputDialog.getText(
+            self, "Категория", "Категория снимка:", text=metadata["category"])
+        if ok:
+            update_history_metadata(path, category=value.strip())
+            self.refresh()
+
+    def edit_project(self) -> None:
+        path = self._selected_path()
+        if path is None:
+            return
+        metadata = load_history_metadata(path)
+        value, ok = QInputDialog.getText(
+            self, "Проект", "Название проекта:", text=metadata["project"])
+        if ok:
+            update_history_metadata(path, project=value.strip())
+            self.refresh()
+
+    def recognize_selected(self) -> None:
+        path = self._selected_path()
+        if path is None:
+            return
+        image = QImage(str(path))
+        if image.isNull():
+            QMessageBox.warning(self, "История", "Не удалось прочитать снимок.")
+            return
+        start_ocr(image, self.launcher, history_path=path)
+
     def delete_selected(self) -> None:
         path = self._selected_path()
         if path is None:
@@ -5301,6 +6141,9 @@ class ScreenshotHistoryDialog(QDialog):
             return
         try:
             path.unlink()
+            metadata_path = path.with_suffix(".json")
+            if metadata_path.is_file() and not metadata_path.is_symlink():
+                metadata_path.unlink()
         except OSError:
             log.exception("Не удалось удалить снимок из истории: %s", path)
             QMessageBox.warning(self, "Ошибка", "Не удалось удалить снимок.")
@@ -5390,7 +6233,7 @@ class Launcher(QMainWindow):
         info = QLabel(
             "Инструменты: Переместиться (H), Перо (P), Маркер (M), Прямоуг. (R), Овал (O), "
             "Стрелка (A), Текст (T), Блюр (B), Пиксели (X), Обрезать (C), Редация (D), "
-            "Шаг (1), Заливка (F), Ластик (E). "
+            "Шаг (1), Заливка (F), Ластик (E), Затемнение (K), Выноска (Q), Линейка (U). "
             "«⧉ Заливка форм» — заливка у прямоугольника и овала."
         )
         info.setWordWrap(True)
@@ -5501,6 +6344,7 @@ class Launcher(QMainWindow):
             panel.finish_requested.connect(job.stop)
             job.progress.connect(panel.set_progress)
             job.status_changed.connect(panel.set_status)
+            panel.speed_changed.connect(job.set_scroll_delay)
             job.completed.connect(self._on_scrolling_finished)
             job.start()
         except Exception:
@@ -5527,11 +6371,25 @@ class Launcher(QMainWindow):
             panel.close_silently()
         if job is not None:
             job.deleteLater()
-        # При нуле подтверждённых прокруток нельзя выдавать один
-        # обычный кадр за длинный снимок или изменять буфер обмена.
+        # Даже если прокрутка не успела начаться, сохраняем уже снятый первый экран.
+        # При подтверждённых смещениях результат получает тип «длинный снимок».
         confirmed_steps = len(job.steps) if job is not None else 0
-        if not image.isNull() and confirmed_steps > 0:
-            self._handle_captured_image(image)
+        has_captured_frames = job is not None and bool(job.frames)
+        if not image.isNull() and has_captured_frames:
+            review_message = message
+            if confirmed_steps == 0:
+                review_message = (message + "\nПервый экран сохранён как обычный снимок.").strip()
+                message = review_message
+            if confirmed_steps > 0 and len(job.frames) == len(job.steps) + 1:
+                review = ScrollingReviewDialog(
+                    job.frames, job.steps, job.fixed_bottoms, review_message, self)
+                if review.exec() == QDialog.Accepted:
+                    image = review.result_image()
+                else:
+                    image = QImage()
+            if not image.isNull():
+                self._handle_captured_image(
+                    image, capture_kind="scroll" if confirmed_steps > 0 else "shot")
         elif confirmed_steps == 0:
             message = (
                 (message + " ") if message else ""
@@ -5772,12 +6630,12 @@ class Launcher(QMainWindow):
         self.hide()
         QTimer.singleShot(200, lambda: self._capture(SelectionOverlay.MODE_WINDOW))
 
-    def _handle_captured_image(self, img: QImage) -> None:
+    def _handle_captured_image(self, img: QImage, capture_kind: str = "shot") -> None:
         """Буфер, история и действия для всех способов создания снимка."""
         QApplication.clipboard().setImage(img, QClipboard.Clipboard)
         saved = None
         if self._capture_preferences.get("history_enabled", False):
-            saved = archive_screenshot(img)
+            saved = archive_screenshot(img, kind=capture_kind)
             if saved is None:
                 log.error("Снимок создан, но не удалось сохранить его в историю")
         if self._capture_preferences.get("quick_actions", False):
@@ -5794,7 +6652,9 @@ class Launcher(QMainWindow):
         img = run_capture_flow(initial_mode, self)
         log.info("capture: result %s", None if img is None else f"{img.width()}x{img.height()}")
         if img is not None:
-            self._handle_captured_image(img)
+            capture_kind = ("window" if initial_mode == SelectionOverlay.MODE_WINDOW
+                            else "shot")
+            self._handle_captured_image(img, capture_kind=capture_kind)
         self.hide()
 
     def _open_project(self):
@@ -6541,9 +7401,36 @@ def select_region_rect() -> Optional[QRect]:
 
 
 # ── построение команд ffmpeg ─────────────────────────────────────────────────
+def _append_record_audio(args: list[str], audio_inputs: list[tuple[str, float]]) -> None:
+    """Добавляет один или несколько входов звука с независимой громкостью."""
+    valid = [(str(device), max(0.0, min(2.0, float(gain))))
+             for device, gain in audio_inputs if str(device).strip()]
+    for device, _gain in valid:
+        args += ["-f", "dshow", "-i", f"audio={device}"]
+    if not valid:
+        return
+    if len(valid) == 1:
+        gain = valid[0][1]
+        if abs(gain - 1.0) > 0.001:
+            args += ["-filter:a", f"volume={gain:.3f}"]
+        args += ["-c:a", "aac", "-b:a", "160k", "-map", "0:v", "-map", "1:a"]
+        return
+    filters = []
+    labels = []
+    for index, (_device, gain) in enumerate(valid, start=1):
+        label = f"audio{index}"
+        filters.append(f"[{index}:a]volume={gain:.3f}[{label}]")
+        labels.append(f"[{label}]")
+    filters.append("".join(labels) +
+                   f"amix=inputs={len(valid)}:duration=longest:dropout_transition=2[aout]")
+    args += ["-filter_complex", ";".join(filters), "-map", "0:v", "-map", "[aout]",
+             "-c:a", "aac", "-b:a", "160k"]
+
+
 def build_record_cmd(out: str, rect: QRect, fps: int,
                      audio_mode: str, audio_device: Optional[str],
-                     draw_mouse: bool = True) -> list[str]:
+                     draw_mouse: bool = True,
+                     audio_inputs: Optional[list[tuple[str, float]]] = None) -> list[str]:
     ff = ffmpeg_path()
     x, y, w, h = _physical_rect(rect)
     a = [ff, "-y",
@@ -6552,7 +7439,9 @@ def build_record_cmd(out: str, rect: QRect, fps: int,
          "-video_size", f"{w}x{h}",
          "-draw_mouse", "1" if draw_mouse else "0",
          "-i", "desktop"]
-    if audio_mode in ("mic", "system") and audio_device:
+    if audio_inputs is not None:
+        _append_record_audio(a, audio_inputs)
+    elif audio_mode in ("mic", "system") and audio_device:
         a += ["-f", "dshow", "-i", f"audio={audio_device}",
               "-c:a", "aac", "-b:a", "160k", "-map", "0:v", "-map", "1:a"]
     a += ["-c:v", "libx264", "-pix_fmt", "yuv420p",
@@ -6564,14 +7453,17 @@ def build_record_cmd(out: str, rect: QRect, fps: int,
 
 def build_window_record_cmd(out: str, hwnd: int, fps: int,
                             audio_mode: str, audio_device: Optional[str],
-                            draw_mouse: bool = True) -> list[str]:
+                            draw_mouse: bool = True,
+                            audio_inputs: Optional[list[tuple[str, float]]] = None) -> list[str]:
     """Запись конкретного HWND: при перемещении окна захват следует за ним."""
     if sys.platform != "win32" or not isinstance(hwnd, int) or hwnd <= 0:
         raise ValueError("Для записи необходимо выбрать окно Windows")
     ff = ffmpeg_path()
     a = [ff, "-y", "-f", "gdigrab", "-framerate", str(fps),
          "-draw_mouse", "1" if draw_mouse else "0", "-i", f"hwnd={hwnd}"]
-    if audio_mode in ("mic", "system") and audio_device:
+    if audio_inputs is not None:
+        _append_record_audio(a, audio_inputs)
+    elif audio_mode in ("mic", "system") and audio_device:
         a += ["-f", "dshow", "-i", f"audio={audio_device}",
               "-c:a", "aac", "-b:a", "160k", "-map", "0:v", "-map", "1:a"]
     #НП: У окон могут быть нечётные стороны; libx264 требует чётные размеры.
@@ -6598,6 +7490,18 @@ def recordable_window_is_ready(hwnd: int) -> bool:
                 not bool(user32.IsIconic(hwnd)))
     except (OSError, AttributeError, ValueError):
         return False
+
+
+def build_gif_export_cmd(src: str, dst: str, t_in: float, t_out: float) -> list[str]:
+    """Создаёт компактный GIF с палитрой, ограничением 12 FPS и шириной 960 px."""
+    ff = ffmpeg_path()
+    start = max(0.0, float(t_in))
+    duration = max(0.05, float(t_out) - start)
+    graph = ("[0:v]fps=12,scale=960:-1:flags=lanczos,split[gifsrc][palette];"
+             "[palette]palettegen=max_colors=192[pal];"
+             "[gifsrc][pal]paletteuse=dither=sierra2_4a[v]")
+    return [ff, "-y", "-ss", f"{start:.3f}", "-i", src, "-t", f"{duration:.3f}",
+            "-filter_complex", graph, "-map", "[v]", "-an", "-loop", "0", dst]
 
 
 def build_export_cmd(src: str, dst: str, t_in: float, t_out: float,
@@ -6676,6 +7580,211 @@ def build_export_cmd(src: str, dst: str, t_in: float, t_out: float,
 
 
 # ── HUD записи: плавающая панелька рядом с областью ──────────────────────────
+class AudioSettingsDialog(QDialog):
+    """Независимые источники и уровни системного звука и микрофона."""
+
+    def __init__(self, devices: list[str], parent=None, initial=None):
+        super().__init__(parent)
+        self.setWindowTitle("Настройка звука записи")
+        self.resize(520, 270)
+        self.devices = list(devices)
+        initial = list(initial or [])
+        system_device = guess_system_audio(self.devices)
+        mic_devices = [device for device in self.devices if device != system_device]
+        layout = QVBoxLayout(self)
+        form = QFormLayout()
+        self.system_check = QCheckBox("Записывать системный звук", self)
+        self.system_combo = QComboBox(self)
+        for device in self.devices:
+            self.system_combo.addItem(device, device)
+        if system_device:
+            self.system_combo.setCurrentIndex(max(0, self.system_combo.findData(system_device)))
+        self.system_gain = QSlider(Qt.Horizontal, self)
+        self.system_gain.setRange(0, 200)
+        self.system_gain.setValue(100)
+        self.system_gain_label = QLabel("100%", self)
+        system_row = QHBoxLayout()
+        system_row.addWidget(self.system_check)
+        system_row.addWidget(self.system_combo, 1)
+        form.addRow("Системный звук", system_row)
+        system_gain_row = QHBoxLayout()
+        system_gain_row.addWidget(self.system_gain, 1)
+        system_gain_row.addWidget(self.system_gain_label)
+        form.addRow("Громкость системы", system_gain_row)
+
+        self.mic_check = QCheckBox("Записывать микрофон", self)
+        self.mic_combo = QComboBox(self)
+        for device in mic_devices or self.devices:
+            self.mic_combo.addItem(device, device)
+        self.mic_gain = QSlider(Qt.Horizontal, self)
+        self.mic_gain.setRange(0, 200)
+        self.mic_gain.setValue(100)
+        self.mic_gain_label = QLabel("100%", self)
+        mic_row = QHBoxLayout()
+        mic_row.addWidget(self.mic_check)
+        mic_row.addWidget(self.mic_combo, 1)
+        form.addRow("Микрофон", mic_row)
+        mic_gain_row = QHBoxLayout()
+        mic_gain_row.addWidget(self.mic_gain, 1)
+        mic_gain_row.addWidget(self.mic_gain_label)
+        form.addRow("Громкость микрофона", mic_gain_row)
+        layout.addLayout(form)
+        self.system_gain.valueChanged.connect(
+            lambda value: self.system_gain_label.setText(f"{value}%"))
+        self.mic_gain.valueChanged.connect(
+            lambda value: self.mic_gain_label.setText(f"{value}%"))
+
+        initial_by_device = {device: gain for device, gain in initial}
+        if system_device in initial_by_device:
+            self.system_check.setChecked(True)
+            self.system_gain.setValue(round(initial_by_device[system_device] * 100))
+        if mic_devices:
+            selected_mic = next((device for device in mic_devices
+                                 if device in initial_by_device), None)
+            if selected_mic:
+                self.mic_check.setChecked(True)
+                self.mic_combo.setCurrentIndex(self.mic_combo.findData(selected_mic))
+                self.mic_gain.setValue(round(initial_by_device[selected_mic] * 100))
+        if not self.devices:
+            self.system_check.setEnabled(False)
+            self.system_combo.setEnabled(False)
+            self.mic_check.setEnabled(False)
+            self.mic_combo.setEnabled(False)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel, self)
+        buttons.button(QDialogButtonBox.Ok).setText("Применить")
+        buttons.button(QDialogButtonBox.Cancel).setText("Отмена")
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def selected_inputs(self) -> list[tuple[str, float]]:
+        result = []
+        if self.system_check.isChecked() and self.system_combo.currentData():
+            result.append((str(self.system_combo.currentData()),
+                           self.system_gain.value() / 100.0))
+        if self.mic_check.isChecked() and self.mic_combo.currentData():
+            result.append((str(self.mic_combo.currentData()),
+                           self.mic_gain.value() / 100.0))
+        return result
+
+
+class RecordingInputOverlay(QWidget):
+    """Ненавязчивая подсветка кликов и названий клавиш во время записи области."""
+
+    _KEY_NAMES = {
+        0x08: "Backspace", 0x09: "Tab", 0x0D: "Enter", 0x1B: "Esc",
+        0x20: "Space", 0x21: "Page Up", 0x22: "Page Down", 0x23: "End",
+        0x24: "Home", 0x25: "←", 0x26: "↑", 0x27: "→", 0x28: "↓",
+        0x2D: "Insert", 0x2E: "Delete", 0x70: "F1", 0x71: "F2",
+        0x72: "F3", 0x73: "F4", 0x74: "F5", 0x75: "F6",
+        0x76: "F7", 0x77: "F8", 0x78: "F9", 0x79: "F10",
+        0x7A: "F11", 0x7B: "F12",
+    }
+    _MODIFIERS = {
+        0x11: ("Ctrl", 0xA2, 0xA3),
+        0x12: ("Alt", 0xA4, 0xA5),
+        0x10: ("Shift", 0xA0, 0xA1),
+        0x5B: ("Win", 0x5B, 0x5C),
+    }
+
+    def __init__(self, region: QRect):
+        super().__init__(None, Qt.Tool | Qt.FramelessWindowHint |
+                         Qt.WindowStaysOnTopHint | Qt.WindowDoesNotAcceptFocus)
+        self.region = QRect(region)
+        self.setGeometry(self.region)
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        self.setAttribute(Qt.WA_ShowWithoutActivating, True)
+        self._timer = QTimer(self)
+        self._timer.setInterval(30)
+        self._timer.timeout.connect(self._poll)
+        self._keys_down: set[int] = set()
+        self._left_down = False
+        self._right_down = False
+        self._click_pos: Optional[QPoint] = None
+        self._click_at = 0.0
+        self._key_label = ""
+        self._key_until = 0.0
+
+    @staticmethod
+    def _down(vk: int) -> bool:
+        if sys.platform != "win32":
+            return False
+        try:
+            return bool(ctypes.windll.user32.GetAsyncKeyState(int(vk)) & 0x8000)
+        except (AttributeError, OSError):
+            return False
+
+    def _poll(self) -> None:
+        now = time.monotonic()
+        cursor = QCursor.pos()
+        left = self._down(0x01)
+        right = self._down(0x02)
+        if left and not self._left_down and self.region.contains(cursor):
+            self._click_pos, self._click_at = cursor, now
+        elif right and not self._right_down and self.region.contains(cursor):
+            self._click_pos, self._click_at = cursor, now
+        self._left_down, self._right_down = left, right
+
+        current = {vk for vk in range(0x08, 0x7C) if self._down(vk)}
+        current.update(vk for vk in (0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0x5B, 0x5C)
+                       if self._down(vk))
+        pressed = current - self._keys_down
+        modifier_codes = {code for _name, *codes in self._MODIFIERS.values()
+                          for code in codes}
+        for vk in sorted(pressed):
+            if vk in modifier_codes or vk in (0x10, 0x11, 0x12):
+                continue
+            name = self._KEY_NAMES.get(vk)
+            if name is None and (0x30 <= vk <= 0x39 or 0x41 <= vk <= 0x5A):
+                name = chr(vk)
+            if name is None:
+                continue
+            modifiers = []
+            for _base, (label, *codes) in self._MODIFIERS.items():
+                if any(self._down(code) for code in codes):
+                    modifiers.append(label)
+            self._key_label = "+".join(modifiers + [name])
+            self._key_until = now + 1.25
+        self._keys_down = current
+        self.update()
+
+    def start(self) -> None:
+        self.show()
+        self.raise_()
+        self._timer.start()
+
+    def stop(self) -> None:
+        self._timer.stop()
+        self.hide()
+        self.deleteLater()
+
+    def paintEvent(self, _event) -> None:
+        now = time.monotonic()
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        if self._click_pos is not None and now - self._click_at < 0.75:
+            progress = max(0.0, min(1.0, (now - self._click_at) / 0.75))
+            center = self._click_pos - self.region.topLeft()
+            radius = 10 + progress * 28
+            painter.setPen(QPen(QColor(50, 160, 255, int(230 * (1 - progress))), 3))
+            painter.setBrush(QColor(50, 160, 255, int(55 * (1 - progress))))
+            painter.drawEllipse(QPointF(center), radius, radius)
+        if self._key_label and now < self._key_until:
+            rect = QRect(12, max(12, self.height() - 58),
+                         min(self.width() - 24, 360), 42)
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(QColor(20, 24, 32, 220))
+            painter.drawRoundedRect(rect, 9, 9)
+            painter.setPen(QColor(255, 255, 255))
+            font = QFont()
+            font.setBold(True)
+            font.setPointSize(13)
+            painter.setFont(font)
+            painter.drawText(rect, Qt.AlignCenter, self._key_label)
+        painter.end()
+
+
 class RecordHUD(QWidget):
     finished = Signal(str)   # путь к готовому mp4
     cancelled = Signal()
@@ -6690,16 +7799,26 @@ class RecordHUD(QWidget):
         self.setAttribute(Qt.WA_DeleteOnClose, True)
         self.region = region
         self._proc: Optional[QProcess] = None
+        self._concat_proc: Optional[QProcess] = None
         self._out_path: Optional[str] = None
-        self._t0 = 0.0
+        self._segment_path: Optional[str] = None
+        self._segment_paths: list[str] = []
+        self._concat_list_path: Optional[str] = None
         self._recording = False
+        self._paused = False
+        self._pause_requested = False
+        self._stop_requested = False
+        self._finalizing = False
         self._done = False
+        self._elapsed_total = 0.0
+        self._segment_t0 = 0.0
+        self._audio_inputs_override: Optional[list[tuple[str, float]]] = None
+        self._input_overlay: Optional[RecordingInputOverlay] = None
         self._devices = list_dshow_audio()
 
         root = QHBoxLayout(self)
         root.setContentsMargins(10, 6, 10, 6)
         root.setSpacing(8)
-
         if self.window_hwnd:
             self.setToolTip("Запись окна: " + self.window_title)
             root.addWidget(QLabel("▣ " + (self.window_title[:35] or "Окно"), self))
@@ -6709,19 +7828,34 @@ class RecordHUD(QWidget):
         sysdev = guess_system_audio(self._devices)
         if sysdev:
             self.audio_combo.addItem("Системный звук", ("system", sysdev))
-        for d in self._devices:
-            if d != sysdev:
-                self.audio_combo.addItem(f"Микрофон: {d}", ("mic", d))
+        for device in self._devices:
+            if device != sysdev:
+                self.audio_combo.addItem(f"Микрофон: {device}", ("mic", device))
         root.addWidget(self.audio_combo)
+
+        self.audio_settings_btn = QPushButton("Звук…", self)
+        self.audio_settings_btn.clicked.connect(self._open_audio_settings)
+        root.addWidget(self.audio_settings_btn)
+        self.input_overlay_check = QCheckBox("Клики и клавиши", self)
+        self.input_overlay_check.setToolTip(
+            "Показывает круги кликов и названия сочетаний клавиш в записи области. "
+            "Текст вводимых символов не записывается.")
+        if self.window_hwnd:
+            self.input_overlay_check.setEnabled(False)
+            self.input_overlay_check.setToolTip(
+                "Подсветка кликов и клавиш доступна при записи области экрана.")
+        root.addWidget(self.input_overlay_check)
 
         self.time_lbl = QLabel("00:00", self)
         self.time_lbl.setStyleSheet("font-weight:bold; min-width:44px;")
         root.addWidget(self.time_lbl)
-
         self.start_btn = QPushButton("● Старт", self)
         self.start_btn.clicked.connect(self._on_start)
         root.addWidget(self.start_btn)
-
+        self.pause_btn = QPushButton("Ⅱ Пауза", self)
+        self.pause_btn.setEnabled(False)
+        self.pause_btn.clicked.connect(self._toggle_pause)
+        root.addWidget(self.pause_btn)
         self.cancel_btn = QPushButton("✕", self)
         self.cancel_btn.setFixedWidth(28)
         self.cancel_btn.clicked.connect(self._on_cancel)
@@ -6732,32 +7866,94 @@ class RecordHUD(QWidget):
             "QPushButton{background:#3c4043;border:none;padding:4px 10px;border-radius:6px;}"
             "QPushButton:hover{background:#5f6368;}"
             "QComboBox{background:#3c4043;border:none;padding:3px 6px;border-radius:6px;}"
-        )
-
-        self._tick = QTimer(self); self._tick.setInterval(250)
+            "QCheckBox{spacing:4px;}")
+        self._tick = QTimer(self)
+        self._tick.setInterval(250)
         self._tick.timeout.connect(self._update_time)
-
         self.adjustSize()
         self._place()
 
     def _place(self) -> None:
-        """Панель ставится ВНЕ области (сверху, иначе снизу), чтобы не попасть в кадр."""
+        """Панель ставится ВНЕ области, чтобы не попасть в кадр."""
         self.adjustSize()
-        w = self.width(); h = self.height()
-        scr = QGuiApplication.screenAt(self.region.center()) or QGuiApplication.primaryScreen()
-        geo = scr.availableGeometry() if scr else QRect(0, 0, 1920, 1080)
+        w, h = self.width(), self.height()
+        screen = QGuiApplication.screenAt(self.region.center()) or QGuiApplication.primaryScreen()
+        geo = screen.availableGeometry() if screen else QRect(0, 0, 1920, 1080)
         x = self.region.center().x() - w // 2
         y = self.region.top() - h - 8
         if y < geo.top():
             y = self.region.bottom() + 8
-        x = max(geo.left(), min(x, geo.right() - w))
-        y = max(geo.top(), min(y, geo.bottom() - h))
-        self.move(x, y)
+        self.move(max(geo.left(), min(x, geo.right() - w)),
+                  max(geo.top(), min(y, geo.bottom() - h)))
 
-    # ── старт/стоп ────────────────────────────────────────────────────────────
+    def _open_audio_settings(self) -> None:
+        dialog = AudioSettingsDialog(self._devices, self, self._audio_inputs_override)
+        if dialog.exec() == QDialog.Accepted:
+            self._audio_inputs_override = dialog.selected_inputs()
+
+    def _build_segment_command(self, output: str) -> list[str]:
+        mode, device = self.audio_combo.currentData()
+        audio_inputs = self._audio_inputs_override
+        if self.window_hwnd:
+            return build_window_record_cmd(
+                output, self.window_hwnd, DEFAULT_FPS, mode, device,
+                audio_inputs=audio_inputs)
+        return build_record_cmd(
+            output, self.region, DEFAULT_FPS, mode, device,
+            audio_inputs=audio_inputs)
+
+    def _start_segment(self) -> bool:
+        if self.window_hwnd and not recordable_window_is_ready(self.window_hwnd):
+            QMessageBox.warning(self, "Окно недоступно",
+                                "Выбранное окно закрыто или свёрнуто. Разверни его и выбери заново.")
+            return False
+        segment = _rec_tmp_dir() / (
+            f"record_segment_{uuid.uuid4().hex}.mp4")
+        self._segment_path = str(segment)
+        cmd = self._build_segment_command(self._segment_path)
+        proc = QProcess(self)
+        if sys.platform.startswith("win"):
+            try:
+                proc.setCreateProcessArgumentsModifier(
+                    lambda args: setattr(args, "flags", args.flags | _CREATE_NO_WINDOW))
+            except Exception:
+                pass
+        proc.setProgram(cmd[0])
+        proc.setArguments(cmd[1:])
+        proc.finished.connect(self._on_proc_finished)
+        proc.errorOccurred.connect(self._on_proc_error)
+        self._proc = proc
+        log.info("REC segment start: %s", " ".join(cmd))
+        proc.start()
+        if not proc.waitForStarted(4000):
+            error = proc.errorString()
+            log.error("REC ffmpeg failed to start: %s", error)
+            proc.deleteLater()
+            self._proc = None
+            self._segment_path = None
+            QMessageBox.warning(self, "Ошибка", f"Не удалось запустить ffmpeg:\n{error}")
+            return False
+        self._recording = True
+        self._paused = False
+        self._segment_t0 = time.monotonic()
+        self._tick.start()
+        if self.input_overlay_check.isChecked() and not self.window_hwnd:
+            self._input_overlay = RecordingInputOverlay(self.region)
+            self._input_overlay.start()
+        self.pause_btn.setText("Ⅱ Пауза")
+        self.pause_btn.setEnabled(True)
+        self.audio_combo.setEnabled(False)
+        self.audio_settings_btn.setEnabled(False)
+        self.input_overlay_check.setEnabled(False)
+        if self._launcher is not None:
+            try:
+                self._launcher.set_recording_active(True, self)
+            except Exception:
+                pass
+        return True
+
     def _on_start(self) -> None:
-        ff = ffmpeg_path()
-        if not ff:
+        if not ffmpeg_path():
             QMessageBox.warning(self, "ffmpeg не найден",
                                 "Положи ffmpeg.exe в папку Data рядом с программой.")
             return
@@ -6766,61 +7962,32 @@ class RecordHUD(QWidget):
                 self, "Окно недоступно",
                 "Выбранное окно закрыто или свёрнуто. Разверни его и выбери заново.")
             return
-        mode, dev = self.audio_combo.currentData()
         stamp = time.strftime("%Y-%m-%d_%H-%M-%S")
-        self._out_path = str(_recordings_dir() / f"rec_{stamp}_{time.time_ns() % 1_000_000_000:09d}.mp4")
-        cmd = (build_window_record_cmd(self._out_path, self.window_hwnd,
-                                       DEFAULT_FPS, mode, dev)
-               if self.window_hwnd else
-               build_record_cmd(self._out_path, self.region, DEFAULT_FPS, mode, dev))
-
-        self._proc = QProcess(self)
-        if sys.platform.startswith("win"):
-            # прячем консоль ffmpeg
-            def _mod(args):
-                args.flags |= _CREATE_NO_WINDOW
-            try:
-                self._proc.setCreateProcessArgumentsModifier(_mod)
-            except Exception:
-                pass
-        self._proc.setProgram(cmd[0])
-        self._proc.setArguments(cmd[1:])
-        self._proc.finished.connect(self._on_proc_finished)
-        self._proc.errorOccurred.connect(self._on_proc_error)
-        log.info("REC start: %s", " ".join(cmd))
-        self._proc.start()
-        if not self._proc.waitForStarted(4000):
-            emsg = self._proc.errorString()
-            log.error("REC ffmpeg failed to start: %s", emsg)
-            QMessageBox.warning(self, "Ошибка", f"Не удалось запустить ffmpeg:\n{emsg}")
-            self._proc = None
+        self._out_path = str(_recordings_dir() /
+                             f"rec_{stamp}_{time.time_ns() % 1_000_000_000:09d}.mp4")
+        self._segment_paths = []
+        self._elapsed_total = 0.0
+        self._stop_requested = False
+        self._pause_requested = False
+        self._finalizing = False
+        if not self._start_segment():
+            self._out_path = None
             return
-        log.info("REC recording -> %s", self._out_path)
-
-        self._recording = True
-        self._t0 = time.monotonic()
-        self._tick.start()
-        self.audio_combo.setEnabled(False)
         self.start_btn.setText("■ Стоп")
         self.start_btn.clicked.disconnect()
         self.start_btn.clicked.connect(self._on_stop)
         self.start_btn.setStyleSheet("background:#a50e0e;")
-        if self._launcher is not None:
-            try:
-                self._launcher.set_recording_active(True, self)
-            except Exception:
-                pass
 
-    def _on_stop(self) -> None:
-        if not self._proc or not self._recording:
+    def _stop_overlay(self) -> None:
+        if self._input_overlay is not None:
+            overlay = self._input_overlay
+            self._input_overlay = None
+            overlay.stop()
+
+    def _request_segment_stop(self) -> None:
+        if self._proc is None or self._proc.state() == QProcess.NotRunning:
+            self._on_proc_finished(0, QProcess.NormalExit)
             return
-        self._recording = False
-        self._tick.stop()
-        self.start_btn.setEnabled(False)
-        self.start_btn.setText("…")
-        # Мягкая остановка: 'q' в stdin → ffmpeg дописывает moov-атом.
-        # Финализация АСИНХРОННО в _on_proc_finished: без вложенного
-        # waitForFinished, из-за которого self мог удаляться до emit.
         try:
             self._proc.write(b"q")
             self._proc.closeWriteChannel()
@@ -6831,66 +7998,213 @@ class RecordHUD(QWidget):
         self._kill_timer.timeout.connect(self._force_finish)
         self._kill_timer.start(7000)
 
+    def _toggle_pause(self) -> None:
+        if self._recording:
+            self._pause_requested = True
+            self._recording = False
+            self._elapsed_total += max(0.0, time.monotonic() - self._segment_t0)
+            self._tick.stop()
+            self.pause_btn.setEnabled(False)
+            self._stop_overlay()
+            self._request_segment_stop()
+            return
+        if self._paused and not self._done:
+            self._paused = False
+            if self._start_segment():
+                self.pause_btn.setText("Ⅱ Пауза")
+            else:
+                self._stop_requested = True
+                self._finalize_recording()
+
+    def _on_stop(self) -> None:
+        if self._done or self._finalizing:
+            return
+        self._stop_requested = True
+        if self._recording:
+            self._recording = False
+            self._elapsed_total += max(0.0, time.monotonic() - self._segment_t0)
+            self._tick.stop()
+            self.start_btn.setEnabled(False)
+            self.pause_btn.setEnabled(False)
+            self._stop_overlay()
+            self._request_segment_stop()
+        elif self._paused:
+            self._paused = False
+            self.start_btn.setEnabled(False)
+            self.pause_btn.setEnabled(False)
+            self._finalize_recording()
+
     def _force_finish(self) -> None:
-        # ffmpeg не завершился по 'q' за отведённое время — дожимаем
         if self._proc and self._proc.state() != QProcess.NotRunning:
             self._proc.kill()
 
     def _on_cancel(self) -> None:
         self._done = True
-        if self._proc and self._recording:
-            self._recording = False
-            self._tick.stop()
+        self._recording = False
+        self._tick.stop()
+        self._stop_overlay()
+        for proc in (self._proc, self._concat_proc):
+            if proc is not None and proc.state() != QProcess.NotRunning:
+                proc.kill()
+                proc.waitForFinished(2500)
+        paths = list(self._segment_paths)
+        if self._segment_path:
+            paths.append(self._segment_path)
+        if self._out_path:
+            paths.append(self._out_path)
+        if self._concat_list_path:
+            paths.append(self._concat_list_path)
+        for value in set(paths):
             try:
-                self._proc.write(b"q"); self._proc.closeWriteChannel()
-            except Exception:
-                pass
-            self._proc.waitForFinished(3000)
-            self._proc.kill()
-        if self._out_path and Path(self._out_path).exists():
-            try:
-                Path(self._out_path).unlink()
-            except Exception:
+                Path(value).unlink(missing_ok=True)
+            except OSError:
                 pass
         self.cancelled.emit()
         self.close()
 
     def _on_proc_finished(self, code, status) -> None:
+        kill_timer = getattr(self, "_kill_timer", None)
+        if kill_timer is not None:
+            kill_timer.stop()
+        proc = self._proc
+        if proc is not None:
+            try:
+                err_tail = bytes(proc.readAllStandardError()).decode("utf-8", "replace")
+            except Exception:
+                err_tail = ""
+            proc.deleteLater()
+        self._proc = None
+        segment = self._segment_path
+        self._segment_path = None
+        if segment and Path(segment).exists() and Path(segment).stat().st_size > 0:
+            self._segment_paths.append(segment)
+        elif segment:
+            log.warning("REC segment missing or empty: %s (code=%s)", segment, code)
+        if err_tail:
+            log.info("REC segment stderr tail:\n%s", err_tail[-1800:])
+        if self._done:
+            return
+        if self._pause_requested:
+            self._pause_requested = False
+            if self._stop_requested:
+                self._paused = False
+                self._finalize_recording()
+                return
+            self._paused = True
+            self.pause_btn.setText("▶ Продолжить")
+            self.pause_btn.setEnabled(True)
+            self.start_btn.setEnabled(True)
+            self._update_time()
+            return
+        if self._stop_requested:
+            self._finalize_recording()
+            return
+        # FFmpeg завершился самостоятельно — сохранить уже готовые сегменты.
+        if self._recording:
+            self._elapsed_total += max(0.0, time.monotonic() - self._segment_t0)
+        self._recording = False
+        self._tick.stop()
+        self._stop_requested = True
+        self._stop_overlay()
+        self._finalize_recording()
+
+    def _finalize_recording(self) -> None:
+        if self._finalizing or self._done:
+            return
+        self._finalizing = True
+        self._stop_overlay()
+        if not self._segment_paths or not self._out_path:
+            self._complete_recording(False, "FFmpeg не создал ни одного пригодного фрагмента.")
+            return
+        if len(self._segment_paths) == 1:
+            try:
+                shutil.move(self._segment_paths[0], self._out_path)
+                self._segment_paths.clear()
+                self._complete_recording(True)
+            except OSError as exc:
+                self._complete_recording(False, str(exc))
+            return
+        list_path = _rec_tmp_dir() / f"record_concat_{uuid.uuid4().hex}.txt"
+        self._concat_list_path = str(list_path)
+        try:
+            with open(list_path, "w", encoding="utf-8", newline="\n") as handle:
+                for segment in self._segment_paths:
+                    escaped = Path(segment).resolve().as_posix().replace("'", "'\\''")
+                    handle.write(f"file '{escaped}'\n")
+        except OSError as exc:
+            self._complete_recording(False, str(exc))
+            return
+        proc = QProcess(self)
+        if sys.platform.startswith("win"):
+            try:
+                proc.setCreateProcessArgumentsModifier(
+                    lambda args: setattr(args, "flags", args.flags | _CREATE_NO_WINDOW))
+            except Exception:
+                pass
+        cmd = [ffmpeg_path(), "-y", "-f", "concat", "-safe", "0",
+               "-i", self._concat_list_path, "-c", "copy",
+               "-movflags", "+faststart", self._out_path]
+        proc.setProgram(cmd[0])
+        proc.setArguments(cmd[1:])
+        proc.finished.connect(self._on_concat_finished)
+        proc.errorOccurred.connect(self._on_concat_error)
+        self._concat_proc = proc
+        log.info("REC concat: %s", " ".join(cmd))
+        proc.start()
+        if not proc.waitForStarted(4000):
+            self._complete_recording(False, proc.errorString())
+
+    def _on_concat_finished(self, code, status) -> None:
+        proc = self._concat_proc
+        err = ""
+        if proc is not None:
+            err = bytes(proc.readAllStandardError()).decode("utf-8", "replace")
+            proc.deleteLater()
+        self._concat_proc = None
+        if err:
+            log.info("REC concat stderr tail:\n%s", err[-1800:])
+        ok = (status == QProcess.NormalExit and code == 0 and self._out_path
+              and Path(self._out_path).exists() and Path(self._out_path).stat().st_size > 0)
+        self._complete_recording(bool(ok), "" if ok else "Не удалось объединить фрагменты FFmpeg.")
+
+    def _on_concat_error(self, error) -> None:
+        proc = self._concat_proc
+        if error == QProcess.FailedToStart and proc is not None:
+            self._complete_recording(False, proc.errorString())
+
+    def _complete_recording(self, success: bool, message: str = "") -> None:
         if self._done:
             return
         self._done = True
-        kt = getattr(self, "_kill_timer", None)
-        if kt is not None:
-            kt.stop()
-        try:
-            err_tail = ""
-            try:
-                err_tail = bytes(self._proc.readAllStandardError()).decode("utf-8", "replace")
-            except Exception:
-                pass
-            out = self._out_path
-            exists = bool(out and Path(out).exists())
-            size = Path(out).stat().st_size if exists else 0
-            log.info("REC finished: code=%s exists=%s size=%s path=%s", code, exists, size, out)
-            if err_tail:
-                log.info("REC ffmpeg stderr tail:\n%s", err_tail[-2000:])
-            if exists and size > 0:
-                self.finished.emit(out)   # emit ДО close
-            else:
-                QMessageBox.warning(
-                    None, "Запись не удалась",
-                    "ffmpeg не создал файл (код выхода " + str(code) + ").\n\n"
-                    "Последние строки ffmpeg:\n" + (err_tail[-1200:] or "(пусто)"))
-                self.cancelled.emit()
-        except Exception:
-            tb = traceback.format_exc()
-            log.error("REC post-finish handling failed:\n%s", tb)
-            try:
-                QMessageBox.critical(None, "Ошибка после записи", tb[-1500:])
-            except Exception:
-                pass
-        finally:
-            self.close()
+        self._finalizing = False
+        self._tick.stop()
+        self._stop_overlay()
+        if success and self._out_path and Path(self._out_path).exists():
+            for segment in self._segment_paths:
+                try:
+                    Path(segment).unlink(missing_ok=True)
+                except OSError:
+                    pass
+            self._segment_paths.clear()
+            if self._concat_list_path:
+                try:
+                    Path(self._concat_list_path).unlink(missing_ok=True)
+                except OSError:
+                    log.debug("Не удалось удалить список склейки записи", exc_info=True)
+            log.info("REC finished: path=%s size=%s", self._out_path,
+                     Path(self._out_path).stat().st_size)
+            self.finished.emit(self._out_path)
+        else:
+            log.error("REC finalization failed: %s", message)
+            if self._out_path:
+                try:
+                    Path(self._out_path).unlink(missing_ok=True)
+                except OSError:
+                    pass
+            QMessageBox.warning(None, "Запись не удалась",
+                                message or "Не удалось сохранить запись.")
+            self.cancelled.emit()
+        self.close()
 
     def _on_proc_error(self, err) -> None:
         try:
@@ -6900,10 +8214,14 @@ class RecordHUD(QWidget):
             log.error("ffmpeg QProcess error: %s", err)
 
     def _update_time(self) -> None:
-        s = int(time.monotonic() - self._t0)
-        self.time_lbl.setText(f"{s // 60:02d}:{s % 60:02d}")
+        elapsed = self._elapsed_total
+        if self._recording:
+            elapsed += max(0.0, time.monotonic() - self._segment_t0)
+        seconds = int(elapsed)
+        self.time_lbl.setText(f"{seconds // 60:02d}:{seconds % 60:02d}")
 
-    def closeEvent(self, e):
+    def closeEvent(self, event):
+        self._stop_overlay()
         try:
             if self._launcher is not None:
                 self._launcher.set_recording_active(False, None)
@@ -6911,8 +8229,7 @@ class RecordHUD(QWidget):
             pass
         if self in _active_huds:
             _active_huds.remove(self)
-        super().closeEvent(e)
-
+        super().closeEvent(event)
 
 # ── виджет рисования «замазок» поверх видео ──────────────────────────────────
 class _CensorOverlay(QWidget):
@@ -7125,6 +8442,10 @@ class VideoEditorWindow(QMainWindow):
         self.saveas_btn.setToolTip("Применить правки и сохранить видео в файл")
         self.saveas_btn.clicked.connect(self._save_as)
         row3.addWidget(self.saveas_btn)
+        self.gif_btn = QPushButton("Экспорт GIF…", self)
+        self.gif_btn.setToolTip("Создать GIF из выбранного фрагмента (до 30 секунд).")
+        self.gif_btn.clicked.connect(self._save_gif_as)
+        row3.addWidget(self.gif_btn)
         v.addLayout(row3)
 
         self._refresh_trim_label()
@@ -7406,10 +8727,17 @@ class VideoEditorWindow(QMainWindow):
     def _save_as(self):
         folder = QStandardPaths.writableLocation(QStandardPaths.MoviesLocation) or str(Path.home())
         default = str(Path(folder) / f"Recording_{time.strftime('%Y-%m-%d_%H-%M-%S')}.mp4")
-        path, _ = QFileDialog.getSaveFileName(self, "Сохранить видео", default,
-                                              "MP4 (*.mp4)")
+        path, selected_filter = QFileDialog.getSaveFileName(
+            self, "Сохранить запись", default, "MP4 (*.mp4);;GIF (*.gif)")
         if not path:
             return
+        if path.casefold().endswith(".gif") or "GIF" in selected_filter:
+            if not path.casefold().endswith(".gif"):
+                path += ".gif"
+            self._export_gif(path)
+            return
+        if not path.casefold().endswith(".mp4"):
+            path += ".mp4"
         if self._has_edits():
             self._export(dst=path, after=lambda p: self.statusBar().showMessage(
                 f"Сохранено: {p}", 5000))
@@ -7419,6 +8747,96 @@ class VideoEditorWindow(QMainWindow):
                 self.statusBar().showMessage(f"Сохранено: {path}", 5000)
             except Exception as ex:
                 QMessageBox.warning(self, "Ошибка", str(ex))
+
+    def _save_gif_as(self) -> None:
+        folder = QStandardPaths.writableLocation(QStandardPaths.MoviesLocation) or str(Path.home())
+        default = str(Path(folder) / f"Recording_{time.strftime('%Y-%m-%d_%H-%M-%S')}.gif")
+        path, _ = QFileDialog.getSaveFileName(self, "Экспорт GIF", default, "GIF (*.gif)")
+        if path:
+            if not path.casefold().endswith(".gif"):
+                path += ".gif"
+            self._export_gif(path)
+
+    def _export_gif(self, destination: str) -> None:
+        t_in = self._in_ms / 1000.0
+        t_out = (self._out_ms if self._out_ms > 0 else self._duration_ms) / 1000.0
+        if t_out - t_in > 30.0:
+            QMessageBox.information(
+                self, "Экспорт GIF",
+                "Для сохранения небольшого GIF выберите фрагмент продолжительностью до 30 секунд.")
+            return
+        if self._has_edits():
+            temporary = str(_rec_tmp_dir() / f"gif_source_{uuid.uuid4().hex}.mp4")
+            self._export(dst=temporary,
+                         after=lambda prepared: self._convert_to_gif(
+                             prepared, destination, 0.0, t_out - t_in,
+                             cleanup_source=temporary))
+        else:
+            self._convert_to_gif(self.src, destination, t_in, t_out)
+
+    def _convert_to_gif(self, source: str, destination: str,
+                        t_in: float, t_out: float,
+                        cleanup_source: Optional[str] = None) -> None:
+        ff = ffmpeg_path()
+        if not ff:
+            if cleanup_source:
+                Path(cleanup_source).unlink(missing_ok=True)
+            QMessageBox.warning(self, "Экспорт GIF", "ffmpeg.exe не найден.")
+            return
+        cmd = build_gif_export_cmd(source, destination, t_in, t_out)
+        for button in (getattr(self, "copy_btn", None),
+                       getattr(self, "saveas_btn", None),
+                       getattr(self, "gif_btn", None)):
+            if button is not None:
+                button.setEnabled(False)
+        self.statusBar().showMessage("Создание GIF…")
+        proc = QProcess(self)
+        if sys.platform.startswith("win"):
+            try:
+                proc.setCreateProcessArgumentsModifier(
+                    lambda args: setattr(args, "flags", args.flags | _CREATE_NO_WINDOW))
+            except Exception:
+                pass
+        proc.setProgram(cmd[0])
+        proc.setArguments(cmd[1:])
+
+        def finished(code, status):
+            for button in (getattr(self, "copy_btn", None),
+                           getattr(self, "saveas_btn", None),
+                           getattr(self, "gif_btn", None)):
+                if button is not None:
+                    button.setEnabled(True)
+            ok = (status == QProcess.NormalExit and code == 0
+                  and Path(destination).exists() and Path(destination).stat().st_size > 0)
+            if cleanup_source:
+                try:
+                    Path(cleanup_source).unlink(missing_ok=True)
+                except OSError:
+                    pass
+            if ok:
+                self.statusBar().showMessage(f"GIF сохранён: {destination}", 6000)
+            else:
+                err = bytes(proc.readAllStandardError()).decode("utf-8", "replace")
+                log.error("GIF export failed:\n%s", err[-2000:])
+                QMessageBox.warning(self, "Экспорт GIF",
+                                    "Не удалось создать GIF. Подробности записаны в лог.")
+
+        def failed(error):
+            if error != QProcess.FailedToStart:
+                return
+            for button in (getattr(self, "copy_btn", None),
+                           getattr(self, "saveas_btn", None),
+                           getattr(self, "gif_btn", None)):
+                if button is not None:
+                    button.setEnabled(True)
+            if cleanup_source:
+                Path(cleanup_source).unlink(missing_ok=True)
+            QMessageBox.warning(self, "Экспорт GIF", proc.errorString())
+
+        proc.finished.connect(finished)
+        proc.errorOccurred.connect(failed)
+        self._gif_export_proc = proc
+        proc.start()
 
     def _export(self, dst: Optional[str] = None, after: Optional[Callable[[str], None]] = None):
         if isinstance(dst, bool):   # сигнал clicked шлёт checked(bool) — игнорируем
@@ -7436,7 +8854,8 @@ class VideoEditorWindow(QMainWindow):
         cmd = build_export_cmd(self.src, dst, t_in, t_out, censors,
                                self._overlay_png, (self._native_w, self._native_h))
 
-        for _b in (getattr(self, "copy_btn", None), getattr(self, "saveas_btn", None)):
+        for _b in (getattr(self, "copy_btn", None), getattr(self, "saveas_btn", None),
+                   getattr(self, "gif_btn", None)):
             if _b is not None:
                 _b.setEnabled(False)
         self.statusBar().showMessage("Обработка видео (ffmpeg)…")
@@ -7451,7 +8870,8 @@ class VideoEditorWindow(QMainWindow):
         proc.setProgram(cmd[0]); proc.setArguments(cmd[1:])
 
         def done(code, status):
-            for _b in (getattr(self, "copy_btn", None), getattr(self, "saveas_btn", None)):
+            for _b in (getattr(self, "copy_btn", None), getattr(self, "saveas_btn", None),
+                       getattr(self, "gif_btn", None)):
                 if _b is not None:
                     _b.setEnabled(True)
             # Код выхода проверяем обязательно: при сохранении поверх старого
@@ -7473,7 +8893,8 @@ class VideoEditorWindow(QMainWindow):
             # finished не приходит, если ffmpeg не запустился, — кнопки остались бы серыми.
             if err != QProcess.FailedToStart:
                 return
-            for _b in (getattr(self, "copy_btn", None), getattr(self, "saveas_btn", None)):
+            for _b in (getattr(self, "copy_btn", None), getattr(self, "saveas_btn", None),
+                       getattr(self, "gif_btn", None)):
                 if _b is not None:
                     _b.setEnabled(True)
             log.error("export: ffmpeg failed to start: %s", proc.errorString())

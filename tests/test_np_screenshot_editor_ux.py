@@ -242,7 +242,30 @@ class EditorToolbarTests(unittest.TestCase):
         self.assertIn("✎ Перо", names)
         self.assertIn("➤ Стрелка", names)
         self.assertIn("🅣 Текст", names)
+        self.assertIn("◉ Затемнение вокруг", names)
+        self.assertIn("💬 Выноска", names)
+        self.assertIn("📏 Линейка", names)
         self.assertIn("💾 Сохранить", names)
+
+    def test_spotlight_ruler_and_callout_draw_into_overlay_layer(self):
+        image = QImage(120, 90, QImage.Format_ARGB32)
+        image.fill(QColor("#ffffff"))
+        overlay = QImage(image.size(), QImage.Format_ARGB32)
+        overlay.fill(Qt.transparent)
+        painter = shot.QPainter(overlay)
+        shot.draw_spotlight(painter, shot.QRect(30, 20, 50, 35), image.size())
+        painter.end()
+        self.assertGreater(overlay.pixelColor(5, 5).alpha(), 0)
+        self.assertEqual(overlay.pixelColor(40, 30).alpha(), 0)
+
+        painter = shot.QPainter(overlay)
+        shot.draw_ruler(painter, QPoint(5, 70), QPoint(100, 70),
+                        QColor("#ff0000"), 2)
+        shot.draw_callout(painter, shot.QRect(10, 5, 70, 25),
+                          "Пояснение", QColor("#333333"))
+        painter.end()
+        self.assertGreater(overlay.pixelColor(50, 70).alpha(), 0)
+        self.assertGreater(overlay.pixelColor(20, 10).alpha(), 0)
 
     def test_real_keyboard_shortcuts_move_selected_object(self):
         rect = shot.ResizableRectItem(

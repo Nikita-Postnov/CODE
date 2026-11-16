@@ -58,6 +58,30 @@ class WindowRecordModelTests(unittest.TestCase):
         self.assertEqual(cmd[cmd.index("-map", cmd.index("-map") + 1) + 1], "1:a")
         self.assertIn("aac", cmd)
 
+    def test_recording_mixes_system_and_microphone_with_separate_gains(self):
+        with patch.object(shot, "ffmpeg_path", return_value="ffmpeg.exe"), \
+             patch.object(shot, "_physical_rect", return_value=(0, 0, 640, 480)):
+            cmd = shot.build_record_cmd(
+                "mixed.mp4", QRect(0, 0, 640, 480), 30, "none", None,
+                audio_inputs=[("Speakers", 0.75), ("Microphone", 1.25)])
+        self.assertIn("audio=Speakers", cmd)
+        self.assertIn("audio=Microphone", cmd)
+        graph = cmd[cmd.index("-filter_complex") + 1]
+        self.assertIn("volume=0.750", graph)
+        self.assertIn("volume=1.250", graph)
+        self.assertIn("amix=inputs=2", graph)
+        self.assertIn("[aout]", graph)
+
+    def test_gif_export_uses_palette_and_trim_range(self):
+        with patch.object(shot, "ffmpeg_path", return_value="ffmpeg.exe"):
+            cmd = shot.build_gif_export_cmd("source.mp4", "out.gif", 2.5, 7.5)
+        self.assertEqual(cmd[cmd.index("-ss") + 1], "2.500")
+        self.assertEqual(cmd[cmd.index("-t") + 1], "5.000")
+        self.assertIn("palettegen", cmd[cmd.index("-filter_complex") + 1])
+        self.assertIn("paletteuse", cmd[cmd.index("-filter_complex") + 1])
+        self.assertEqual(cmd[-1], "out.gif")
+        self.assertIn("-loop", cmd)
+
     def test_refuse_invalid_hwnd_and_non_windows_platform(self):
         with patch.object(shot.sys, "platform", "win32"):
             for handle in (0, -1, "not-a-window", None):
@@ -166,6 +190,28 @@ class WindowRecordGuiTests(unittest.TestCase):
         finally:
             launcher._real_quit = True
             launcher.close()
+
+    def test_audio_settings_keep_system_and_microphone_levels_independent(self):
+        with patch.object(shot, "guess_system_audio", return_value="Speakers"):
+            dialog = shot.AudioSettingsDialog(["Speakers", "Microphone"])
+        self.addCleanup(dialog.close)
+        dialog.system_check.setChecked(True)
+        dialog.mic_check.setChecked(True)
+        dialog.system_gain.setValue(75)
+        dialog.mic_gain.setValue(130)
+        selected = dialog.selected_inputs()
+        self.assertEqual(selected, [("Speakers", 0.75), ("Microphone", 1.3)])
+
+    def test_record_hud_exposes_pause_and_optional_input_overlay(self):
+        with patch.object(shot, "list_dshow_audio", return_value=[]):
+            hud = shot.RecordHUD(QRect(100, 100, 320, 240))
+        try:
+            self.assertEqual(hud.pause_btn.text(), "Ⅱ Пауза")
+            self.assertFalse(hud.pause_btn.isEnabled())
+            self.assertFalse(hud.input_overlay_check.isChecked())
+            self.assertTrue(hud.audio_settings_btn.isEnabled())
+        finally:
+            hud.close()
 
     def test_window_is_closed_before_start_prevents_recording(self):
         with patch.object(shot, "list_dshow_audio", return_value=[]), \

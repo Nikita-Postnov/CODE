@@ -77,7 +77,7 @@ class CaptureChoicesGuiTests(unittest.TestCase):
             keys = [key for key, _ in buttons]
             self.assertEqual(keys, [
                 "kind:shot", "kind:record", "kind:ocr",
-                "target:area", "target:window",
+                "target:area", "target:window", "ratio",
             ])
             self.assertTrue(bar.width() > 0)
             self.assertEqual(overlay.capture_kind(), "shot")
@@ -87,6 +87,9 @@ class CaptureChoicesGuiTests(unittest.TestCase):
             positions = {key: rect for key, rect in buttons}
             self.assertLess(positions["target:area"].right(),
                             positions["target:window"].left())
+            self.assertLess(positions["target:window"].right(), positions["ratio"].left())
+            self.assertTrue(overlay.capture_button_enabled("ratio"))
+            self.assertIn("Свободно", overlay.bar_label("ratio"))
             self.assertEqual(
                 pane._bar_hit(positions["target:area"].center()), "target:area")
             self.assertEqual(
@@ -112,6 +115,32 @@ class CaptureChoicesGuiTests(unittest.TestCase):
                 self.assertEqual(overlay.mode, "ocr_window")
                 overlay.choose_bar_button("kind:shot")
                 self.assertEqual(overlay.mode, "window")
+        finally:
+            overlay.dispose()
+
+    def test_ratio_button_cycles_fixed_aspect_ratios_and_selection_snaps_to_windows(self):
+        overlay = self.make_overlay()
+        try:
+            overlay.choose_bar_button("ratio")
+            self.assertAlmostEqual(overlay.aspect_ratio, 16 / 9)
+            overlay.choose_bar_button("ratio")
+            self.assertAlmostEqual(overlay.aspect_ratio, 4 / 3)
+            overlay.choose_bar_button("ratio")
+            self.assertEqual(overlay.aspect_ratio, 1.0)
+            overlay.choose_bar_button("ratio")
+            self.assertIsNone(overlay.aspect_ratio)
+
+            overlay._windows = [shot.CapturableWindow(
+                "Окно", QRect(100, 100, 400, 300), 123)]
+            overlay._origin_g = QPoint(10, 10)
+            overlay._on_move(QPoint(96, 97))
+            self.assertEqual(overlay._current_g, QPoint(100, 100))
+
+            overlay.aspect_ratio = 1.0
+            overlay._origin_g = QPoint(10, 10)
+            overlay._on_move(QPoint(70, 90))
+            self.assertEqual(abs(overlay._current_g.x() - 10),
+                             abs(overlay._current_g.y() - 10))
         finally:
             overlay.dispose()
 

@@ -121,6 +121,38 @@ class HistoryStorageTests(unittest.TestCase):
         self.assertEqual(QImage(str(second)).pixelColor(0, 0).name(), "#11ccbb")
         self.assertTrue(first.exists())
 
+    def test_history_metadata_round_trip_and_ocr_search(self):
+        path = shot.archive_screenshot(sample_image(), kind="scroll", project="NPCore")
+        self.assertIsNotNone(path)
+        self.assertTrue(shot.update_history_metadata(
+            path, favorite=True, tags=["ошибка", "инструкция"],
+            category="Тестирование", ocr_text="Номер заказа 96121209"))
+        metadata = shot.load_history_metadata(path)
+        self.assertTrue(metadata["favorite"])
+        self.assertEqual(metadata["kind"], "scroll")
+        self.assertEqual(metadata["project"], "NPCore")
+        self.assertIn("ошибка", metadata["tags"])
+        self.assertIn("96121209", metadata["ocr_text"])
+
+    def test_ocr_paragraphs_and_table_layout_are_preserved(self):
+        payload = {"lines": [
+            {"text": "Наименование Количество", "y": 0, "height": 10,
+             "words": [{"text": "Наименование", "x": 0, "height": 10},
+                       {"text": "Количество", "x": 220, "height": 10}]},
+            {"text": "Шампунь 4", "y": 12, "height": 10,
+             "words": [{"text": "Шампунь", "x": 0, "height": 10},
+                       {"text": "4", "x": 220, "height": 10}]},
+            {"text": "Итого 4", "y": 42, "height": 10,
+             "words": [{"text": "Итого", "x": 0, "height": 10},
+                       {"text": "4", "x": 220, "height": 10}]},
+        ]}
+        paragraphs = shot.format_ocr_paragraphs(payload)
+        self.assertIn("Наименование Количество\nШампунь 4", paragraphs)
+        self.assertIn("\n\nИтого 4", paragraphs)
+        table = shot.ocr_layout_to_markdown_table(payload)
+        self.assertIn("| Наименование | Количество |", table)
+        self.assertIn("| Шампунь | 4 |", table)
+
     def test_failed_archive_does_not_leave_partial_image(self):
         with patch.object(shot, "save_image_atomically", return_value=False):
             self.assertIsNone(shot.archive_screenshot(sample_image()))
@@ -146,7 +178,8 @@ class HistoryGuiTests(unittest.TestCase):
         launcher = Mock()
         dialog = shot.ScreenshotHistoryDialog(launcher)
         self.addCleanup(dialog.close)
-        self.assertEqual(dialog.items.count(), 1)
+        self.assertEqual(sum(dialog.items.item(i).data(shot.Qt.UserRole) is not None
+                             for i in range(dialog.items.count())), 1)
         dialog.open_selected()
         launcher._open_editor_image.assert_called_once()
         self.assertEqual(launcher._open_editor_image.call_args.args[0].size(), image.size())
@@ -159,6 +192,27 @@ class HistoryGuiTests(unittest.TestCase):
             dialog.delete_selected()
         self.assertFalse(path.exists())
         self.assertEqual(dialog.items.count(), 0)
+
+    def test_history_dialog_filters_by_type_favorite_and_ocr_text(self):
+        path = shot.archive_screenshot(sample_image(), kind="scroll", project="NPCore")
+        shot.update_history_metadata(path, favorite=True, ocr_text="Счёт-фактура")
+        dialog = shot.ScreenshotHistoryDialog(Mock())
+        self.addCleanup(dialog.close)
+        dialog.search_input.setText("счёт")
+        paths = [dialog.items.item(i).data(shot.Qt.UserRole)
+                 for i in range(dialog.items.count())
+                 if dialog.items.item(i).data(shot.Qt.UserRole)]
+        self.assertEqual(paths, [str(path)])
+        dialog.type_filter.setCurrentIndex(dialog.type_filter.findData("shot"))
+        self.assertEqual(dialog.items.count(), 0)
+        dialog.type_filter.setCurrentIndex(dialog.type_filter.findData("scroll"))
+        dialog.favorites_only.setChecked(True)
+        paths = [dialog.items.item(i).data(shot.Qt.UserRole)
+                 for i in range(dialog.items.count())
+                 if dialog.items.item(i).data(shot.Qt.UserRole)]
+        self.assertEqual(paths, [str(path)])
+        dialog.group_filter.setCurrentIndex(dialog.group_filter.findData("project"))
+        self.assertIn("NPCore", dialog.items.item(0).text())
 
     def test_rejects_history_path_outside_capture_directory(self):
         path = shot.archive_screenshot(sample_image())
