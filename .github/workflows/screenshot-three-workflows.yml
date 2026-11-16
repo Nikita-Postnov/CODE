@@ -5,6 +5,9 @@ on:
     branches:
       - feature/screenshot-scroll-pin-compare-20261116
   workflow_dispatch:
+  pull_request:
+    branches:
+      - main
 
 jobs:
   screenshot-windows:
