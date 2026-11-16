@@ -192,14 +192,53 @@ class ScreenshotThreeWorkflowsTests(unittest.TestCase):
             job._take_next_frame()
             grab.assert_not_called()
 
-    def test_native_scrollbar_end_of_page_is_identified(self):
+    def test_native_scrollbar_at_end_does_not_stop_before_first_scroll(self):
         job, frame = self._job_with_first_frame()
-        job._last_scroll_state = (90, 100)
+        with patch("screenshot._windows_scroll_state", return_value=(100, 100)), \
+             patch("screenshot.ctypes.windll", create=True) as windll, \
+             patch("screenshot.QTimer.singleShot"):
+            job._advance()
+        self.assertIsNone(job.finish_reason)
+        windll.user32.mouse_event.assert_called_once()
+
+    def test_false_native_scrollbar_end_does_not_stop_after_first_frame(self):
+        job, frame = self._job_with_first_frame()
+        next_frame = frame.copy()
+        next_frame.fill(QColor("blue"))
+        with patch("screenshot.grab_region_highdpi", return_value=next_frame), \
+             patch("screenshot._scroll_body_unchanged", return_value=False), \
+             patch("screenshot._scroll_overlap", return_value=60), \
+             patch("screenshot._windows_scroll_state", return_value=(100, 100)), \
+             patch.object(job, "_advance") as advance:
+            job._take_next_frame()
+        self.assertIsNone(job.finish_reason)
+        self.assertEqual(job.steps, [60])
+        advance.assert_called_once()
+
+    def test_first_still_frame_retries_instead_of_finishing(self):
+        job, frame = self._job_with_first_frame()
+        job._last_scroll_state = (100, 100)
+        with patch("screenshot.grab_region_highdpi", return_value=frame.copy()), \
+             patch("screenshot._scroll_body_unchanged", return_value=True), \
+             patch("screenshot._windows_scroll_state", return_value=(100, 100)), \
+             patch.object(job, "_advance") as advance:
+            job._take_next_frame()
+        self.assertIsNone(job.finish_reason)
+        self.assertEqual(job._idle_retries, 1)
+        advance.assert_called_once()
+
+    def test_real_end_requires_three_still_frames_after_movement(self):
+        job, frame = self._job_with_first_frame()
+        job._ever_scrolled = True
         output = []
         job.completed.connect(lambda img, msg: output.append(msg))
         with patch("screenshot.grab_region_highdpi", return_value=frame.copy()), \
              patch("screenshot._scroll_body_unchanged", return_value=True), \
-             patch("screenshot._windows_scroll_state", return_value=(100, 100)):
+             patch("screenshot._windows_scroll_state", return_value=None), \
+             patch.object(job, "_advance"):
+            for _ in range(2):
+                job._take_next_frame()
+                self.assertIsNone(job.finish_reason)
             job._take_next_frame()
         self.assertEqual(job.finish_reason, "end")
         self.assertIn("конец", output[0])
@@ -209,16 +248,20 @@ class ScreenshotThreeWorkflowsTests(unittest.TestCase):
         job._last_scroll_state = (20, 100)
         with patch("screenshot.grab_region_highdpi", return_value=frame.copy()), \
              patch("screenshot._scroll_body_unchanged", return_value=True), \
-             patch("screenshot._windows_scroll_state", return_value=(20, 100)):
-            job._take_next_frame()
+             patch("screenshot._windows_scroll_state", return_value=(20, 100)), \
+             patch.object(job, "_advance"):
+            for _ in range(3):
+                job._take_next_frame()
         self.assertEqual(job.finish_reason, "no_movement")
 
     def test_missing_native_scrollbar_uses_visual_no_change_signal(self):
         job, frame = self._job_with_first_frame()
         with patch("screenshot.grab_region_highdpi", return_value=frame.copy()), \
              patch("screenshot._scroll_body_unchanged", return_value=True), \
-             patch("screenshot._windows_scroll_state", return_value=None):
-            job._take_next_frame()
+             patch("screenshot._windows_scroll_state", return_value=None), \
+             patch.object(job, "_advance"):
+            for _ in range(3):
+                job._take_next_frame()
         self.assertEqual(job.finish_reason, "no_movement")
 
     def test_alignment_error_does_not_append_corrupt_frame(self):
@@ -228,26 +271,30 @@ class ScreenshotThreeWorkflowsTests(unittest.TestCase):
         with patch("screenshot.grab_region_highdpi", return_value=frame.copy()), \
              patch("screenshot._scroll_body_unchanged", return_value=False), \
              patch("screenshot._scroll_overlap", return_value=0), \
-             patch("screenshot._windows_scroll_state", return_value=None):
+             patch("screenshot._windows_scroll_state", return_value=None), \
+             patch.object(job, "_advance"):
+            job._take_next_frame()
+            self.assertIsNone(job.finish_reason)
             job._take_next_frame()
         self.assertEqual(job.finish_reason, "alignment")
         self.assertEqual(len(job.frames), 1)
         self.assertEqual(result[0].height(), 200)
 
-    def test_native_end_after_confirmed_frame_preserves_new_rows(self):
+    def test_scroll_after_idle_retry_resets_idle_counter(self):
         job, frame = self._job_with_first_frame()
-        second = frame.copy()
-        second.fill(QColor("#554433"))
-        results = []
-        job.completed.connect(lambda img, msg: results.append(img))
-        with patch("screenshot.grab_region_highdpi", return_value=second), \
+        job._idle_retries = 2
+        changed = frame.copy()
+        changed.fill(QColor("#665544"))
+        with patch("screenshot.grab_region_highdpi", return_value=changed), \
              patch("screenshot._scroll_body_unchanged", return_value=False), \
-             patch("screenshot._scroll_overlap", return_value=60), \
-             patch("screenshot._windows_scroll_state", return_value=(100, 100)):
+             patch("screenshot._scroll_overlap", return_value=44), \
+             patch("screenshot._windows_scroll_state", return_value=None), \
+             patch.object(job, "_advance"):
             job._take_next_frame()
-        self.assertEqual(job.finish_reason, "end")
-        self.assertEqual(len(job.steps), 1)
-        self.assertEqual(results[0].height(), 260)
+        self.assertEqual(job._idle_retries, 0)
+        self.assertTrue(job._ever_scrolled)
+        self.assertIsNone(job.finish_reason)
+        self.assertEqual(job.steps, [44])
 
     def test_stitch_keeps_only_new_bottom_rows(self):
         first = QImage(40, 100, QImage.Format_RGB32)
