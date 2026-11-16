@@ -14,13 +14,17 @@ from unittest.mock import patch
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QRect, QPoint
 from PySide6.QtGui import QColor, QImage, QPainter, QFont
 from PySide6.QtWidgets import QApplication, QLabel, QScrollArea, QPushButton
 
 from screenshot import (
     PinnedScreenshotWindow,
     Launcher,
+    ScrollingCapturePanel,
+    ScrollingScreenshotJob,
+    _scroll_body_unchanged,
+    _windows_scroll_state,
     _scroll_overlap,
     _stitch_scroll_frames,
     compare_screenshot_images,
@@ -133,6 +137,117 @@ class ScreenshotThreeWorkflowsTests(unittest.TestCase):
         first.fill(Qt.white)
         second.fill(Qt.white)
         self.assertEqual(_scroll_overlap(first, second), 0)
+
+    def test_body_unchanged_detects_stopped_scroll(self):
+        before = QImage(430, 600, QImage.Format_RGB32)
+        before.fill(Qt.white)
+        self.assertTrue(_scroll_body_unchanged(before, before.copy()))
+
+        after = before.copy()
+        painter = QPainter(after)
+        painter.fillRect(45, 140, 300, 310, QColor("#293d66"))
+        painter.end()
+        self.assertFalse(_scroll_body_unchanged(before, after))
+
+    def test_scrollbar_probe_returns_none_on_unsupported_platform(self):
+        with patch("screenshot.sys.platform", "linux"):
+            self.assertIsNone(_windows_scroll_state(QPoint(20, 20)))
+
+    def test_scroll_panel_progress_and_finish_button(self):
+        panel = ScrollingCapturePanel(24)
+        called = []
+        panel.finish_requested.connect(lambda: called.append(True))
+        try:
+            panel.set_progress(7, 24)
+            panel.set_status("Прокрутка проверена")
+            self.assertEqual(panel.counter.text(), "Прокруток: 7 из 24")
+            self.assertEqual(panel.status.text(), "Прокрутка проверена")
+            panel.findChild(QPushButton, "scroll_capture_finish").click()
+            self.assertEqual(called, [True])
+        finally:
+            panel.close_silently()
+
+    @staticmethod
+    def _job_with_first_frame():
+        job = ScrollingScreenshotJob(QRect(0, 0, 200, 200))
+        frame = QImage(200, 200, QImage.Format_RGB32)
+        frame.fill(QColor("white"))
+        job.frames.append(frame)
+        return job, frame
+
+    def test_manual_finish_keeps_confirmed_frames_and_blocks_next_capture(self):
+        job, frame = self._job_with_first_frame()
+        second = frame.copy()
+        second.fill(QColor("blue"))
+        job.frames.append(second)
+        job.steps.append(35)
+        results = []
+        job.completed.connect(lambda img, msg: results.append((img, msg)))
+        job.stop()
+        job.stop()
+        self.assertEqual(job.finish_reason, "manual")
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0][0].height(), 235)
+        with patch("screenshot.grab_region_highdpi") as grab:
+            job._take_next_frame()
+            grab.assert_not_called()
+
+    def test_native_scrollbar_end_of_page_is_identified(self):
+        job, frame = self._job_with_first_frame()
+        job._last_scroll_state = (90, 100)
+        output = []
+        job.completed.connect(lambda img, msg: output.append(msg))
+        with patch("screenshot.grab_region_highdpi", return_value=frame.copy()), \
+             patch("screenshot._scroll_body_unchanged", return_value=True), \
+             patch("screenshot._windows_scroll_state", return_value=(100, 100)):
+            job._take_next_frame()
+        self.assertEqual(job.finish_reason, "end")
+        self.assertIn("конец", output[0])
+
+    def test_no_movement_is_distinct_from_end_of_page(self):
+        job, frame = self._job_with_first_frame()
+        job._last_scroll_state = (20, 100)
+        with patch("screenshot.grab_region_highdpi", return_value=frame.copy()), \
+             patch("screenshot._scroll_body_unchanged", return_value=True), \
+             patch("screenshot._windows_scroll_state", return_value=(20, 100)):
+            job._take_next_frame()
+        self.assertEqual(job.finish_reason, "no_movement")
+
+    def test_missing_native_scrollbar_uses_visual_no_change_signal(self):
+        job, frame = self._job_with_first_frame()
+        with patch("screenshot.grab_region_highdpi", return_value=frame.copy()), \
+             patch("screenshot._scroll_body_unchanged", return_value=True), \
+             patch("screenshot._windows_scroll_state", return_value=None):
+            job._take_next_frame()
+        self.assertEqual(job.finish_reason, "no_movement")
+
+    def test_alignment_error_does_not_append_corrupt_frame(self):
+        job, frame = self._job_with_first_frame()
+        result = []
+        job.completed.connect(lambda img, msg: result.append(img))
+        with patch("screenshot.grab_region_highdpi", return_value=frame.copy()), \
+             patch("screenshot._scroll_body_unchanged", return_value=False), \
+             patch("screenshot._scroll_overlap", return_value=0), \
+             patch("screenshot._windows_scroll_state", return_value=None):
+            job._take_next_frame()
+        self.assertEqual(job.finish_reason, "alignment")
+        self.assertEqual(len(job.frames), 1)
+        self.assertEqual(result[0].height(), 200)
+
+    def test_native_end_after_confirmed_frame_preserves_new_rows(self):
+        job, frame = self._job_with_first_frame()
+        second = frame.copy()
+        second.fill(QColor("#554433"))
+        results = []
+        job.completed.connect(lambda img, msg: results.append(img))
+        with patch("screenshot.grab_region_highdpi", return_value=second), \
+             patch("screenshot._scroll_body_unchanged", return_value=False), \
+             patch("screenshot._scroll_overlap", return_value=60), \
+             patch("screenshot._windows_scroll_state", return_value=(100, 100)):
+            job._take_next_frame()
+        self.assertEqual(job.finish_reason, "end")
+        self.assertEqual(len(job.steps), 1)
+        self.assertEqual(results[0].height(), 260)
 
     def test_stitch_keeps_only_new_bottom_rows(self):
         first = QImage(40, 100, QImage.Format_RGB32)
