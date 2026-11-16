@@ -7971,6 +7971,7 @@ class RecordHUD(QWidget):
             self._request_segment_stop()
         elif self._paused:
             self._paused = False
+            self.start_btn.setEnabled(False)
             self.pause_btn.setEnabled(False)
             self._finalize_recording()
 
@@ -8026,6 +8027,10 @@ class RecordHUD(QWidget):
             return
         if self._pause_requested:
             self._pause_requested = False
+            if self._stop_requested:
+                self._paused = False
+                self._finalize_recording()
+                return
             self._paused = True
             self.pause_btn.setText("▶ Продолжить")
             self.pause_btn.setEnabled(True)
@@ -8036,6 +8041,8 @@ class RecordHUD(QWidget):
             self._finalize_recording()
             return
         # FFmpeg завершился самостоятельно — сохранить уже готовые сегменты.
+        if self._recording:
+            self._elapsed_total += max(0.0, time.monotonic() - self._segment_t0)
         self._recording = False
         self._tick.stop()
         self._stop_requested = True
@@ -8121,7 +8128,10 @@ class RecordHUD(QWidget):
                     pass
             self._segment_paths.clear()
             if self._concat_list_path:
-                Path(self._concat_list_path).unlink(missing_ok=True)
+                try:
+                    Path(self._concat_list_path).unlink(missing_ok=True)
+                except OSError:
+                    log.debug("Не удалось удалить список склейки записи", exc_info=True)
             log.info("REC finished: path=%s size=%s", self._out_path,
                      Path(self._out_path).stat().st_size)
             self.finished.emit(self._out_path)
@@ -8710,6 +8720,8 @@ class VideoEditorWindow(QMainWindow):
                         cleanup_source: Optional[str] = None) -> None:
         ff = ffmpeg_path()
         if not ff:
+            if cleanup_source:
+                Path(cleanup_source).unlink(missing_ok=True)
             QMessageBox.warning(self, "Экспорт GIF", "ffmpeg.exe не найден.")
             return
         cmd = build_gif_export_cmd(source, destination, t_in, t_out)
