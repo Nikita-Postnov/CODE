@@ -6580,6 +6580,7 @@ class Launcher(QMainWindow):
         info = QLabel(
             "Горячие клавиши: PrintScreen — выбор действия и объекта; "
             "Shift+PrintScreen — OCR в буфер обмена. "
+            "Инструменты: перо, маркер, стрелка, текст, блюр, пиксели, выноска и линейка. "
             "В редакторе: Ctrl+S — сохранить, Ctrl+C — копировать, PrintScreen — новый снимок.",
             self)
         info.setWordWrap(True)
