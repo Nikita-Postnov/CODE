@@ -4666,7 +4666,7 @@ def _scroll_overlap(previous: QImage, current: QImage) -> int:
     top = max(12, round(height * .16))
     bottom = height - max(12, round(height * .11))
     min_shift = max(3, round(height * .012))
-    max_shift = min(round(height * .76), bottom - top - 75)
+    max_shift = min(round(height * .43), bottom - top - 75)
     if content_width < 40 or max_shift < min_shift:
         return 0
 
@@ -4796,7 +4796,7 @@ def _scroll_overlap(previous: QImage, current: QImage) -> int:
 
     def raster_quality(shift: int) -> tuple[float, int]:
         row_errors: list[float] = []
-        for y in range(top + shift, bottom, 3):
+        for y in range(top + shift, bottom):
             if (a[y][1] | b[y - shift][1]).bit_count() < 3:
                 continue
             ra, rb = pixels_a[y], pixels_b[y - shift]
@@ -4816,19 +4816,24 @@ def _scroll_overlap(previous: QImage, current: QImage) -> int:
         # текстовым шаблоном и приводит к неверному смещению.
         return sum(row_errors) / len(row_errors), len(row_errors)
 
-    verified: list[tuple[float, float, int, int]] = []
+    verified: list[tuple[float, float, float, int]] = []
     for mask_error, _, candidate_shift in finalists:
         pixel_error, rows = raster_quality(candidate_shift)
         if pixel_error != float("inf"):
-            verified.append((pixel_error, mask_error, -rows, candidate_shift))
+            # Один шаг колеса обычно перемещает меньше четверти экрана.
+            # При существенной перерисовке страницы небольшой приоритет
+            # даём смещениям в этой области, не влияя на точные (0-error)
+            # совпадения текста и большие перемещения без изменений.
+            prior = (
+                9 * abs(candidate_shift - round(height * .20)) / height
+                if pixel_error >= 1.5 else 0.0
+            )
+            verified.append((pixel_error + prior, pixel_error,
+                             mask_error, candidate_shift))
     if not verified:
         return gradient_fallback()
     verified.sort()
-    log.info("scroll diagnostic: finalists=%s, top pixel candidates=%s",
-             len(finalists),
-             [(round(px, 5), round(mask, 5), pos)
-              for px, mask, _, pos in verified[:18]])
-    pixel_error, mask_error, _, shift = verified[0]
+    rank, pixel_error, mask_error, shift = verified[0]
     if pixel_error > 29:
         log.info("scroll alignment: нет достоверного пиксельного совпадения "
                  "(pixel=%.2f, mask=%.3f)", pixel_error, mask_error)
@@ -4840,7 +4845,7 @@ def _scroll_overlap(previous: QImage, current: QImage) -> int:
         (quality, other_shift)
         for quality, _, _, other_shift in verified[1:]
         if abs(other_shift - shift) >= 3
-        and quality <= pixel_error + max(.015, pixel_error * .007)
+        and quality <= rank + max(.015, rank * .007)
     ]
     if competing:
         log.info("scroll alignment: неоднозначное пиксельное совпадение %s "
