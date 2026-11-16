@@ -4660,7 +4660,7 @@ def _scroll_overlap(previous: QImage, current: QImage) -> int:
         return 0
 
     # Левое/правое меню и неподвижные панели приложения пропускаем.
-    left = max(1, round(width * .11))
+    left = max(1, round(width * .025))
     content_width = width - 2 * left
     sample_width = min(280, content_width)
     top = max(12, round(height * .16))
@@ -4761,10 +4761,10 @@ def _scroll_overlap(previous: QImage, current: QImage) -> int:
             scores.append(mismatch)
         if len(scores) < 10:
             return float("inf"), len(scores)
-        # Срезаем худшие 25 % строк — допускаем изменения рекламы,
+        # Срезаем худшие 12 % строк — допускаем изменения рекламы,
         # анимации, курсора и содержимого отдельных виджетов.
         scores.sort()
-        kept = max(10, round(len(scores) * .75))
+        kept = max(10, round(len(scores) * .88))
         result = sum(scores[:kept]) / kept
         return result, len(scores)
 
