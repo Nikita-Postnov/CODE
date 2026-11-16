@@ -6544,7 +6544,7 @@ class Launcher(QMainWindow):
 
         v.addWidget(group_box("Захват", [
             ("Скриншот области", self.make_shot, True),
-            ("Снимок окна", self.make_window_shot, False),
+            ("Снимок отдельного окна", self.make_window_shot, False),
             ("Длинный снимок", self.start_scrolling_capture, False),
             ("Распознать текст", self.make_ocr, False),
         ]))
