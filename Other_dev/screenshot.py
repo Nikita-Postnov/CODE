@@ -3358,6 +3358,34 @@ class EditorWindow(QMainWindow):
         self.view.set_dirty_hook(self._on_dirty_changed)
         self._on_dirty_changed(self.view.is_dirty())
 
+    def pin_current_image(self) -> None:
+        """Закрепить отрисованное изображение редактора поверх остальных окон."""
+        img = self.view.render_scene_to_image(hide_handles=True)
+        if pin_screenshot(img) is None:
+            QMessageBox.warning(self, "Закрепление", "Не удалось закрепить изображение.")
+
+    def compare_with_file(self) -> None:
+        """Сравнить текущую отрисованную картинку с выбранным изображением."""
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Выбери снимок для сравнения", "",
+            "Изображения (*.png *.jpg *.jpeg *.bmp *.webp)")
+        if not path:
+            return
+        after = QImage(path)
+        if after.isNull():
+            QMessageBox.warning(self, "Сравнение", "Не удалось прочитать изображение.")
+            return
+        try:
+            before = self.view.render_scene_to_image(hide_handles=True)
+            result, _ = compare_screenshot_images(before, after)
+        except (ValueError, RuntimeError, MemoryError) as exc:
+            QMessageBox.warning(self, "Сравнение", str(exc))
+            return
+        editor = EditorWindow(result)
+        editor.show()
+        editor.activateWindow()
+        _register_editor_in_launcher(editor)
+
     def _add_apps_menu(self):
         mb = self.menuBar()
         apps = mb.addMenu("Приложения")
@@ -3929,6 +3957,8 @@ class EditorWindow(QMainWindow):
                        lambda checked=False, m=mode: self.view.align_selected_objects(m))
         add_action(t3, "📁 Показать в папке", self.reveal_last_saved, "Ctrl+Shift+E")
         add_action(t3, "📋 Копировать", self.copy_to_clipboard, "Ctrl+C")
+        add_action(t3, "📌 Закрепить поверх окон", self.pin_current_image, "Ctrl+Alt+P")
+        add_action(t3, "🔎 Сравнить с изображением…", self.compare_with_file, "Ctrl+Alt+D")
         add_action(t4, "↶ Отменить", self.view.undo, "Ctrl+Z")
         add_action(t4, "↷ Повторить", self.view.redo, "Ctrl+Y")
         t4.addSeparator()
@@ -4446,6 +4476,314 @@ def capture_region_interactive() -> Optional[QImage]:
 
 
 
+
+# ============================================================
+# ДОПОЛНИТЕЛЬНЫЕ ИНСТРУМЕНТЫ СКРИНШОТОВ
+# ============================================================
+
+_PINNED_SCREENSHOTS: list[QWidget] = []
+
+
+def pin_screenshot(image: QImage) -> Optional[QWidget]:
+    """Закрепить изображение поверх окон; управление — ПКМ, размер — колесо мыши."""
+    if image.isNull():
+        return None
+    pinned = PinnedScreenshotWindow(image)
+    _PINNED_SCREENSHOTS.append(pinned)
+    pinned.destroyed.connect(
+        lambda _obj=None, w=pinned: _PINNED_SCREENSHOTS.remove(w)
+        if w in _PINNED_SCREENSHOTS else None)
+    pinned.show()
+    pinned.raise_()
+    return pinned
+
+
+class PinnedScreenshotWindow(QWidget):
+    """Независимое перетаскиваемое окно с изменяемым масштабом и прозрачностью."""
+
+    def __init__(self, image: QImage):
+        super().__init__(
+            None, Qt.Window | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
+        self.setAttribute(Qt.WA_DeleteOnClose, True)
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
+        self._image = image.copy()
+        self._drag_origin: Optional[QPoint] = None
+        w, h = image.width(), image.height()
+        factor = min(1.0, 620.0 / max(1, w), 500.0 / max(1, h))
+        self.resize(max(100, round(w * factor)), max(70, round(h * factor)))
+        center_on_screen(self)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
+        painter.fillRect(self.rect(), QColor(28, 29, 35, 225))
+        painter.drawImage(self.rect().adjusted(2, 2, -2, -2), self._image)
+        painter.setPen(QPen(QColor(180, 140, 255), 2))
+        painter.drawRect(self.rect().adjusted(1, 1, -2, -2))
+        painter.end()
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self._drag_origin = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
+            self.setCursor(Qt.ClosedHandCursor)
+            event.accept()
+        else:
+            super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if self._drag_origin is not None:
+            self.move(event.globalPosition().toPoint() - self._drag_origin)
+            event.accept()
+        else:
+            super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self._drag_origin = None
+            self.unsetCursor()
+        super().mouseReleaseEvent(event)
+
+    def wheelEvent(self, event):
+        factor = 1.1 if event.angleDelta().y() > 0 else 1 / 1.1
+        width = max(100, min(1300, int(self.width() * factor)))
+        width = min(width, int(1100 * self._image.width() /
+                               max(1, self._image.height())))
+        height = round(width * self._image.height() / max(1, self._image.width()))
+        self.resize(width, max(70, height))
+        event.accept()
+
+    def contextMenuEvent(self, event):
+        menu = QMenu(self)
+        action_copy = menu.addAction("Копировать изображение")
+        opacity_menu = menu.addMenu("Прозрачность")
+        opacities = ((100, 1.0), (85, .85), (65, .65), (45, .45))
+        opacity_actions = {opacity_menu.addAction(f"{pct}%"): value
+                           for pct, value in opacities}
+        menu.addSeparator()
+        action_close = menu.addAction("Закрыть закреплённый снимок")
+        chosen = menu.exec(event.globalPos())
+        if chosen == action_copy:
+            QApplication.clipboard().setImage(self._image, QClipboard.Clipboard)
+        elif chosen == action_close:
+            self.close()
+        elif chosen in opacity_actions:
+            self.setWindowOpacity(opacity_actions[chosen])
+
+
+def compare_screenshot_images(before: QImage, after: QImage,
+                              threshold: int = 25) -> tuple[QImage, float]:
+    """Три панели: до, после и после с красной подсветкой изменённых пикселей.
+
+    Расчёт ограничен размером превью: исходные изображения не изменяются.
+    Изменение размеров снимка также считается отличием.
+    """
+    if before.isNull() or after.isNull():
+        raise ValueError("Для сравнения нужны два изображения.")
+    max_w = max(before.width(), after.width())
+    max_h = max(before.height(), after.height())
+    scale = min(1.0, 960.0 / max(1, max_w), 1400.0 / max(1, max_h))
+    width = max(1, round(max_w * scale))
+    height = max(1, round(max_h * scale))
+
+    def panel(img: QImage) -> QImage:
+        panel_img = QImage(width, height, QImage.Format_RGBA8888)
+        panel_img.fill(QColor("white"))
+        src = img.scaled(
+            max(1, round(img.width() * scale)),
+            max(1, round(img.height() * scale)),
+            Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
+        painter = QPainter(panel_img)
+        painter.drawImage(0, 0, src)
+        painter.end()
+        return panel_img
+
+    a, b = panel(before), panel(after)
+    # Отсутствующую часть меньшего изображения считаем изменением, а не общим белым фоном.
+    aw = max(1, round(before.width() * scale))
+    ah = max(1, round(before.height() * scale))
+    bw = max(1, round(after.width() * scale))
+    bh = max(1, round(after.height() * scale))
+    left = bytes(a.constBits())
+    right = bytes(b.constBits())
+    result = bytearray(right)
+    changed = 0
+    threshold = max(0, min(255, int(threshold)))
+    for y in range(height):
+        row = y * width * 4
+        for x in range(width):
+            i = row + x * 4
+            mismatch = (x >= aw or y >= ah or x >= bw or y >= bh or
+                        max(abs(left[i + k] - right[i + k]) for k in range(3)) > threshold)
+            if mismatch:
+                changed += 1
+                result[i] = min(255, right[i] // 2 + 125)
+                result[i + 1] = right[i + 1] // 3
+                result[i + 2] = right[i + 2] // 3
+                result[i + 3] = 255
+    highlighted = QImage(bytes(result), width, height, width * 4,
+                         QImage.Format_RGBA8888).copy()
+
+    margin, gutter, caption_h = 14, 12, 38
+    canvas = QImage(3 * width + 2 * margin + 2 * gutter,
+                    height + caption_h + 2 * margin, QImage.Format_RGB32)
+    canvas.fill(QColor("#252830"))
+    painter = QPainter(canvas)
+    painter.setPen(QColor("white"))
+    font = painter.font()
+    font.setPointSize(11)
+    font.setBold(True)
+    painter.setFont(font)
+    pct = round(100.0 * changed / max(1, width * height), 2)
+    for index, (title, image) in enumerate((
+            ("ДО", a), ("ПОСЛЕ", b), (f"ОТЛИЧИЯ — {pct}%", highlighted))):
+        left_edge = margin + index * (width + gutter)
+        painter.drawText(QRect(left_edge, margin, width, caption_h),
+                         Qt.AlignVCenter | Qt.AlignLeft, title)
+        painter.drawImage(left_edge, margin + caption_h, image)
+    painter.end()
+    return canvas, pct
+
+
+def _scroll_overlap(previous: QImage, current: QImage) -> int:
+    """Найти величину вертикального прокручивания по сходству образцов строк.
+
+    Возвращает 0 при отсутствии движения или надёжного пересечения.
+    """
+    if previous.isNull() or current.isNull() or previous.size() != current.size():
+        return 0
+    small_w = min(96, previous.width())
+    if small_w < 8 or previous.height() < 70:
+        return 0
+    a = previous.scaledToWidth(small_w, Qt.FastTransformation).convertToFormat(
+        QImage.Format_RGB32)
+    b = current.scaledToWidth(small_w, Qt.FastTransformation).convertToFormat(
+        QImage.Format_RGB32)
+    h, w = a.height(), a.width()
+    if h < 16:
+        return 0
+
+    # Все кандидаты сопоставляем с теми же 12 строками и 14 столбцами.
+    cols = [round((w - 1) * j / 15) for j in range(1, 15)]
+    best_shift, best_error = 0, float("inf")
+    samples_per_shift = 12 * len(cols)
+    for shift in range(0, max(1, int(h * .88))):
+        overlap = h - shift
+        if overlap < 10:
+            continue
+        error = 0
+        for j in range(12):
+            y = min(overlap - 1, round((overlap - 1) * j / 11))
+            for x in cols:
+                c1, c2 = a.pixel(x, y + shift), b.pixel(x, y)
+                error += (abs(((c1 >> 16) & 255) - ((c2 >> 16) & 255))
+                          + abs(((c1 >> 8) & 255) - ((c2 >> 8) & 255))
+                          + abs((c1 & 255) - (c2 & 255)))
+        average = error / max(1, samples_per_shift * 3)
+        if average < best_error:
+            best_error, best_shift = average, shift
+    if best_shift == 0 or best_error > 16:
+        return 0
+    return max(1, round(best_shift * previous.height() / h))
+
+
+def _stitch_scroll_frames(frames: list[QImage], scroll_steps: list[int]) -> QImage:
+    """Присоединить только новые нижние строки последующих кадров."""
+    if not frames:
+        return QImage()
+    if len(frames) - 1 != len(scroll_steps):
+        raise ValueError("Количество кадров и смещений не совпадает")
+    width, height = frames[0].width(), frames[0].height()
+    extra = sum(max(0, min(height, offset)) for offset in scroll_steps)
+    canvas = QImage(width, height + extra, QImage.Format_RGB32)
+    canvas.fill(QColor("white"))
+    painter = QPainter(canvas)
+    painter.drawImage(0, 0, frames[0])
+    pos = height
+    for frame, step in zip(frames[1:], scroll_steps):
+        step = max(0, min(height, int(step)))
+        if step:
+            painter.drawImage(QRect(0, pos, width, step), frame,
+                              QRect(0, height - step, width, step))
+            pos += step
+    painter.end()
+    return canvas
+
+
+class ScrollingScreenshotJob(QObject):
+    """Асинхронный захват выбранной прокручиваемой области экрана в Windows."""
+
+    completed = Signal(QImage, str)
+
+    def __init__(self, area: QRect, parent=None, max_steps: int = 18):
+        super().__init__(parent)
+        self.area = QRect(area)
+        self.max_steps = max(1, min(30, max_steps))
+        self.frames: list[QImage] = []
+        self.steps: list[int] = []
+        self._cursor = QCursor.pos()
+        self._finished = False
+
+    def start(self):
+        if sys.platform != "win32":
+            self._finish("Длинный снимок доступен в Windows.")
+            return
+        QCursor.setPos(self.area.center())
+        QTimer.singleShot(250, self._capture_first)
+
+    def _capture_first(self):
+        first = grab_region_highdpi(self.area)
+        if first.isNull() or first.height() < 70:
+            self._finish("Не удалось снять область для прокрутки.")
+            return
+        self.frames.append(first)
+        self._advance()
+
+    def _advance(self):
+        if len(self.steps) >= self.max_steps:
+            self._finish(f"Достигнут предел {self.max_steps} прокруток.")
+            return
+        try:
+            # Две ступени колеса вниз; пользователь выбирает область внутри прокручиваемого окна.
+            ctypes.windll.user32.mouse_event(0x0800, 0, 0, (-240) & 0xFFFFFFFF, 0)
+        except (OSError, AttributeError):
+            self._finish("Windows не разрешила прокрутку окна.")
+            return
+        QTimer.singleShot(430, self._capture_next)
+
+    def _capture_next(self):
+        try:
+            frame = grab_region_highdpi(self.area)
+            if frame.isNull() or frame.size() != self.frames[0].size():
+                self._finish("Размер области изменился во время прокрутки.")
+                return
+            offset = _scroll_overlap(self.frames[-1], frame)
+            if offset <= 0:
+                self._finish("")
+                return
+            if (self.frames[0].height() + sum(self.steps) + offset > 16000):
+                self._finish("Достигнут предел высоты 16000 пикселей.")
+                return
+            self.frames.append(frame)
+            self.steps.append(offset)
+            self._advance()
+        except Exception:
+            log.exception("Ошибка длинного снимка")
+            self._finish("Не удалось продолжить длинный снимок.")
+
+    def _finish(self, message: str):
+        if self._finished:
+            return
+        self._finished = True
+        QCursor.setPos(self._cursor)
+        try:
+            combined = _stitch_scroll_frames(self.frames, self.steps)
+        except Exception:
+            log.exception("Ошибка склейки длинного снимка")
+            combined = QImage()
+            message = "Не удалось объединить кадры."
+        self.completed.emit(combined, message)
+
+
 class ScreenshotQuickActionsDialog(QDialog):
     """Необязательная небольшая панель после захвата без открытия редактора."""
 
@@ -4671,6 +5009,15 @@ class Launcher(QMainWindow):
         btn_project = QPushButton("Открыть редактируемый проект…")
         btn_project.clicked.connect(self._open_project)
         v.addWidget(btn_project)
+        btn_scroll = QPushButton("Длинный снимок с прокруткой")
+        btn_scroll.clicked.connect(self.start_scrolling_capture)
+        v.addWidget(btn_scroll)
+        btn_pin = QPushButton("Закрепить изображение из буфера")
+        btn_pin.clicked.connect(self.pin_clipboard_image)
+        v.addWidget(btn_pin)
+        btn_compare = QPushButton("Сравнить два изображения")
+        btn_compare.clicked.connect(self.compare_two_files)
+        v.addWidget(btn_compare)
         btn_history = QPushButton("История скриншотов")
         btn_history.clicked.connect(self.open_history)
         v.addWidget(btn_history)
@@ -4693,6 +5040,7 @@ class Launcher(QMainWindow):
         v.addWidget(info)
         v.addStretch(1)
         _setup_logging()
+        self._scroll_job: Optional[ScrollingScreenshotJob] = None
         self._editors: List[EditorWindow] = []
         self._quick_panel: Optional[ScreenshotQuickActionsDialog] = None
         self._history_dialog: Optional[ScreenshotHistoryDialog] = None
@@ -4723,6 +5071,90 @@ class Launcher(QMainWindow):
     def _on_editor_destroyed(self, ed: EditorWindow) -> None:
         self._editors = [w for w in self._editors if w is not ed]
         self._update_tray_menu()
+
+    def pin_clipboard_image(self) -> None:
+        """Закрепить ранее скопированный снимок; обычный PrintScreen не меняется."""
+        img = QApplication.clipboard().image(QClipboard.Clipboard)
+        if pin_screenshot(img) is None:
+            QMessageBox.information(self, "Закрепление",
+                                    "В буфере обмена нет изображения.")
+
+    def compare_two_files(self) -> None:
+        """Последовательно выбрать два изображения и открыть триптих с отличиями."""
+        extensions = "Изображения (*.png *.jpg *.jpeg *.bmp *.webp)"
+        first, _ = QFileDialog.getOpenFileName(
+            self, "Сравнение: выбери снимок «До»", "", extensions)
+        if not first:
+            return
+        second, _ = QFileDialog.getOpenFileName(
+            self, "Сравнение: выбери снимок «После»", "", extensions)
+        if not second:
+            return
+        before, after = QImage(first), QImage(second)
+        if before.isNull() or after.isNull():
+            QMessageBox.warning(self, "Сравнение",
+                                "Не удалось прочитать выбранные изображения.")
+            return
+        try:
+            result, pct = compare_screenshot_images(before, after)
+        except (ValueError, RuntimeError, MemoryError) as exc:
+            QMessageBox.warning(self, "Сравнение", str(exc))
+            return
+        self._open_editor_image(result)
+        log.info("screenshot comparison: changed pixels=%s%%", pct)
+
+    def start_scrolling_capture(self) -> None:
+        """Выделить прокручиваемый контент и запустить автоматическую склейку."""
+        if _capture_in_progress or self._scroll_job is not None:
+            return
+        if sys.platform != "win32":
+            QMessageBox.information(self, "Длинный снимок",
+                                    "Автоматическая прокрутка доступна в Windows.")
+            return
+        self.hide()
+        QTimer.singleShot(200, self._begin_scrolling_selection)
+
+    def _begin_scrolling_selection(self) -> None:
+        global _capture_in_progress
+        if _capture_in_progress or self._scroll_job is not None:
+            return
+        _capture_in_progress = True
+        overlay = None
+        try:
+            overlay = SelectionOverlay(
+                frozen=False, switchable=False, mode=SelectionOverlay.MODE_SHOT)
+            rect = _run_selection(overlay)
+            if rect is None or rect.width() < 80 or rect.height() < 90:
+                _capture_in_progress = False
+                return
+            job = ScrollingScreenshotJob(rect, self)
+            self._scroll_job = job
+            job.completed.connect(self._on_scrolling_finished)
+            job.start()
+        except Exception:
+            _capture_in_progress = False
+            self._scroll_job = None
+            log.exception("Не удалось начать длинный снимок")
+            QMessageBox.warning(self, "Длинный снимок",
+                                "Не удалось начать захват с прокруткой.")
+        finally:
+            if overlay is not None:
+                overlay.dispose()
+
+    def _on_scrolling_finished(self, image: QImage, message: str) -> None:
+        global _capture_in_progress
+        _capture_in_progress = False
+        job = self._scroll_job
+        self._scroll_job = None
+        if job is not None:
+            job.deleteLater()
+        if not image.isNull():
+            self._handle_captured_image(image)
+        if message:
+            log.info("Длинный снимок: %s", message)
+            if hasattr(self, "tray"):
+                self.tray.showMessage("Длинный снимок", message,
+                                      QSystemTrayIcon.Information, 4000)
 
     def _open_editor_image(self, image: QImage) -> None:
         editor = EditorWindow(image.copy())
@@ -4777,6 +5209,9 @@ class Launcher(QMainWindow):
         self.act_tray_window = m.addAction("Снимок отдельного окна", self.make_window_shot)
         self.act_tray_project = m.addAction("Открыть редактируемый проект", self._open_project)
         self.act_tray_history = m.addAction("История скриншотов", self.open_history)
+        m.addAction("Длинный снимок с прокруткой", self.start_scrolling_capture)
+        m.addAction("Закрепить изображение из буфера", self.pin_clipboard_image)
+        m.addAction("Сравнить два изображения", self.compare_two_files)
         self.act_tray_edit_after_capture = m.addAction("Открывать редактор после снимка")
         self.act_tray_edit_after_capture.setCheckable(True)
         self.act_tray_edit_after_capture.setChecked(
