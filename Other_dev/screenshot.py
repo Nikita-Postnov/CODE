@@ -4811,11 +4811,10 @@ def _scroll_overlap(previous: QImage, current: QImage) -> int:
                 row_errors.append(mismatch / active)
         if len(row_errors) < 10:
             return float("inf"), len(row_errors)
-        row_errors.sort()
-        # Динамическая карточка может закрыть часть букв; убираем только
-        # худшие 10% строк, оставляя отличающиеся цифры и слова для проверки.
-        keep = max(10, round(len(row_errors) * .90))
-        return sum(row_errors[:keep]) / keep, len(row_errors)
+        # Учитываем ВСЕ строки: удаление даже 10% «худших» строк убирает
+        # единственные различающиеся цифры на страницах с одинаковым
+        # текстовым шаблоном и приводит к неверному смещению.
+        return sum(row_errors) / len(row_errors), len(row_errors)
 
     verified: list[tuple[float, float, int, int]] = []
     for mask_error, _, candidate_shift in finalists:
@@ -4837,7 +4836,7 @@ def _scroll_overlap(previous: QImage, current: QImage) -> int:
         (quality, other_shift)
         for quality, _, _, other_shift in verified[1:]
         if abs(other_shift - shift) >= 3
-        and quality <= pixel_error + max(1.3, pixel_error * .12)
+        and quality <= pixel_error + max(.015, pixel_error * .007)
     ]
     if competing:
         log.info("scroll alignment: неоднозначное пиксельное совпадение %s "
