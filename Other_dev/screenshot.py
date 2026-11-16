@@ -4716,6 +4716,30 @@ def _scroll_overlap(previous: QImage, current: QImage) -> int:
             if min_shift <= shift <= max_shift:
                 votes[shift] = votes.get(shift, 0) + 1
 
+    # Самая надёжная проверка: целые строки рисунка должны совпадать
+    # побайтово. Это отличает одинаковые шаблоны строк таблицы с РАЗНЫМИ
+    # числами и словами; короткая выборка пикселей может их не заметить.
+    exact_scores: list[tuple[float, int, int]] = []
+    for shift in votes:
+        comparable = [y for y in informative_a
+                      if top <= y - shift < bottom]
+        if len(comparable) < 8:
+            continue
+        equal = sum(1 for y in comparable if a[y] == b[y - shift])
+        exact_scores.append((equal / len(comparable), equal, shift))
+    exact_scores.sort(reverse=True)
+    if exact_scores:
+        ratio, equal_count, exact_shift = exact_scores[0]
+        if ratio >= 0.70 and equal_count >= 10:
+            ambiguous = any(
+                other_ratio >= ratio - 0.055 and abs(other_shift - exact_shift) > 3
+                for other_ratio, _, other_shift in exact_scores[1:]
+            )
+            if ambiguous:
+                log.warning("scroll: повторяющиеся строки, точное смещение неоднозначно")
+                return 0
+            return exact_shift
+
     # При правильном сдвиге текстовые границы в двух кадрах совпадают.
     # Сравниваем прежде всего переходы яркости — на белом фоне одинаковые
     # пустые пиксели больше не способны скрыть порчу букв.
@@ -4777,6 +4801,12 @@ def _scroll_overlap(previous: QImage, current: QImage) -> int:
     score, edge_count = checked[best]
     # Небольшие сдвиги менее одного ряда текста, почти однотонное
     # содержимое и сомнительное совпадение отбрасываем.
+    # Слабый пиксельный результат не даёт права разрезать текст.
+    # Для пограничных кадров нужна хотя бы часть совпадающих полных строк.
+    exact_ratio = next((ratio for ratio, _, shift in exact_scores
+                        if shift == best), 0.0)
+    if exact_ratio < 0.22:
+        return 0
     if score > 10 or edge_count < 24:
         log.warning("scroll: отказ от ненадёжной склейки (score=%.2f, edges=%s)",
                     score, edge_count)
