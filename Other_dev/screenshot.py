@@ -5167,8 +5167,9 @@ class OCRResultDialog(QDialog):
         self.translate_button.setText("Перевожу…")
         self.translation_status.setText("Отправляю текст в NPCore. Оригинал не изменяется.")
         self._translation_worker = _NPCoreWorker(
-            lambda: _npcore_translate(text, target), self)
+            lambda: _npcore_translate(text, target), QApplication.instance())
         self._translation_worker.completed.connect(self._translation_completed)
+        self._translation_worker.finished.connect(self._translation_worker.deleteLater)
         self._translation_worker.start()
 
     def _translation_completed(self, response: dict) -> None:
