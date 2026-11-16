@@ -7425,6 +7425,18 @@ def recordable_window_is_ready(hwnd: int) -> bool:
         return False
 
 
+def build_gif_export_cmd(src: str, dst: str, t_in: float, t_out: float) -> list[str]:
+    """Создаёт компактный GIF с палитрой, ограничением 12 FPS и шириной 960 px."""
+    ff = ffmpeg_path()
+    start = max(0.0, float(t_in))
+    duration = max(0.05, float(t_out) - start)
+    graph = ("[0:v]fps=12,scale=960:-1:flags=lanczos,split[gifsrc][palette];"
+             "[palette]palettegen=max_colors=192[pal];"
+             "[gifsrc][pal]paletteuse=dither=sierra2_4a[v]")
+    return [ff, "-y", "-ss", f"{start:.3f}", "-i", src, "-t", f"{duration:.3f}",
+            "-filter_complex", graph, "-map", "[v]", "-an", "-loop", "0", dst]
+
+
 def build_export_cmd(src: str, dst: str, t_in: float, t_out: float,
                     censors: List[dict], overlay_png: Optional[str],
                     native_wh: Tuple[int, int]) -> list[str]:
@@ -8353,6 +8365,10 @@ class VideoEditorWindow(QMainWindow):
         self.saveas_btn.setToolTip("Применить правки и сохранить видео в файл")
         self.saveas_btn.clicked.connect(self._save_as)
         row3.addWidget(self.saveas_btn)
+        self.gif_btn = QPushButton("Экспорт GIF…", self)
+        self.gif_btn.setToolTip("Создать GIF из выбранного фрагмента (до 30 секунд).")
+        self.gif_btn.clicked.connect(self._save_gif_as)
+        row3.addWidget(self.gif_btn)
         v.addLayout(row3)
 
         self._refresh_trim_label()
@@ -8634,10 +8650,17 @@ class VideoEditorWindow(QMainWindow):
     def _save_as(self):
         folder = QStandardPaths.writableLocation(QStandardPaths.MoviesLocation) or str(Path.home())
         default = str(Path(folder) / f"Recording_{time.strftime('%Y-%m-%d_%H-%M-%S')}.mp4")
-        path, _ = QFileDialog.getSaveFileName(self, "Сохранить видео", default,
-                                              "MP4 (*.mp4)")
+        path, selected_filter = QFileDialog.getSaveFileName(
+            self, "Сохранить запись", default, "MP4 (*.mp4);;GIF (*.gif)")
         if not path:
             return
+        if path.casefold().endswith(".gif") or "GIF" in selected_filter:
+            if not path.casefold().endswith(".gif"):
+                path += ".gif"
+            self._export_gif(path)
+            return
+        if not path.casefold().endswith(".mp4"):
+            path += ".mp4"
         if self._has_edits():
             self._export(dst=path, after=lambda p: self.statusBar().showMessage(
                 f"Сохранено: {p}", 5000))
@@ -8647,6 +8670,94 @@ class VideoEditorWindow(QMainWindow):
                 self.statusBar().showMessage(f"Сохранено: {path}", 5000)
             except Exception as ex:
                 QMessageBox.warning(self, "Ошибка", str(ex))
+
+    def _save_gif_as(self) -> None:
+        folder = QStandardPaths.writableLocation(QStandardPaths.MoviesLocation) or str(Path.home())
+        default = str(Path(folder) / f"Recording_{time.strftime('%Y-%m-%d_%H-%M-%S')}.gif")
+        path, _ = QFileDialog.getSaveFileName(self, "Экспорт GIF", default, "GIF (*.gif)")
+        if path:
+            if not path.casefold().endswith(".gif"):
+                path += ".gif"
+            self._export_gif(path)
+
+    def _export_gif(self, destination: str) -> None:
+        t_in = self._in_ms / 1000.0
+        t_out = (self._out_ms if self._out_ms > 0 else self._duration_ms) / 1000.0
+        if t_out - t_in > 30.0:
+            QMessageBox.information(
+                self, "Экспорт GIF",
+                "Для сохранения небольшого GIF выберите фрагмент продолжительностью до 30 секунд.")
+            return
+        if self._has_edits():
+            temporary = str(_rec_tmp_dir() / f"gif_source_{uuid.uuid4().hex}.mp4")
+            self._export(dst=temporary,
+                         after=lambda prepared: self._convert_to_gif(
+                             prepared, destination, 0.0, t_out - t_in,
+                             cleanup_source=temporary))
+        else:
+            self._convert_to_gif(self.src, destination, t_in, t_out)
+
+    def _convert_to_gif(self, source: str, destination: str,
+                        t_in: float, t_out: float,
+                        cleanup_source: Optional[str] = None) -> None:
+        ff = ffmpeg_path()
+        if not ff:
+            QMessageBox.warning(self, "Экспорт GIF", "ffmpeg.exe не найден.")
+            return
+        cmd = build_gif_export_cmd(source, destination, t_in, t_out)
+        for button in (getattr(self, "copy_btn", None),
+                       getattr(self, "saveas_btn", None),
+                       getattr(self, "gif_btn", None)):
+            if button is not None:
+                button.setEnabled(False)
+        self.statusBar().showMessage("Создание GIF…")
+        proc = QProcess(self)
+        if sys.platform.startswith("win"):
+            try:
+                proc.setCreateProcessArgumentsModifier(
+                    lambda args: setattr(args, "flags", args.flags | _CREATE_NO_WINDOW))
+            except Exception:
+                pass
+        proc.setProgram(cmd[0])
+        proc.setArguments(cmd[1:])
+
+        def finished(code, status):
+            for button in (getattr(self, "copy_btn", None),
+                           getattr(self, "saveas_btn", None),
+                           getattr(self, "gif_btn", None)):
+                if button is not None:
+                    button.setEnabled(True)
+            ok = (status == QProcess.NormalExit and code == 0
+                  and Path(destination).exists() and Path(destination).stat().st_size > 0)
+            if cleanup_source:
+                try:
+                    Path(cleanup_source).unlink(missing_ok=True)
+                except OSError:
+                    pass
+            if ok:
+                self.statusBar().showMessage(f"GIF сохранён: {destination}", 6000)
+            else:
+                err = bytes(proc.readAllStandardError()).decode("utf-8", "replace")
+                log.error("GIF export failed:\n%s", err[-2000:])
+                QMessageBox.warning(self, "Экспорт GIF",
+                                    "Не удалось создать GIF. Подробности записаны в лог.")
+
+        def failed(error):
+            if error != QProcess.FailedToStart:
+                return
+            for button in (getattr(self, "copy_btn", None),
+                           getattr(self, "saveas_btn", None),
+                           getattr(self, "gif_btn", None)):
+                if button is not None:
+                    button.setEnabled(True)
+            if cleanup_source:
+                Path(cleanup_source).unlink(missing_ok=True)
+            QMessageBox.warning(self, "Экспорт GIF", proc.errorString())
+
+        proc.finished.connect(finished)
+        proc.errorOccurred.connect(failed)
+        self._gif_export_proc = proc
+        proc.start()
 
     def _export(self, dst: Optional[str] = None, after: Optional[Callable[[str], None]] = None):
         if isinstance(dst, bool):   # сигнал clicked шлёт checked(bool) — игнорируем
@@ -8664,7 +8775,8 @@ class VideoEditorWindow(QMainWindow):
         cmd = build_export_cmd(self.src, dst, t_in, t_out, censors,
                                self._overlay_png, (self._native_w, self._native_h))
 
-        for _b in (getattr(self, "copy_btn", None), getattr(self, "saveas_btn", None)):
+        for _b in (getattr(self, "copy_btn", None), getattr(self, "saveas_btn", None),
+                   getattr(self, "gif_btn", None)):
             if _b is not None:
                 _b.setEnabled(False)
         self.statusBar().showMessage("Обработка видео (ffmpeg)…")
@@ -8679,7 +8791,8 @@ class VideoEditorWindow(QMainWindow):
         proc.setProgram(cmd[0]); proc.setArguments(cmd[1:])
 
         def done(code, status):
-            for _b in (getattr(self, "copy_btn", None), getattr(self, "saveas_btn", None)):
+            for _b in (getattr(self, "copy_btn", None), getattr(self, "saveas_btn", None),
+                       getattr(self, "gif_btn", None)):
                 if _b is not None:
                     _b.setEnabled(True)
             # Код выхода проверяем обязательно: при сохранении поверх старого
@@ -8701,7 +8814,8 @@ class VideoEditorWindow(QMainWindow):
             # finished не приходит, если ffmpeg не запустился, — кнопки остались бы серыми.
             if err != QProcess.FailedToStart:
                 return
-            for _b in (getattr(self, "copy_btn", None), getattr(self, "saveas_btn", None)):
+            for _b in (getattr(self, "copy_btn", None), getattr(self, "saveas_btn", None),
+                       getattr(self, "gif_btn", None)):
                 if _b is not None:
                     _b.setEnabled(True)
             log.error("export: ffmpeg failed to start: %s", proc.errorString())
