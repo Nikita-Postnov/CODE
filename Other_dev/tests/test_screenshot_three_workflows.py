@@ -185,6 +185,25 @@ class ScreenshotThreeWorkflowsTests(unittest.TestCase):
                                 height + offset - footer - 1,
                                 height + offset - footer - 1))
 
+    def test_early_long_capture_preserves_first_frame_as_regular_screenshot(self):
+        job = ScrollingScreenshotJob(QRect(0, 0, 80, 60))
+        frame = QImage(80, 60, QImage.Format_RGB32)
+        frame.fill(QColor("#445566"))
+        job.frames.append(frame)
+        launcher = Launcher.__new__(Launcher)
+        launcher._scroll_job = job
+        launcher._scroll_panel = None
+        launcher._handle_captured_image = Mock()
+        with patch("screenshot.ScrollingReviewDialog") as review:
+            review.return_value.exec.return_value = 1
+            review.return_value.result_image.return_value = frame.copy()
+            launcher._on_scrolling_finished(frame, "Прокрутка не обнаружена")
+        review.assert_called_once()
+        launcher._handle_captured_image.assert_called_once()
+        self.assertEqual(launcher._handle_captured_image.call_args.kwargs["capture_kind"],
+                         "shot")
+        self.assertFalse(launcher._handle_captured_image.call_args.args[0].isNull())
+
     def test_scrolling_review_allows_manual_seam_adjustment(self):
         first = QImage(80, 100, QImage.Format_RGB32)
         second = QImage(80, 100, QImage.Format_RGB32)
