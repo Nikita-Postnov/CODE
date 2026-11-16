@@ -4670,7 +4670,7 @@ def _scroll_overlap(previous: QImage, current: QImage) -> int:
     if content_width < 40 or max_shift < min_shift:
         return 0
 
-    def row_masks(image: QImage) -> list[tuple[int, int]]:
+    def row_masks(image: QImage) -> list[tuple[int, int, int]]:
         crop = image.copy(left, 0, content_width, height)
         if crop.width() != sample_width:
             crop = crop.scaled(sample_width, height, Qt.IgnoreAspectRatio,
@@ -4678,7 +4678,7 @@ def _scroll_overlap(previous: QImage, current: QImage) -> int:
         mono = crop.convertToFormat(QImage.Format_Grayscale8)
         raw = bytes(mono.constBits())
         stride = mono.bytesPerLine()
-        output: list[tuple[int, int]] = []
+        output: list[tuple[int, int, int]] = []
         # Два порога дают устойчивость к различиям сглаживания глифов.
         for y in range(height):
             start = y * stride
@@ -4689,7 +4689,10 @@ def _scroll_overlap(previous: QImage, current: QImage) -> int:
                     dark |= 1 << bit
                 if value < 225:
                     soft |= 1 << bit
-            output.append((dark, soft))
+            # Контраст по горизонтали отделяет текст от однородного
+            # цветного/градиентного содержимого.
+            line = raw[start:start + sample_width]
+            output.append((dark, soft, max(line) - min(line)))
         return output
 
     a = row_masks(previous)
@@ -4733,14 +4736,20 @@ def _scroll_overlap(previous: QImage, current: QImage) -> int:
             return 0
         return best_shift
 
+    # Для одноцветных горизонтальных строк двоичные маски почти одинаковы,
+    # поэтому используем непрерывный сигнал яркости по вертикали.
+    textured = sum(1 for row in a[top:bottom] if row[2] >= 26)
+    if textured < max(8, (bottom - top) // 18):
+        return gradient_fallback()
+
     # Не ищем абсолютное совпадение всей области: анимации и реклама могут
     # менять отдельные строки при неподвижном основном тексте.
     def score(shift: int) -> tuple[float, int]:
         scores: list[float] = []
         first_y = max(top + shift, top)
         for y in range(first_y, bottom, 3):
-            hard_a, soft_a = a[y]
-            hard_b, soft_b = b[y - shift]
+            hard_a, soft_a, _ = a[y]
+            hard_b, soft_b, _ = b[y - shift]
             pixels = (soft_a | soft_b).bit_count()
             if pixels < 3:
                 continue
