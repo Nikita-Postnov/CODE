@@ -6328,6 +6328,7 @@ class Launcher(QMainWindow):
             review_message = message
             if confirmed_steps == 0:
                 review_message = (message + "\nПервый экран сохранён как обычный снимок.").strip()
+                message = review_message
             if len(job.frames) == len(job.steps) + 1:
                 review = ScrollingReviewDialog(
                     job.frames, job.steps, job.fixed_bottoms, review_message, self)
