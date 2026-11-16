@@ -195,11 +195,62 @@ class ScreenshotThreeWorkflowsTests(unittest.TestCase):
     def test_native_scrollbar_at_end_does_not_stop_before_first_scroll(self):
         job, frame = self._job_with_first_frame()
         with patch("screenshot._windows_scroll_state", return_value=(100, 100)), \
-             patch("screenshot.ctypes.windll", create=True) as windll, \
-             patch("screenshot.QTimer.singleShot"):
+             patch("screenshot.QTimer.singleShot") as timer:
             job._advance()
         self.assertIsNone(job.finish_reason)
+        self.assertEqual(timer.call_args.args[1], job._send_scroll)
+
+    def test_wheel_dispatch_targets_selected_window_before_capture(self):
+        job, _frame = self._job_with_first_frame()
+        job._target_hwnd = 1234
+        with patch("screenshot._windows_focus_scroll_target", return_value=True) as focus, \
+             patch("screenshot.ctypes.windll", create=True) as windll, \
+             patch("screenshot.QTimer.singleShot") as timer:
+            job._send_scroll()
+        focus.assert_called_once_with(1234)
         windll.user32.mouse_event.assert_called_once()
+        self.assertEqual(timer.call_count, 2)
+        self.assertEqual(timer.call_args.args[1], job._capture_next)
+
+    def test_progress_panel_is_hidden_before_dispatching_wheel(self):
+        job, _frame = self._job_with_first_frame()
+        panel = ScrollingCapturePanel(24)
+        job.attach_panel(panel)
+        try:
+            with patch.object(panel, "hide") as hide, \
+                 patch("screenshot.QTimer.singleShot") as timer:
+                job._advance()
+            hide.assert_called_once()
+            self.assertEqual(timer.call_args.args[1], job._send_scroll)
+        finally:
+            panel.close_silently()
+
+    def test_failed_long_capture_does_not_replace_clipboard_with_one_frame(self):
+        with patch.object(Launcher, "_init_tray"), \
+             patch.object(Launcher, "_install_global_hotkey"):
+            launcher = Launcher()
+        job, frame = self._job_with_first_frame()
+        launcher._scroll_job = job
+        try:
+            with patch.object(launcher, "_handle_captured_image") as finish:
+                launcher._on_scrolling_finished(frame.copy(), "Страница не прокрутилась.")
+            finish.assert_not_called()
+        finally:
+            launcher.close()
+
+    def test_confirmed_scroll_still_passes_assembled_capture_to_launcher(self):
+        with patch.object(Launcher, "_init_tray"), \
+             patch.object(Launcher, "_install_global_hotkey"):
+            launcher = Launcher()
+        job, frame = self._job_with_first_frame()
+        job.steps.append(20)
+        launcher._scroll_job = job
+        try:
+            with patch.object(launcher, "_handle_captured_image") as finish:
+                launcher._on_scrolling_finished(frame.copy(), "")
+            finish.assert_called_once()
+        finally:
+            launcher.close()
 
     def test_false_native_scrollbar_end_does_not_stop_after_first_frame(self):
         job, frame = self._job_with_first_frame()
