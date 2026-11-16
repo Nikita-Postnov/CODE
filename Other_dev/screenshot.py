@@ -4646,90 +4646,109 @@ def compare_screenshot_images(before: QImage, after: QImage,
 
 
 def _scroll_overlap(previous: QImage, current: QImage) -> int:
-    """Точный сдвиг для длинного снимка, в исходных вертикальных пикселях.
+    """Найти точный вертикальный сдвиг даже при отличиях в рендеринге текста.
 
-    Сравниваются целые строки, а не отдельные пиксели. Уменьшается только
-    ширина анализируемой копии, поэтому текст в результате не масштабируется
-    и шов не отклоняется на несколько пикселей из-за округления DPI.
-    Повторяющийся контент с несколькими равными смещениями не склеивается.
+    Сопоставляются двумерные признаки строк (расположение тёмных пикселей),
+    а не побайтово идентичные строки. Небольшие изменения сглаживания,
+    динамические элементы и неподвижная шапка не мешают склейке.
+    Итоговые кадры остаются в исходном разрешении без масштабирования.
     """
     if previous.isNull() or current.isNull() or previous.size() != current.size():
         return 0
     width, height = previous.width(), previous.height()
-    if width < 40 or height < 70:
+    if width < 80 or height < 100:
         return 0
-    margin_x = max(1, round(width * 0.08))
-    cropped_width = width - 2 * margin_x
-    sample_width = min(cropped_width, 560)
 
-    def grayscale_rows(image: QImage) -> list[bytes]:
-        crop = image.copy(margin_x, 0, cropped_width, height)
-        if cropped_width > sample_width:
+    # Левое/правое меню и неподвижные панели приложения пропускаем.
+    left = max(1, round(width * .11))
+    content_width = width - 2 * left
+    sample_width = min(280, content_width)
+    top = max(12, round(height * .16))
+    bottom = height - max(12, round(height * .11))
+    min_shift = max(3, round(height * .012))
+    max_shift = min(round(height * .76), bottom - top - 75)
+    if content_width < 40 or max_shift < min_shift:
+        return 0
+
+    def row_masks(image: QImage) -> list[tuple[int, int]]:
+        crop = image.copy(left, 0, content_width, height)
+        if crop.width() != sample_width:
             crop = crop.scaled(sample_width, height, Qt.IgnoreAspectRatio,
-                               Qt.FastTransformation)
-        gray = crop.convertToFormat(QImage.Format_Grayscale8)
-        buffer = bytes(gray.constBits())
-        stride = gray.bytesPerLine()
-        return [buffer[y * stride:y * stride + sample_width]
-                for y in range(height)]
+                               Qt.SmoothTransformation)
+        mono = crop.convertToFormat(QImage.Format_Grayscale8)
+        raw = bytes(mono.constBits())
+        stride = mono.bytesPerLine()
+        output: list[tuple[int, int]] = []
+        # Два порога дают устойчивость к различиям сглаживания глифов.
+        for y in range(height):
+            start = y * stride
+            dark, soft = 0, 0
+            for bit, x in enumerate(range(0, sample_width, 2)):
+                value = raw[start + x]
+                if value < 165:
+                    dark |= 1 << bit
+                if value < 225:
+                    soft |= 1 << bit
+            output.append((dark, soft))
+        return output
 
-    a, b = grayscale_rows(previous), grayscale_rows(current)
-    top = max(8, round(height * .13))
-    bottom = height - max(8, round(height * .10))
-    min_shift = max(3, round(height * .018))
-    max_shift = min(round(height * .80), bottom - top - 24)
-    if max_shift < min_shift:
-        return 0
+    a = row_masks(previous)
+    b = row_masks(current)
+    # Не ищем абсолютное совпадение всей области: анимации и реклама могут
+    # менять отдельные строки при неподвижном основном тексте.
+    def score(shift: int) -> tuple[float, int]:
+        scores: list[float] = []
+        first_y = max(top + shift, top)
+        for y in range(first_y, bottom, 3):
+            hard_a, soft_a = a[y]
+            hard_b, soft_b = b[y - shift]
+            pixels = (soft_a | soft_b).bit_count()
+            if pixels < 3:
+                continue
+            hard_union = (hard_a | hard_b).bit_count()
+            hard_diff = (hard_a ^ hard_b).bit_count()
+            soft_diff = (soft_a ^ soft_b).bit_count()
+            mismatch = (hard_diff + .4 * soft_diff) / max(
+                1.0, hard_union + .4 * pixels)
+            scores.append(mismatch)
+        if len(scores) < 10:
+            return float("inf"), len(scores)
+        # Срезаем худшие 25 % строк — допускаем изменения рекламы,
+        # анимации, курсора и содержимого отдельных виджетов.
+        scores.sort()
+        kept = max(10, round(len(scores) * .75))
+        result = sum(scores[:kept]) / kept
+        return result, len(scores)
 
-    # Из оценки исключаются однотонные строки, в которых нельзя найти текст,
-    # а также неподвижные верхние и нижние панели приложения.
-    informative = [
-        y for y in range(top, bottom)
-        if (max(a[y]) - min(a[y]) >= 35 or
-            (y > 0 and abs(a[y][sample_width // 2] -
-                           a[y - 1][sample_width // 2]) >= 2))
-    ]
-    if len(informative) < 6:
-        return 0
-
-    # Сначала дешёвое сопоставление хешей, затем проверка целых строк
-    # у лучших кандидатов. Хеш здесь служит только для отбора.
-    ah = [hash(row) for row in a]
-    bh = [hash(row) for row in b]
-    scores: list[tuple[float, int, int]] = []
+    evaluated: list[tuple[float, int, int]] = []
     for shift in range(min_shift, max_shift + 1):
-        eligible = [y for y in informative if top <= y - shift < bottom]
-        if len(eligible) < 8:
-            continue
-        equal = sum(ah[y] == bh[y - shift] for y in eligible)
-        if equal >= 5:
-            scores.append((equal / len(eligible), equal, shift))
-    if not scores:
+        mismatch, informative = score(shift)
+        if mismatch != float("inf"):
+            evaluated.append((mismatch, -informative, shift))
+    if not evaluated:
+        log.info("scroll alignment: нет информативных строк")
+        return 0
+    evaluated.sort()
+    best, _, shift = evaluated[0]
+    if best > .34:
+        log.info("scroll alignment: лучшее совпадение слишком слабое (%.3f)",
+                 best)
         return 0
 
-    scores.sort(reverse=True)
-    best_ratio, _count, best_shift = scores[0]
-    if best_ratio < .70:
-        log.info("scroll: надёжное совпадение строк не найдено (%.2f)",
-                 best_ratio)
+    # Отдельная проверка уникальности не допускает ложного сдвига на строку
+    # выше/ниже в таблицах с повторяющимися одинаковыми элементами.
+    competing = [
+        (quality, other_shift) for quality, _, other_shift in evaluated[1:]
+        if abs(other_shift - shift) >= 3
+        and quality <= max(.045, best * 1.22 + .025)
+    ]
+    if competing:
+        log.info("scroll alignment: неоднозначный сдвиг %s, варианты %s",
+                 shift, competing[:3])
         return 0
 
-    # Реально проверяем пиксельные строки, чтобы исключить коллизии хешей.
-    eligible = [y for y in informative if top <= y - best_shift < bottom]
-    equal_real = sum(a[y] == b[y - best_shift] for y in eligible)
-    if equal_real < 8 or equal_real / len(eligible) < .70:
-        return 0
-
-    # Слишком похожие периодические строки (например одинаковые элементы
-    # таблицы) не позволяют достоверно определить, где заканчивается слово.
-    for ratio, count, candidate in scores[1:]:
-        if ratio < best_ratio - .06:
-            break
-        if abs(candidate - best_shift) > 2 and count >= 7:
-            log.info("scroll: неоднозначный сдвиг %s или %s, склейка остановлена",
-                     best_shift, candidate)
-            return 0
-    return best_shift
+    log.info("scroll alignment: сдвиг=%s px, ошибка=%.3f", shift, best)
+    return shift
 
 
 def _stitch_scroll_frames(frames: list[QImage], scroll_steps: list[int]) -> QImage:
