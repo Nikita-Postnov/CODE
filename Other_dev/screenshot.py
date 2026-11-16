@@ -3358,6 +3358,34 @@ class EditorWindow(QMainWindow):
         self.view.set_dirty_hook(self._on_dirty_changed)
         self._on_dirty_changed(self.view.is_dirty())
 
+    def pin_current_image(self) -> None:
+        """Закрепить отрисованное изображение редактора поверх остальных окон."""
+        img = self.view.render_scene_to_image(hide_handles=True)
+        if pin_screenshot(img) is None:
+            QMessageBox.warning(self, "Закрепление", "Не удалось закрепить изображение.")
+
+    def compare_with_file(self) -> None:
+        """Сравнить текущую отрисованную картинку с выбранным изображением."""
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Выбери снимок для сравнения", "",
+            "Изображения (*.png *.jpg *.jpeg *.bmp *.webp)")
+        if not path:
+            return
+        after = QImage(path)
+        if after.isNull():
+            QMessageBox.warning(self, "Сравнение", "Не удалось прочитать изображение.")
+            return
+        try:
+            before = self.view.render_scene_to_image(hide_handles=True)
+            result, _ = compare_screenshot_images(before, after)
+        except (ValueError, RuntimeError, MemoryError) as exc:
+            QMessageBox.warning(self, "Сравнение", str(exc))
+            return
+        editor = EditorWindow(result)
+        editor.show()
+        editor.activateWindow()
+        _register_editor_in_launcher(editor)
+
     def _add_apps_menu(self):
         mb = self.menuBar()
         apps = mb.addMenu("Приложения")
@@ -3929,6 +3957,8 @@ class EditorWindow(QMainWindow):
                        lambda checked=False, m=mode: self.view.align_selected_objects(m))
         add_action(t3, "📁 Показать в папке", self.reveal_last_saved, "Ctrl+Shift+E")
         add_action(t3, "📋 Копировать", self.copy_to_clipboard, "Ctrl+C")
+        add_action(t3, "📌 Закрепить поверх окон", self.pin_current_image, "Ctrl+Alt+P")
+        add_action(t3, "🔎 Сравнить с изображением…", self.compare_with_file, "Ctrl+Alt+D")
         add_action(t4, "↶ Отменить", self.view.undo, "Ctrl+Z")
         add_action(t4, "↷ Повторить", self.view.redo, "Ctrl+Y")
         t4.addSeparator()
@@ -4979,6 +5009,15 @@ class Launcher(QMainWindow):
         btn_project = QPushButton("Открыть редактируемый проект…")
         btn_project.clicked.connect(self._open_project)
         v.addWidget(btn_project)
+        btn_scroll = QPushButton("Длинный снимок с прокруткой")
+        btn_scroll.clicked.connect(self.start_scrolling_capture)
+        v.addWidget(btn_scroll)
+        btn_pin = QPushButton("Закрепить изображение из буфера")
+        btn_pin.clicked.connect(self.pin_clipboard_image)
+        v.addWidget(btn_pin)
+        btn_compare = QPushButton("Сравнить два изображения")
+        btn_compare.clicked.connect(self.compare_two_files)
+        v.addWidget(btn_compare)
         btn_history = QPushButton("История скриншотов")
         btn_history.clicked.connect(self.open_history)
         v.addWidget(btn_history)
@@ -5001,6 +5040,7 @@ class Launcher(QMainWindow):
         v.addWidget(info)
         v.addStretch(1)
         _setup_logging()
+        self._scroll_job: Optional[ScrollingScreenshotJob] = None
         self._editors: List[EditorWindow] = []
         self._quick_panel: Optional[ScreenshotQuickActionsDialog] = None
         self._history_dialog: Optional[ScreenshotHistoryDialog] = None
@@ -5031,6 +5071,90 @@ class Launcher(QMainWindow):
     def _on_editor_destroyed(self, ed: EditorWindow) -> None:
         self._editors = [w for w in self._editors if w is not ed]
         self._update_tray_menu()
+
+    def pin_clipboard_image(self) -> None:
+        """Закрепить ранее скопированный снимок; обычный PrintScreen не меняется."""
+        img = QApplication.clipboard().image(QClipboard.Clipboard)
+        if pin_screenshot(img) is None:
+            QMessageBox.information(self, "Закрепление",
+                                    "В буфере обмена нет изображения.")
+
+    def compare_two_files(self) -> None:
+        """Последовательно выбрать два изображения и открыть триптих с отличиями."""
+        extensions = "Изображения (*.png *.jpg *.jpeg *.bmp *.webp)"
+        first, _ = QFileDialog.getOpenFileName(
+            self, "Сравнение: выбери снимок «До»", "", extensions)
+        if not first:
+            return
+        second, _ = QFileDialog.getOpenFileName(
+            self, "Сравнение: выбери снимок «После»", "", extensions)
+        if not second:
+            return
+        before, after = QImage(first), QImage(second)
+        if before.isNull() or after.isNull():
+            QMessageBox.warning(self, "Сравнение",
+                                "Не удалось прочитать выбранные изображения.")
+            return
+        try:
+            result, pct = compare_screenshot_images(before, after)
+        except (ValueError, RuntimeError, MemoryError) as exc:
+            QMessageBox.warning(self, "Сравнение", str(exc))
+            return
+        self._open_editor_image(result)
+        log.info("screenshot comparison: changed pixels=%s%%", pct)
+
+    def start_scrolling_capture(self) -> None:
+        """Выделить прокручиваемый контент и запустить автоматическую склейку."""
+        if _capture_in_progress or self._scroll_job is not None:
+            return
+        if sys.platform != "win32":
+            QMessageBox.information(self, "Длинный снимок",
+                                    "Автоматическая прокрутка доступна в Windows.")
+            return
+        self.hide()
+        QTimer.singleShot(200, self._begin_scrolling_selection)
+
+    def _begin_scrolling_selection(self) -> None:
+        global _capture_in_progress
+        if _capture_in_progress or self._scroll_job is not None:
+            return
+        _capture_in_progress = True
+        overlay = None
+        try:
+            overlay = SelectionOverlay(
+                frozen=False, switchable=False, mode=SelectionOverlay.MODE_SHOT)
+            rect = _run_selection(overlay)
+            if rect is None or rect.width() < 80 or rect.height() < 90:
+                _capture_in_progress = False
+                return
+            job = ScrollingScreenshotJob(rect, self)
+            self._scroll_job = job
+            job.completed.connect(self._on_scrolling_finished)
+            job.start()
+        except Exception:
+            _capture_in_progress = False
+            self._scroll_job = None
+            log.exception("Не удалось начать длинный снимок")
+            QMessageBox.warning(self, "Длинный снимок",
+                                "Не удалось начать захват с прокруткой.")
+        finally:
+            if overlay is not None:
+                overlay.dispose()
+
+    def _on_scrolling_finished(self, image: QImage, message: str) -> None:
+        global _capture_in_progress
+        _capture_in_progress = False
+        job = self._scroll_job
+        self._scroll_job = None
+        if job is not None:
+            job.deleteLater()
+        if not image.isNull():
+            self._handle_captured_image(image)
+        if message:
+            log.info("Длинный снимок: %s", message)
+            if hasattr(self, "tray"):
+                self.tray.showMessage("Длинный снимок", message,
+                                      QSystemTrayIcon.Information, 4000)
 
     def _open_editor_image(self, image: QImage) -> None:
         editor = EditorWindow(image.copy())
@@ -5085,6 +5209,9 @@ class Launcher(QMainWindow):
         self.act_tray_window = m.addAction("Снимок отдельного окна", self.make_window_shot)
         self.act_tray_project = m.addAction("Открыть редактируемый проект", self._open_project)
         self.act_tray_history = m.addAction("История скриншотов", self.open_history)
+        m.addAction("Длинный снимок с прокруткой", self.start_scrolling_capture)
+        m.addAction("Закрепить изображение из буфера", self.pin_clipboard_image)
+        m.addAction("Сравнить два изображения", self.compare_two_files)
         self.act_tray_edit_after_capture = m.addAction("Открывать редактор после снимка")
         self.act_tray_edit_after_capture.setCheckable(True)
         self.act_tray_edit_after_capture.setChecked(
