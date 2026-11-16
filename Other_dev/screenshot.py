@@ -7,8 +7,12 @@ import math
 import base64
 import os
 import shutil
+import socket
 import subprocess
 import sys
+import urllib.error
+import urllib.parse
+import urllib.request
 import threading
 import time
 import tempfile
@@ -34,6 +38,7 @@ from PySide6.QtCore import (
     QEventLoop,
     QAbstractNativeEventFilter,
     QObject,
+    QThread,
     Slot,
     QProcess,
     QUrl,
@@ -73,6 +78,9 @@ from PySide6.QtWidgets import (
     QWidget,
     QVBoxLayout,
     QHBoxLayout,
+    QGridLayout,
+    QGroupBox,
+    QSplitter,
     QScrollArea,
     QPushButton,
     QLabel,
@@ -4811,6 +4819,235 @@ def ocr_layout_to_markdown_table(payload: dict) -> str:
     return "\n".join(output)
 
 _ocr_dialogs: list[QDialog] = []
+
+
+def _npcore_normalize_server(value: str) -> str:
+    if not isinstance(value, str):
+        raise ValueError("Не указан адрес NPCore")
+    parsed = urllib.parse.urlsplit(value.strip())
+    local = parsed.hostname in ("localhost", "127.0.0.1")
+    if (not parsed.hostname or parsed.username or parsed.password or parsed.query or
+            parsed.fragment or parsed.path not in ("", "/") or
+            (parsed.scheme != "https" and not (parsed.scheme == "http" and local))):
+        raise ValueError("Укажи HTTPS-адрес NPCore без пути и параметров")
+    return f"{parsed.scheme}://{parsed.netloc}"
+
+
+def _npcore_pair_config(value: str) -> tuple[str, str]:
+    try:
+        data = json.loads(value)
+        server, code = data.get("server"), data.get("code")
+    except (ValueError, AttributeError):
+        parts = (value or "").strip().split()
+        server, code = (parts + ["", ""])[:2] if len(parts) == 2 else ("", "")
+    server = _npcore_normalize_server(server)
+    if not isinstance(code, str) or len(code) != 24 or not all(
+            ch.isalnum() or ch in "-_" for ch in code):
+        raise ValueError("Код подключения должен быть из 24 символов")
+    return server, code
+
+
+class _NPCoreBlob(ctypes.Structure):
+    _fields_ = [("cbData", ctypes.c_uint32),
+                ("pbData", ctypes.POINTER(ctypes.c_char))]
+
+
+def _npcore_dpapi(data: bytes, protect: bool) -> bytes:
+    if not sys.platform.startswith("win"):
+        raise RuntimeError("Защищённое хранение ключа доступно только в Windows")
+    crypt = ctypes.WinDLL("crypt32", use_last_error=True)
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    buffer = ctypes.create_string_buffer(data, len(data))
+    source = _NPCoreBlob(len(data), ctypes.cast(buffer, ctypes.POINTER(ctypes.c_char)))
+    output = _NPCoreBlob()
+    if protect:
+        fn = crypt.CryptProtectData
+        fn.argtypes = [ctypes.POINTER(_NPCoreBlob), ctypes.c_wchar_p, ctypes.c_void_p,
+                       ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint32,
+                       ctypes.POINTER(_NPCoreBlob)]
+        ok = fn(ctypes.byref(source), "NP Screenshot NPCore", None, None, None, 0x1,
+                ctypes.byref(output))
+    else:
+        fn = crypt.CryptUnprotectData
+        fn.argtypes = [ctypes.POINTER(_NPCoreBlob), ctypes.c_void_p, ctypes.c_void_p,
+                       ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint32,
+                       ctypes.POINTER(_NPCoreBlob)]
+        ok = fn(ctypes.byref(source), None, None, None, None, 0x1, ctypes.byref(output))
+    if not ok:
+        raise OSError(ctypes.get_last_error(), "Windows DPAPI")
+    try:
+        return ctypes.string_at(output.pbData, output.cbData)
+    finally:
+        kernel.LocalFree.argtypes = [ctypes.c_void_p]
+        kernel.LocalFree(ctypes.cast(output.pbData, ctypes.c_void_p))
+
+
+def _npcore_link_path() -> Path:
+    return DATA_DIR / "npcore_screenshot_link.json"
+
+
+def _npcore_load_link() -> Optional[tuple[str, str]]:
+    try:
+        data = json.loads(_npcore_link_path().read_text(encoding="utf-8"))
+        server = _npcore_normalize_server(data.get("server"))
+        if isinstance(data.get("token_dpapi"), str):
+            token = _npcore_dpapi(base64.b64decode(data["token_dpapi"]), False).decode("utf-8")
+        else:
+            token = str(data.get("token") or "")
+        if len(token) != 43 or not all(ch.isalnum() or ch in "-_" for ch in token):
+            return None
+        return server, token
+    except (OSError, ValueError, TypeError, KeyError, RuntimeError):
+        return None
+
+
+def _npcore_save_link(server: str, token: str) -> None:
+    protected = base64.b64encode(_npcore_dpapi(token.encode("utf-8"), True)).decode("ascii")
+    path = _npcore_link_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(".tmp")
+    temporary.write_text(json.dumps({"server": server, "token_dpapi": protected,
+                                     "saved": int(time.time())},
+                                    ensure_ascii=False, indent=1), encoding="utf-8")
+    os.replace(temporary, path)
+
+
+def _npcore_http_json(method: str, url: str, token: str = "",
+                      body: Optional[dict] = None, timeout: float = 20) -> dict:
+    raw = None if body is None else json.dumps(body, ensure_ascii=False).encode("utf-8")
+    request = urllib.request.Request(url, data=raw, method=method)
+    request.add_header("Accept", "application/json")
+    request.add_header("User-Agent", "NP-Screenshot/1.0")
+    if raw is not None:
+        request.add_header("Content-Type", "application/json; charset=utf-8")
+    if token:
+        request.add_header("Authorization", "Bearer " + token)
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return json.loads(response.read().decode("utf-8") or "{}")
+    except urllib.error.HTTPError as exc:
+        try:
+            data = json.loads(exc.read().decode("utf-8"))
+            detail = str(data.get("detail") or data.get("error") or "")
+        except Exception:
+            detail = ""
+        if exc.code == 401:
+            raise RuntimeError("Подключение NPCore истекло или отозвано. Подключи заново.") from None
+        raise RuntimeError(detail or f"NPCore вернул HTTP {exc.code}") from None
+    except urllib.error.URLError:
+        raise RuntimeError("Не удалось связаться с NPCore. Проверь подключение и адрес сервера.") from None
+
+
+def _npcore_pair(value: str) -> tuple[str, str]:
+    server, code = _npcore_pair_config(value)
+    name = (os.environ.get("COMPUTERNAME") or socket.gethostname() or "Компьютер")[:40]
+    result = _npcore_http_json("POST", server + "/api/desk/pair",
+                               body={"code": code, "name": "NP Screenshot · " + name})
+    token = result.get("token")
+    if not result.get("ok") or not isinstance(token, str) or len(token) != 43:
+        raise RuntimeError("NPCore не подтвердил подключение")
+    _npcore_save_link(server, token)
+    return server, token
+
+
+def _npcore_translate(text: str, target: str) -> dict:
+    link = _npcore_load_link()
+    if link is None:
+        raise RuntimeError("Сначала подключи NP Screenshot к NPCore")
+    server, token = link
+    result = _npcore_http_json("POST", server + "/api/desk/translate", token,
+                               {"text": text, "source": "auto", "target": target},
+                               timeout=75)
+    if not result.get("ok") or not isinstance(result.get("text"), str):
+        raise RuntimeError(str(result.get("error") or "NPCore не вернул перевод"))
+    return result
+
+
+class _NPCoreWorker(QThread):
+    completed = Signal(object)
+
+    def __init__(self, callback, parent=None):
+        super().__init__(parent)
+        self.callback = callback
+
+    def run(self):
+        try:
+            result = self.callback()
+            self.completed.emit({"ok": True, "result": result})
+        except Exception as exc:
+            self.completed.emit({"ok": False, "error": str(exc)})
+
+
+class NPCoreConnectionDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Подключение NP Screenshot к NPCore")
+        self.setMinimumWidth(520)
+        layout = QVBoxLayout(self)
+        self.status = QLabel(self)
+        link = _npcore_load_link()
+        self.status.setText(
+            f"Подключено к NPCore: {link[0]}" if link else "NP Screenshot пока не подключён к NPCore.")
+        self.status.setWordWrap(True)
+        layout.addWidget(self.status)
+        hint = QLabel(
+            "Вставь строку подключения, выданную в Mini App NPCore. "
+            "Поддерживается JSON с полями server и code.", self)
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+        self.config = QPlainTextEdit(self)
+        self.config.setPlaceholderText(
+            '{"server":"https://адрес-npcore","code":"одноразовый-код"}')
+        self.config.setMaximumHeight(105)
+        layout.addWidget(self.config)
+        buttons = QHBoxLayout()
+        self.connect_button = QPushButton("Подключить", self)
+        self.connect_button.clicked.connect(self.connect_npcore)
+        buttons.addWidget(self.connect_button)
+        self.disconnect_button = QPushButton("Отключить", self)
+        self.disconnect_button.setEnabled(link is not None)
+        self.disconnect_button.clicked.connect(self.disconnect_npcore)
+        buttons.addWidget(self.disconnect_button)
+        buttons.addStretch(1)
+        close = QPushButton("Закрыть", self)
+        close.clicked.connect(self.accept)
+        buttons.addWidget(close)
+        layout.addLayout(buttons)
+
+    def connect_npcore(self):
+        value = self.config.toPlainText().strip()
+        if not value:
+            QMessageBox.information(self, "NPCore", "Вставь строку подключения из Mini App.")
+            return
+        self.connect_button.setEnabled(False)
+        self.status.setText("Подключаюсь к NPCore…")
+        QApplication.processEvents()
+        try:
+            server, _token = _npcore_pair(value)
+        except Exception as exc:
+            self.status.setText("Подключение не выполнено.")
+            QMessageBox.warning(self, "NPCore", str(exc))
+            self.connect_button.setEnabled(True)
+            return
+        self.status.setText(f"Подключено к NPCore: {server}")
+        self.disconnect_button.setEnabled(True)
+        self.connect_button.setEnabled(True)
+        self.config.clear()
+        QMessageBox.information(self, "NPCore", "NP Screenshot успешно подключён.")
+
+    def disconnect_npcore(self):
+        link = _npcore_load_link()
+        if link:
+            try:
+                _npcore_http_json("POST", link[0] + "/api/desk/disconnect", link[1], {})
+            except Exception:
+                pass
+        try:
+            _npcore_link_path().unlink(missing_ok=True)
+        except OSError:
+            pass
+        self.status.setText("NP Screenshot отключён от NPCore.")
+        self.disconnect_button.setEnabled(False)
 
 
 class OCRResultDialog(QDialog):
