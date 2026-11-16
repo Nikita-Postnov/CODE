@@ -131,8 +131,12 @@ class ScreenshotThreeWorkflowsTests(unittest.TestCase):
         for i, y in enumerate(range(28, source.height(), 31)):
             p.setPen(QColor("#1d2a38") if i % 3 else QColor("#225fc0"))
             p.drawText(45, y, f"{i:03d}. {paragraphs[i % len(paragraphs)]}")
+            # Разнообразные ссылки, маркированные пункты и иллюстрации,
+            # как на реальной энциклопедической странице.
+            p.fillRect(46, y - 24, 6 + (i * 13) % 72, 4,
+                       QColor.fromRgb(35 + (i * 17) % 180, 96, 180))
             p.setPen(QColor("#ccd2d7"))
-            p.drawLine(40, y + 4, 510, y + 4)
+            p.drawLine(40, y + 4, 360 + (i * 17) % 145, y + 4)
         p.end()
         first = source.copy(0, 0, width, height)
         second = source.copy(0, shift, width, height)
@@ -189,6 +193,8 @@ class ScreenshotThreeWorkflowsTests(unittest.TestCase):
         p.setFont(QFont("Arial", 13))
         for i, y in enumerate(range(35, src.height(), 23)):
             p.drawText(24, y, f"{i:04d} — Фрагмент страницы, строка {i:04d}")
+            p.fillRect(25, y - 22, 12 + (i * 11) % 75, 4,
+                       QColor.fromRgb(40 + (i * 29) % 190, 77, 133))
         p.end()
         first = src.copy(0, 0, width, height)
         second = src.copy(0, shift, width, height)
