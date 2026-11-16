@@ -4746,42 +4746,59 @@ def format_ocr_paragraphs(payload: dict) -> str:
 
 
 def ocr_layout_to_markdown_table(payload: dict) -> str:
-    """Пробует восстановить столбцы таблицы по горизонтальным координатам OCR-слов."""
+    """Пробует восстановить столбцы таблицы по координатам и промежуткам между словами."""
     lines = payload.get("lines", []) if isinstance(payload, dict) else []
-    word_rows = []
-    starts = []
-    heights = []
+    raw_rows = []
+    all_heights = []
     for line in lines if isinstance(lines, list) else []:
         words = line.get("words", []) if isinstance(line, dict) else []
         valid = [w for w in words if isinstance(w, dict) and str(w.get("text", "")).strip()]
         valid.sort(key=lambda w: int(w.get("x", 0)))
-        if valid:
-            word_rows.append(valid)
-            starts.extend(int(w.get("x", 0)) for w in valid)
-            heights.extend(max(1, int(w.get("height", 14))) for w in valid)
-    if len(word_rows) < 2 or len(starts) < 4:
+        if not valid:
+            continue
+        row_cells = []
+        cell_words = []
+        previous_right = None
+        for word in valid:
+            x = int(word.get("x", 0))
+            width = max(1, int(word.get("width", 1)))
+            height = max(1, int(word.get("height", 14)))
+            all_heights.append(height)
+            gap_limit = max(18, round(height * 1.35))
+            if previous_right is not None and x - previous_right > gap_limit:
+                row_cells.append((cell_words[0][0], " ".join(item[1] for item in cell_words)))
+                cell_words = []
+            cell_words.append((x, str(word.get("text", "")).strip()))
+            previous_right = x + width
+        if cell_words:
+            row_cells.append((cell_words[0][0], " ".join(item[1] for item in cell_words)))
+        if len(row_cells) >= 2:
+            raw_rows.append(row_cells)
+    if len(raw_rows) < 2:
         return ""
-    threshold = max(24, int(sorted(heights)[len(heights) // 2] * 2.2))
+    median_height = sorted(all_heights)[len(all_heights) // 2] if all_heights else 14
+    cluster_gap = max(28, round(median_height * 2.6))
     centers = []
     counts = []
-    for x in sorted(starts):
-        if centers and abs(x - centers[-1]) <= threshold:
-            n = counts[-1] + 1
-            centers[-1] = (centers[-1] * counts[-1] + x) / n
-            counts[-1] = n
-        else:
-            centers.append(float(x))
-            counts.append(1)
-    if len(centers) < 2:
+    for row in raw_rows:
+        for x, _text in row:
+            if centers and min(abs(x - center) for center in centers) <= cluster_gap:
+                index = min(range(len(centers)), key=lambda i: abs(x - centers[i]))
+                n = counts[index] + 1
+                centers[index] = (centers[index] * counts[index] + x) / n
+                counts[index] = n
+            else:
+                centers.append(float(x))
+                counts.append(1)
+    centers.sort()
+    if len(centers) < 2 or len(centers) > 12:
         return ""
     rows = []
-    for words in word_rows:
+    for raw_row in raw_rows:
         cells = [""] * len(centers)
-        for word in words:
-            x = int(word.get("x", 0))
+        for x, text in raw_row:
             index = min(range(len(centers)), key=lambda i: abs(centers[i] - x))
-            value = str(word.get("text", "")).strip()
-            cells[index] = (cells[index] + " " + value).strip()
+            cells[index] = (cells[index] + " " + text).strip()
         if sum(bool(cell) for cell in cells) >= 2:
             rows.append(cells)
     if len(rows) < 2 or max(sum(bool(c) for c in row) for row in rows) < 2:
@@ -4792,7 +4809,6 @@ def ocr_layout_to_markdown_table(payload: dict) -> str:
     output.extend("| " + " | ".join(cell.replace("|", "\\|") for cell in row) + " |"
                   for row in rows[1:])
     return "\n".join(output)
-
 
 _ocr_dialogs: list[QDialog] = []
 
@@ -4919,6 +4935,9 @@ def start_ocr(img: QImage, launcher=None, history_path: Optional[Path] = None) -
                 except (ValueError, TypeError):
                     pass
                 text = format_ocr_paragraphs(payload) if payload is not None else out
+                if not text.strip():
+                    notify("Распознавание текста", "Текст не найден.")
+                    return
                 if history_path is not None:
                     update_history_metadata(history_path, ocr_text=text)
                 QApplication.clipboard().setText(text, QClipboard.Clipboard)
