@@ -73,6 +73,7 @@ from PySide6.QtWidgets import (
     QWidget,
     QVBoxLayout,
     QHBoxLayout,
+    QScrollArea,
     QPushButton,
     QLabel,
     QToolBar,
@@ -4972,12 +4973,26 @@ class Launcher(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("NPCore Скриншоты")
-        self.resize(420, 180)
+        screen = QGuiApplication.primaryScreen()
+        if screen is not None:
+            available = screen.availableGeometry()
+            window_width = min(560, max(360, round(available.width() * 0.85)))
+            window_height = min(760, max(340, round(available.height() * 0.80)))
+        else:
+            window_width, window_height = 520, 720
+        self.resize(window_width, window_height)
         self._capture_preferences = load_capture_preferences()
-        w = QWidget(self)
-        self.setCentralWidget(w)
+        scroll_area = QScrollArea(self)
+        scroll_area.setObjectName("launcher_scroll_area")
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        w = QWidget()
+        w.setObjectName("launcher_scroll_content")
         v = QVBoxLayout(w)
-        v.setContentsMargins(16, 16, 16, 16)
+        v.setContentsMargins(18, 18, 18, 18)
+        v.setSpacing(10)
+        scroll_area.setWidget(w)
+        self.setCentralWidget(scroll_area)
         title = QLabel(
             "<b>Скриншоты</b><br>"
             "PrintScreen — выбор действия (Скриншот / Запись экрана / Текст) "
@@ -5038,6 +5053,12 @@ class Launcher(QMainWindow):
         info.setWordWrap(True)
         info.setStyleSheet("color: gray;")
         v.addWidget(info)
+        for button in (
+            btn, btn_window, btn_rec, btn_window_rec, btn_ocr,
+            btn_open, btn_project, btn_scroll, btn_pin, btn_compare, btn_history,
+        ):
+            button.setMinimumHeight(38)
+            button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         v.addStretch(1)
         _setup_logging()
         self._scroll_job: Optional[ScrollingScreenshotJob] = None
