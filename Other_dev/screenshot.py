@@ -5051,23 +5051,73 @@ class NPCoreConnectionDialog(QDialog):
 
 
 class OCRResultDialog(QDialog):
-    """Результат OCR: редактирование, копирование, таблица, перевод и TXT."""
+    """Результат OCR: редактирование, копирование, таблица и встроенный ИИ-перевод."""
 
-    def __init__(self, text: str, payload: Optional[dict] = None, parent=None):
+    def __init__(self, text: str, payload: Optional[dict] = None, parent=None, launcher=None):
         super().__init__(parent)
         self.payload = payload or {}
+        self.launcher = launcher
+        self._translation_worker: Optional[_NPCoreWorker] = None
         self.setWindowTitle("Распознанный текст")
-        self.resize(760, 560)
+        self.resize(900, 720)
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(10)
+
+        header = QLabel("<b>Распознанный текст</b><br>"
+                        "<span style='color:#8b929c'>Редактируй оригинал или переведи его через ИИ NPCore.</span>",
+                        self)
+        header.setWordWrap(True)
+        layout.addWidget(header)
+
         self.text_edit = QPlainTextEdit(self)
+        self.text_edit.setObjectName("ocr_source_text")
         self.text_edit.setPlainText(text)
         self.text_edit.setPlaceholderText("Распознанный текст…")
-        layout.addWidget(self.text_edit, 1)
+        self.text_edit.setStyleSheet(
+            "QPlainTextEdit { border: 1px solid palette(mid); border-radius: 8px; padding: 9px; }")
+        layout.addWidget(self.text_edit, 3)
+
+        translate_row = QHBoxLayout()
+        translate_label = QLabel("Перевести на:", self)
+        translate_row.addWidget(translate_label)
+        self.target_language = QComboBox(self)
+        self.target_language.setObjectName("ocr_translation_target")
+        for label, code in (
+            ("Русский", "ru"), ("Английский", "en"), ("Немецкий", "de"),
+            ("Французский", "fr"), ("Испанский", "es"), ("Итальянский", "it"),
+            ("Португальский", "pt"), ("Нидерландский", "nl"), ("Польский", "pl"),
+            ("Украинский", "uk"), ("Белорусский", "be"), ("Китайский", "zh"),
+            ("Японский", "ja"), ("Корейский", "ko"), ("Турецкий", "tr"),
+            ("Арабский", "ar"), ("Казахский", "kk"), ("Узбекский", "uz"),
+        ):
+            self.target_language.addItem(label, code)
+        translate_row.addWidget(self.target_language, 1)
+        self.translate_button = QPushButton("✨ Перевести через ИИ", self)
+        self.translate_button.setObjectName("ocr_ai_translate")
+        self.translate_button.clicked.connect(self.translate_text)
+        translate_row.addWidget(self.translate_button)
+        layout.addLayout(translate_row)
+
+        self.translation_status = QLabel("Перевод появится здесь. Оригинал останется без изменений.", self)
+        self.translation_status.setWordWrap(True)
+        self.translation_status.setStyleSheet("color: palette(placeholder-text);")
+        layout.addWidget(self.translation_status)
+
+        self.translation_edit = QPlainTextEdit(self)
+        self.translation_edit.setObjectName("ocr_translation_result")
+        self.translation_edit.setReadOnly(True)
+        self.translation_edit.setPlaceholderText("Здесь появится перевод…")
+        self.translation_edit.setStyleSheet(
+            "QPlainTextEdit { border: 1px solid palette(mid); border-radius: 8px; padding: 9px; }")
+        self.translation_edit.hide()
+        layout.addWidget(self.translation_edit, 2)
+
         actions = QHBoxLayout()
         for title, handler in (
-            ("Копировать", self.copy_text),
+            ("Копировать оригинал", self.copy_text),
+            ("Копировать перевод", self.copy_translation),
             ("Таблица", self.convert_table),
-            ("Перевести", self.translate_text),
             ("Сохранить TXT", self.save_text),
             ("Закрыть", self.close),
         ):
@@ -5079,6 +5129,12 @@ class OCRResultDialog(QDialog):
     def copy_text(self) -> None:
         QApplication.clipboard().setText(self.text_edit.toPlainText(), QClipboard.Clipboard)
 
+    def copy_translation(self) -> None:
+        translated = self.translation_edit.toPlainText()
+        if translated.strip():
+            QApplication.clipboard().setText(translated, QClipboard.Clipboard)
+            self.translation_status.setText("Перевод скопирован в буфер обмена.")
+
     def convert_table(self) -> None:
         table = ocr_layout_to_markdown_table(self.payload)
         if not table:
@@ -5088,13 +5144,54 @@ class OCRResultDialog(QDialog):
         self.text_edit.setPlainText(table)
 
     def translate_text(self) -> None:
+        if self._translation_worker is not None and self._translation_worker.isRunning():
+            return
         selected = self.text_edit.textCursor().selectedText().replace("\u2029", "\n").strip()
         text = selected or self.text_edit.toPlainText().strip()
         if not text:
+            QMessageBox.information(self, "Перевод", "Нет текста для перевода.")
             return
-        encoded = bytes(QUrl.toPercentEncoding(text)).decode("ascii")
-        QDesktopServices.openUrl(QUrl(
-            "https://translate.google.com/?sl=auto&tl=ru&text=" + encoded + "&op=translate"))
+        if len(text) > 8000:
+            QMessageBox.information(
+                self, "Перевод", "За один запрос можно перевести до 8 000 символов. "
+                                 "Выдели нужный фрагмент или раздели текст на части.")
+            return
+        if _npcore_load_link() is None:
+            dialog = NPCoreConnectionDialog(self)
+            if dialog.exec() != QDialog.Accepted and _npcore_load_link() is None:
+                return
+            if _npcore_load_link() is None:
+                return
+        target = str(self.target_language.currentData() or "ru")
+        self.translate_button.setEnabled(False)
+        self.translate_button.setText("Перевожу…")
+        self.translation_status.setText("Отправляю текст в NPCore. Оригинал не изменяется.")
+        self._translation_worker = _NPCoreWorker(
+            lambda: _npcore_translate(text, target), self)
+        self._translation_worker.completed.connect(self._translation_completed)
+        self._translation_worker.start()
+
+    def _translation_completed(self, response: dict) -> None:
+        self.translate_button.setEnabled(True)
+        self.translate_button.setText("✨ Перевести через ИИ")
+        self._translation_worker = None
+        if not response.get("ok"):
+            error = str(response.get("error") or "Не удалось выполнить перевод")
+            self.translation_status.setText("Ошибка перевода: " + error)
+            if "Подключение NPCore истекло" in error:
+                QMessageBox.warning(self, "NPCore", error)
+            return
+        result = response.get("result") or {}
+        translated = result.get("text")
+        if not isinstance(translated, str) or not translated.strip():
+            self.translation_status.setText("ИИ не вернул текст перевода.")
+            return
+        self.translation_edit.setPlainText(translated)
+        self.translation_edit.show()
+        detected = str(result.get("detected_language") or "язык не определён")
+        target = self.target_language.currentText()
+        self.translation_status.setText(f"Готово · исходный язык: {detected} · перевод: {target}")
+        self.translation_edit.setFocus()
 
     def save_text(self) -> None:
         path, _ = QFileDialog.getSaveFileName(
@@ -5106,7 +5203,6 @@ class OCRResultDialog(QDialog):
             Path(path).write_text(self.text_edit.toPlainText(), encoding="utf-8")
         except OSError as exc:
             QMessageBox.warning(self, "Сохранение", str(exc))
-
 
 def start_ocr(img: QImage, launcher=None, history_path: Optional[Path] = None) -> None:
     """Асинхронно распознаёт текст, сохраняет OCR-индекс истории и показывает результат."""
@@ -5181,7 +5277,7 @@ def start_ocr(img: QImage, launcher=None, history_path: Optional[Path] = None) -
                 QApplication.clipboard().setText(text, QClipboard.Clipboard)
                 preview = text.replace("\n", " ")
                 notify("Текст скопирован", preview[:120] + ("…" if len(preview) > 120 else ""))
-                dialog = OCRResultDialog(text, payload)
+                dialog = OCRResultDialog(text, payload, launcher=launcher)
                 _ocr_dialogs.append(dialog)
                 dialog.destroyed.connect(lambda *_: _ocr_dialogs.remove(dialog)
                                           if dialog in _ocr_dialogs else None)
