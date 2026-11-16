@@ -5704,6 +5704,25 @@ class ScrollingReviewDialog(QDialog):
         self.message_label = QLabel(message or "Проверьте результат. При необходимости скорректируйте смещение между кадрами.", self)
         self.message_label.setWordWrap(True)
         layout.addWidget(self.message_label)
+        self.frame_strip = QListWidget(self)
+        self.frame_strip.setViewMode(QListWidget.IconMode)
+        self.frame_strip.setFlow(QListWidget.LeftToRight)
+        self.frame_strip.setMovement(QListWidget.Static)
+        self.frame_strip.setMaximumHeight(112)
+        self.frame_strip.setIconSize(QSize(112, 72))
+        self.frame_strip.setGridSize(QSize(132, 96))
+        self.frame_strip.setSelectionMode(QAbstractItemView.SingleSelection)
+        for index, frame in enumerate(self.frames):
+            thumbnail = frame.scaled(QSize(112, 72), Qt.KeepAspectRatio,
+                                     Qt.SmoothTransformation)
+            item = QListWidgetItem(QIcon(QPixmap.fromImage(thumbnail)),
+                                   f"Кадр {index + 1}")
+            item.setData(Qt.UserRole, index)
+            self.frame_strip.addItem(item)
+        self.frame_strip.itemClicked.connect(self._select_frame)
+        if self.frame_strip.count():
+            self.frame_strip.setCurrentRow(0)
+        layout.addWidget(self.frame_strip)
         self.preview = QLabel(self)
         self.preview.setAlignment(Qt.AlignCenter)
         self.preview.setMinimumSize(600, 430)
@@ -5736,6 +5755,13 @@ class ScrollingReviewDialog(QDialog):
         buttons.addWidget(self.accept_btn)
         layout.addLayout(buttons)
         self._render_preview()
+
+    def _select_frame(self, item: QListWidgetItem) -> None:
+        if not self.steps:
+            return
+        frame_index = int(item.data(Qt.UserRole) or 0)
+        seam_index = min(max(0, frame_index - 1), len(self.steps) - 1)
+        self.seam_combo.setCurrentIndex(seam_index)
 
     def _select_seam(self, _index: int) -> None:
         self._applied_delta = 0
