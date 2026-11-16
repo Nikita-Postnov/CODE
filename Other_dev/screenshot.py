@@ -6549,7 +6549,7 @@ class Launcher(QMainWindow):
             ("Распознать текст", self.make_ocr, False),
         ]))
         v.addWidget(group_box("Запись экрана", [
-            ("Запись всего экрана", self.start_recording, True),
+            ("Запись экрана", self.start_recording, True),
             ("Запись отдельного окна", self.start_window_recording, False),
         ]))
         v.addWidget(group_box("Изображения и проекты", [
