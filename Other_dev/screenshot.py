@@ -4646,45 +4646,90 @@ def compare_screenshot_images(before: QImage, after: QImage,
 
 
 def _scroll_overlap(previous: QImage, current: QImage) -> int:
-    """Найти величину вертикального прокручивания по сходству образцов строк.
+    """Точный сдвиг для длинного снимка, в исходных вертикальных пикселях.
 
-    Возвращает 0 при отсутствии движения или надёжного пересечения.
+    Сравниваются целые строки, а не отдельные пиксели. Уменьшается только
+    ширина анализируемой копии, поэтому текст в результате не масштабируется
+    и шов не отклоняется на несколько пикселей из-за округления DPI.
+    Повторяющийся контент с несколькими равными смещениями не склеивается.
     """
     if previous.isNull() or current.isNull() or previous.size() != current.size():
         return 0
-    small_w = min(96, previous.width())
-    if small_w < 8 or previous.height() < 70:
+    width, height = previous.width(), previous.height()
+    if width < 40 or height < 70:
         return 0
-    a = previous.scaledToWidth(small_w, Qt.FastTransformation).convertToFormat(
-        QImage.Format_RGB32)
-    b = current.scaledToWidth(small_w, Qt.FastTransformation).convertToFormat(
-        QImage.Format_RGB32)
-    h, w = a.height(), a.width()
-    if h < 16:
+    margin_x = max(1, round(width * 0.08))
+    cropped_width = width - 2 * margin_x
+    sample_width = min(cropped_width, 560)
+
+    def grayscale_rows(image: QImage) -> list[bytes]:
+        crop = image.copy(margin_x, 0, cropped_width, height)
+        if cropped_width > sample_width:
+            crop = crop.scaled(sample_width, height, Qt.IgnoreAspectRatio,
+                               Qt.FastTransformation)
+        gray = crop.convertToFormat(QImage.Format_Grayscale8)
+        buffer = bytes(gray.constBits())
+        stride = gray.bytesPerLine()
+        return [buffer[y * stride:y * stride + sample_width]
+                for y in range(height)]
+
+    a, b = grayscale_rows(previous), grayscale_rows(current)
+    top = max(8, round(height * .13))
+    bottom = height - max(8, round(height * .10))
+    min_shift = max(3, round(height * .018))
+    max_shift = min(round(height * .80), bottom - top - 24)
+    if max_shift < min_shift:
         return 0
 
-    # Все кандидаты сопоставляем с теми же 12 строками и 14 столбцами.
-    cols = [round((w - 1) * j / 15) for j in range(1, 15)]
-    best_shift, best_error = 0, float("inf")
-    samples_per_shift = 12 * len(cols)
-    for shift in range(0, max(1, int(h * .88))):
-        overlap = h - shift
-        if overlap < 10:
-            continue
-        error = 0
-        for j in range(12):
-            y = min(overlap - 1, round((overlap - 1) * j / 11))
-            for x in cols:
-                c1, c2 = a.pixel(x, y + shift), b.pixel(x, y)
-                error += (abs(((c1 >> 16) & 255) - ((c2 >> 16) & 255))
-                          + abs(((c1 >> 8) & 255) - ((c2 >> 8) & 255))
-                          + abs((c1 & 255) - (c2 & 255)))
-        average = error / max(1, samples_per_shift * 3)
-        if average < best_error:
-            best_error, best_shift = average, shift
-    if best_shift == 0 or best_error > 16:
+    # Из оценки исключаются однотонные строки, в которых нельзя найти текст,
+    # а также неподвижные верхние и нижние панели приложения.
+    informative = [
+        y for y in range(top, bottom)
+        if (max(a[y]) - min(a[y]) >= 35 or
+            (y > 0 and abs(a[y][sample_width // 2] -
+                           a[y - 1][sample_width // 2]) >= 2))
+    ]
+    if len(informative) < 6:
         return 0
-    return max(1, round(best_shift * previous.height() / h))
+
+    # Сначала дешёвое сопоставление хешей, затем проверка целых строк
+    # у лучших кандидатов. Хеш здесь служит только для отбора.
+    ah = [hash(row) for row in a]
+    bh = [hash(row) for row in b]
+    scores: list[tuple[float, int, int]] = []
+    for shift in range(min_shift, max_shift + 1):
+        eligible = [y for y in informative if top <= y - shift < bottom]
+        if len(eligible) < 8:
+            continue
+        equal = sum(ah[y] == bh[y - shift] for y in eligible)
+        if equal >= 5:
+            scores.append((equal / len(eligible), equal, shift))
+    if not scores:
+        return 0
+
+    scores.sort(reverse=True)
+    best_ratio, _count, best_shift = scores[0]
+    if best_ratio < .70:
+        log.info("scroll: надёжное совпадение строк не найдено (%.2f)",
+                 best_ratio)
+        return 0
+
+    # Реально проверяем пиксельные строки, чтобы исключить коллизии хешей.
+    eligible = [y for y in informative if top <= y - best_shift < bottom]
+    equal_real = sum(a[y] == b[y - best_shift] for y in eligible)
+    if equal_real < 8 or equal_real / len(eligible) < .70:
+        return 0
+
+    # Слишком похожие периодические строки (например одинаковые элементы
+    # таблицы) не позволяют достоверно определить, где заканчивается слово.
+    for ratio, count, candidate in scores[1:]:
+        if ratio < best_ratio - .06:
+            break
+        if abs(candidate - best_shift) > 2 and count >= 7:
+            log.info("scroll: неоднозначный сдвиг %s или %s, склейка остановлена",
+                     best_shift, candidate)
+            return 0
+    return best_shift
 
 
 def _stitch_scroll_frames(frames: list[QImage], scroll_steps: list[int]) -> QImage:
@@ -4715,7 +4760,7 @@ class ScrollingScreenshotJob(QObject):
 
     completed = Signal(QImage, str)
 
-    def __init__(self, area: QRect, parent=None, max_steps: int = 18):
+    def __init__(self, area: QRect, parent=None, max_steps: int = 24):
         super().__init__(parent)
         self.area = QRect(area)
         self.max_steps = max(1, min(30, max_steps))
@@ -4749,7 +4794,7 @@ class ScrollingScreenshotJob(QObject):
         except (OSError, AttributeError):
             self._finish("Windows не разрешила прокрутку окна.")
             return
-        QTimer.singleShot(430, self._capture_next)
+        QTimer.singleShot(650, self._capture_next)
 
     def _capture_next(self):
         try:
@@ -4759,11 +4804,14 @@ class ScrollingScreenshotJob(QObject):
                 return
             offset = _scroll_overlap(self.frames[-1], frame)
             if offset <= 0:
-                self._finish("")
+                self._finish("Прокрутка завершилась или точное совпадение текста не найдено. "
+                             "Сохранён только надёжно собранный фрагмент.")
                 return
             if (self.frames[0].height() + sum(self.steps) + offset > 16000):
                 self._finish("Достигнут предел высоты 16000 пикселей.")
                 return
+            log.info("scroll: accepted exact shift=%s px, frame=%s",
+                     offset, len(self.frames) + 1)
             self.frames.append(frame)
             self.steps.append(offset)
             self._advance()

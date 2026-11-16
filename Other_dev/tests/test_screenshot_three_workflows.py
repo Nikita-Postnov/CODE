@@ -15,7 +15,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor, QImage
+from PySide6.QtGui import QColor, QImage, QPainter, QFont
 from PySide6.QtWidgets import QApplication, QLabel, QScrollArea, QPushButton
 
 from screenshot import (
@@ -78,6 +78,61 @@ class ScreenshotThreeWorkflowsTests(unittest.TestCase):
         detected = _scroll_overlap(first, second)
         self.assertGreater(detected, 0)
         self.assertLessEqual(abs(detected - offset), 5)
+
+    def test_pixel_accurate_text_scroll_with_fixed_header(self):
+        """Длинный снимок не должен разрывать слова даже при нечётном сдвиге."""
+        width, height, offset = 520, 660, 237
+        source = QImage(width, height + offset + 200, QImage.Format_RGB32)
+        source.fill(Qt.white)
+        painter = QPainter(source)
+        painter.setPen(QColor("#18273a"))
+        font = QFont("Arial", 16)
+        painter.setFont(font)
+        for line_no, y in enumerate(range(40, source.height(), 27)):
+            painter.drawText(42, y, f"№{line_no:03d} Проверка текста: Алфавит-2026")
+            painter.fillRect(55, y - 22, 3 + (line_no * 7) % 45, 4,
+                             QColor.fromRgb((line_no * 37) % 230 + 20, 40, 80))
+            painter.drawLine(40, y + 2, 470, y + 2)
+        painter.end()
+        first = source.copy(0, 0, width, height)
+        second = source.copy(0, offset, width, height)
+        for frame in (first, second):
+            painter = QPainter(frame)
+            painter.fillRect(0, 0, width, 68, QColor("#293450"))
+            painter.setPen(Qt.white)
+            painter.drawText(40, 40, "ФИКСИРОВАННОЕ МЕНЮ")
+            painter.end()
+        self.assertEqual(_scroll_overlap(first, second), offset)
+
+    def test_text_scroll_pixel_fidelity_without_scaling(self):
+        width, height, offset = 450, 480, 173
+        source = QImage(width, height + offset, QImage.Format_RGB32)
+        source.fill(Qt.white)
+        painter = QPainter(source)
+        painter.setPen(Qt.black)
+        painter.setFont(QFont("Arial", 13))
+        for y in range(25, source.height(), 24):
+            painter.drawText(25, y, f"#{y:04d} Проверяем каждую строку при прокрутке")
+            painter.fillRect(45, y - 20, 8 + (y * 7) % 75, 4,
+                             QColor.fromRgb((y * 3) % 235 + 20, 40, 60))
+        painter.end()
+        before = source.copy(0, 0, width, height)
+        after = source.copy(0, offset, width, height)
+        shift = _scroll_overlap(before, after)
+        self.assertEqual(shift, offset)
+        stitched = _stitch_scroll_frames([before, after], [shift])
+        self.assertEqual(stitched.height(), height + offset)
+        for y in (10, 200, height - 1, height, height + 25, height + offset - 1):
+            for x in (30, 120, 200, width - 10):
+                self.assertEqual(stitched.pixel(x, y), source.pixel(x, y))
+
+    def test_no_false_match_on_repeated_uniform_background(self):
+        """Белая или одноцветная область не должна превращаться в ложный длинный снимок."""
+        first = QImage(400, 600, QImage.Format_RGB32)
+        second = QImage(400, 600, QImage.Format_RGB32)
+        first.fill(Qt.white)
+        second.fill(Qt.white)
+        self.assertEqual(_scroll_overlap(first, second), 0)
 
     def test_stitch_keeps_only_new_bottom_rows(self):
         first = QImage(40, 100, QImage.Format_RGB32)
