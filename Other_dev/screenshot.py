@@ -4851,7 +4851,8 @@ class OCRResultDialog(QDialog):
         self.text_edit.setPlainText(table)
 
     def translate_text(self) -> None:
-        text = self.text_edit.toPlainText().strip()
+        selected = self.text_edit.textCursor().selectedText().replace("\u2029", "\n").strip()
+        text = selected or self.text_edit.toPlainText().strip()
         if not text:
             return
         encoded = bytes(QUrl.toPercentEncoding(text)).decode("ascii")
