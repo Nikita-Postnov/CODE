@@ -477,6 +477,76 @@ def _normalized_image(img: QImage) -> QImage:
     return out
 
 
+def draw_spotlight(p: QPainter, rect: QRect, canvas_size: QSize) -> None:
+    """Затемняет изображение вокруг выбранного прямоугольника."""
+    bounds = QRect(0, 0, canvas_size.width(), canvas_size.height())
+    hole = QRect(rect).normalized().intersected(bounds)
+    if hole.isEmpty():
+        return
+    p.save()
+    p.setPen(Qt.NoPen)
+    p.setBrush(QColor(0, 0, 0, 158))
+    if hole.top() > 0:
+        p.drawRect(QRect(bounds.left(), bounds.top(), bounds.width(), hole.top()))
+    if hole.bottom() < bounds.bottom():
+        p.drawRect(QRect(bounds.left(), hole.bottom() + 1, bounds.width(), bounds.bottom() - hole.bottom()))
+    if hole.left() > 0:
+        p.drawRect(QRect(bounds.left(), hole.top(), hole.left(), hole.height()))
+    if hole.right() < bounds.right():
+        p.drawRect(QRect(hole.right() + 1, hole.top(), bounds.right() - hole.right(), hole.height()))
+    p.setPen(QPen(QColor(255, 210, 70, 235), 2))
+    p.setBrush(Qt.NoBrush)
+    p.drawRect(hole)
+    p.restore()
+
+
+def draw_ruler(p: QPainter, start: QPoint, end: QPoint, color: QColor, width: int = 2) -> None:
+    """Линейка с засечками и точной длиной в пикселях."""
+    dx, dy = end.x() - start.x(), end.y() - start.y()
+    distance = math.hypot(dx, dy)
+    if distance < 1:
+        return
+    nx, ny = -dy / distance, dx / distance
+    tick = max(5.0, float(width) * 2.5)
+    p.save()
+    p.setRenderHint(QPainter.Antialiasing, True)
+    p.setPen(QPen(color, max(1, width), Qt.SolidLine, Qt.RoundCap))
+    p.drawLine(QPointF(start), QPointF(end))
+    for point in (start, end):
+        p.drawLine(QPointF(point.x() - nx * tick, point.y() - ny * tick),
+                   QPointF(point.x() + nx * tick, point.y() + ny * tick))
+    label = f"{distance:.1f} px"
+    font = QFont(); font.setBold(True); font.setPointSize(10)
+    metrics = QFontMetrics(font)
+    text_rect = QRectF((start.x() + end.x()) / 2 - metrics.horizontalAdvance(label) / 2 - 7,
+                       (start.y() + end.y()) / 2 - metrics.height() - 10,
+                       metrics.horizontalAdvance(label) + 14, metrics.height() + 8)
+    p.setFont(font); p.setPen(Qt.NoPen); p.setBrush(QColor(20, 24, 32, 220))
+    p.drawRoundedRect(text_rect, 5, 5)
+    p.setPen(QColor(255, 255, 255)); p.drawText(text_rect, Qt.AlignCenter, label)
+    p.restore()
+
+
+def draw_callout(p: QPainter, rect: QRect, text: str, color: QColor) -> None:
+    """Рисует поясняющую выноску с текстом и указателем."""
+    r = QRect(rect).normalized()
+    if r.width() < 24 or r.height() < 22:
+        return
+    p.save(); p.setRenderHint(QPainter.Antialiasing, True)
+    tail = QPainterPath()
+    tail.moveTo(r.left() + 24, r.bottom() - 1)
+    tail.lineTo(r.left() + 8, r.bottom() + 18)
+    tail.lineTo(r.left() + 48, r.bottom() - 1)
+    tail.closeSubpath()
+    p.setPen(QPen(QColor(70, 58, 25), 2)); p.setBrush(QColor(255, 244, 190, 245))
+    p.drawPath(tail); p.drawRoundedRect(r, 8, 8)
+    p.setPen(QColor(45, 42, 32))
+    font = QFont(); font.setPointSize(11); p.setFont(font)
+    p.drawText(r.adjusted(12, 8, -12, -8),
+               Qt.AlignLeft | Qt.AlignVCenter | Qt.TextWordWrap, text)
+    p.restore()
+
+
 def draw_arrow(p: QPainter, start: QPointF, end: QPointF, color: QColor, width: int):
     p.save()
     pen = QPen(color, width, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
@@ -1382,6 +1452,9 @@ class Tool(Enum):
     STEP = auto()
     FILL = auto()
     ERASER = auto()
+    SPOTLIGHT = auto()
+    CALLOUT = auto()
+    RULER = auto()
 
 
 class StickerItem(QGraphicsItem):
@@ -2785,6 +2858,7 @@ class CanvasView(QGraphicsView):
                     Tool.PEN, Tool.HIGHLIGHT, Tool.RECT, Tool.ELLIPSE,
                     Tool.ARROW, Tool.BLUR, Tool.PIXELATE, Tool.ERASER,
                     Tool.CROP, Tool.REDACT, Tool.STEP, Tool.FILL, Tool.TEXT,
+                    Tool.SPOTLIGHT, Tool.CALLOUT, Tool.RULER,
                 )
                 is_drawing_tool = self.tool in DRAWING_TOOLS
 
@@ -2880,6 +2954,9 @@ class CanvasView(QGraphicsView):
                 Tool.ARROW,
                 Tool.CROP,
                 Tool.REDACT,
+                Tool.SPOTLIGHT,
+                Tool.CALLOUT,
+                Tool.RULER,
             ):
                 self._start_pos = img_pos
             elif self.tool == Tool.FILL:
@@ -2993,7 +3070,8 @@ class CanvasView(QGraphicsView):
             return
         if (
             self._start_pos is not None
-            and self.tool in (Tool.RECT, Tool.ELLIPSE, Tool.ARROW, Tool.CROP, Tool.REDACT)
+            and self.tool in (Tool.RECT, Tool.ELLIPSE, Tool.ARROW, Tool.CROP, Tool.REDACT,
+                              Tool.SPOTLIGHT, Tool.CALLOUT, Tool.RULER)
         ):
             cur = self.viewport_to_image(e.position().toPoint())
             self._update_shape_preview(self._start_pos, cur, bool(e.modifiers() & Qt.ShiftModifier))
@@ -3006,6 +3084,27 @@ class CanvasView(QGraphicsView):
         """Рисует превью фигуры так же, как раньше рисовалось на копии картинки."""
         tool = self.tool
         thickness = max(1, self.thickness)
+        if tool == Tool.SPOTLIGHT:
+            bounds = QRectF(0, 0, self.bg_img.width(), self.bg_img.height())
+            self.preview_item.set_shape(
+                bounds, lambda p: draw_spotlight(p, self._rect_from_points(start, cur, False),
+                                                 self.bg_img.size()))
+            return
+        if tool == Tool.RULER:
+            a, b = QPoint(start), QPoint(cur)
+            color = QColor(self.color)
+            pad = max(18, thickness * 4)
+            bounds = QRectF(a, b).normalized().adjusted(-pad, -pad, pad, pad)
+            self.preview_item.set_shape(bounds,
+                lambda p: draw_ruler(p, a, b, color, thickness))
+            return
+        if tool == Tool.CALLOUT:
+            r = self._rect_from_points(start, cur, False)
+            color = QColor(self.color)
+            bounds = QRectF(r).adjusted(-2, -2, 52, 22)
+            self.preview_item.set_shape(bounds,
+                lambda p: draw_callout(p, r, "Текст пояснения", color))
+            return
         if tool == Tool.ARROW:
             a, b = QPointF(start), QPointF(cur)
             color = QColor(self.color)
@@ -3066,7 +3165,8 @@ class CanvasView(QGraphicsView):
 
             if (
                 self._start_pos is not None
-                and self.tool in (Tool.RECT, Tool.ELLIPSE, Tool.ARROW, Tool.CROP, Tool.REDACT)
+                and self.tool in (Tool.RECT, Tool.ELLIPSE, Tool.ARROW, Tool.CROP, Tool.REDACT,
+                                  Tool.SPOTLIGHT, Tool.CALLOUT, Tool.RULER)
             ):
                 cur = self.viewport_to_image(e.position().toPoint())
 
@@ -3094,6 +3194,32 @@ class CanvasView(QGraphicsView):
                         self._refresh()
                         # через fit_to_view, чтобы обновились зум в статусе и сглаживание
                         self.fit_to_view()
+                elif self.tool == Tool.SPOTLIGHT:
+                    r = self._rect_from_points(self._start_pos, cur, False)
+                    if r.width() > 3 and r.height() > 3:
+                        self.push_undo()
+                        painter = QPainter(self.ov_img)
+                        draw_spotlight(painter, r, self.bg_img.size())
+                        painter.end()
+                        self._refresh()
+                elif self.tool == Tool.RULER:
+                    if self._start_pos != cur:
+                        self.push_undo()
+                        painter = QPainter(self.ov_img)
+                        draw_ruler(painter, self._start_pos, cur, self.color,
+                                   max(1, self.thickness))
+                        painter.end()
+                        self._refresh(self._rect_from_points(self._start_pos, cur, False).adjusted(-24, -24, 24, 24))
+                elif self.tool == Tool.CALLOUT:
+                    r = self._rect_from_points(self._start_pos, cur, False)
+                    if r.width() >= 50 and r.height() >= 30:
+                        text, ok = QInputDialog.getText(self, "Выноска", "Текст пояснения:")
+                        if ok and text.strip():
+                            self.push_undo()
+                            painter = QPainter(self.ov_img)
+                            draw_callout(painter, r, text.strip(), self.color)
+                            painter.end()
+                            self._refresh(r.adjusted(-4, -4, 54, 24))
                 else:
                     r = self._rect_from_points(
                         self._start_pos, cur, bool(e.modifiers() & Qt.ShiftModifier)
@@ -3926,8 +4052,8 @@ class EditorWindow(QMainWindow):
                 self.view.set_tool(t)
 
             group = ("Выбор" if t == Tool.PAN else
-                     "Рисование" if t in (Tool.PEN, Tool.HIGHLIGHT, Tool.TEXT, Tool.STEP) else
-                     "Фигуры" if t in (Tool.RECT, Tool.ELLIPSE, Tool.ARROW) else
+                     "Рисование" if t in (Tool.PEN, Tool.HIGHLIGHT, Tool.TEXT, Tool.STEP, Tool.CALLOUT) else
+                     "Фигуры" if t in (Tool.RECT, Tool.ELLIPSE, Tool.ARROW, Tool.RULER) else
                      "Обработка")
             act = add_action(tool_menus[group], label, cb, shortcut, checkable=True)
             self.group_actions.append(act)
@@ -3948,12 +4074,17 @@ class EditorWindow(QMainWindow):
         a_filltool = tool_action(t1, "🪣 Заливка",    Tool.FILL, "F")
         a_filltool.setToolTip("Ведро: ЛКМ — заливка в верхнем слое, Alt+ЛКМ — заливка фона. «Допуск» = чувствительность к цвету.")
         a_eraser = tool_action(t1, "⌫ Ластик",       Tool.ERASER, "E")
+        a_spotlight = tool_action(t1, "◉ Затемнение вокруг", Tool.SPOTLIGHT, "K")
+        a_callout = tool_action(t1, "💬 Выноска", Tool.CALLOUT, "Q")
+        a_ruler = tool_action(t1, "📏 Линейка", Tool.RULER, "U")
         _tool_action_map: dict[Tool, QAction] = {
             Tool.PAN: a_pan, Tool.PEN: a_pen, Tool.HIGHLIGHT: a_high,
             Tool.RECT: a_rect, Tool.ELLIPSE: a_ell, Tool.ARROW: a_arrow,
             Tool.TEXT: a_text, Tool.BLUR: a_blur, Tool.PIXELATE: a_pix,
             Tool.CROP: a_crop, Tool.REDACT: a_redact, Tool.STEP: a_step,
             Tool.FILL: a_filltool, Tool.ERASER: a_eraser,
+            Tool.SPOTLIGHT: a_spotlight, Tool.CALLOUT: a_callout,
+            Tool.RULER: a_ruler,
         }
         saved_tool = self.view.tool
         restored_action = _tool_action_map.get(saved_tool, a_pen)
@@ -5641,7 +5772,7 @@ class Launcher(QMainWindow):
         info = QLabel(
             "Инструменты: Переместиться (H), Перо (P), Маркер (M), Прямоуг. (R), Овал (O), "
             "Стрелка (A), Текст (T), Блюр (B), Пиксели (X), Обрезать (C), Редация (D), "
-            "Шаг (1), Заливка (F), Ластик (E). "
+            "Шаг (1), Заливка (F), Ластик (E), Затемнение (K), Выноска (Q), Линейка (U). "
             "«⧉ Заливка форм» — заливка у прямоугольника и овала."
         )
         info.setWordWrap(True)
