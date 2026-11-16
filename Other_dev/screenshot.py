@@ -5282,7 +5282,9 @@ def _stitch_scroll_frames(frames: list[QImage], scroll_steps: list[int],
         raise ValueError("Количество кадров и смещений не совпадает")
     if fixed_bottoms is None:
         fixed_bottoms = [0] * len(scroll_steps)
-    if len(fixed_bottoms) != len(scroll_steps):
+    if len(fixed_bottoms) < len(scroll_steps):
+        fixed_bottoms = list(fixed_bottoms) + [0] * (len(scroll_steps) - len(fixed_bottoms))
+    elif len(fixed_bottoms) > len(scroll_steps):
         raise ValueError("Количество фиксированных полос не совпадает")
     width, height = frames[0].width(), frames[0].height()
     safe_steps = [max(0, min(height, int(offset))) for offset in scroll_steps]
