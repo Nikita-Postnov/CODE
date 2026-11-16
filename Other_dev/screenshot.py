@@ -5716,10 +5716,12 @@ class ScrollingReviewDialog(QDialog):
             self.seam_combo.addItem(f"Кадр {index + 1} → {index + 2}: {step} px", index)
         self.seam_combo.currentIndexChanged.connect(self._select_seam)
         controls.addWidget(self.seam_combo, 1)
+        self.delta_spin_enabled = bool(self.steps)
         controls.addWidget(QLabel("Коррекция, px:", self))
         self.delta_spin = QSpinBox(self)
         self.delta_spin.setRange(-240, 240)
         self.delta_spin.setSuffix(" px")
+        self.delta_spin.setEnabled(self.delta_spin_enabled)
         self.delta_spin.valueChanged.connect(self._change_delta)
         controls.addWidget(self.delta_spin)
         layout.addLayout(controls)
@@ -6318,19 +6320,24 @@ class Launcher(QMainWindow):
             panel.close_silently()
         if job is not None:
             job.deleteLater()
-        # При нуле подтверждённых прокруток нельзя выдавать один
-        # обычный кадр за длинный снимок или изменять буфер обмена.
+        # Даже если прокрутка не успела начаться, сохраняем уже снятый первый экран.
+        # При подтверждённых смещениях результат получает тип «длинный снимок».
         confirmed_steps = len(job.steps) if job is not None else 0
-        if not image.isNull() and confirmed_steps > 0:
-            if job is not None and len(job.frames) == len(job.steps) + 1:
+        has_captured_frames = job is not None and bool(job.frames)
+        if not image.isNull() and has_captured_frames:
+            review_message = message
+            if confirmed_steps == 0:
+                review_message = (message + "\nПервый экран сохранён как обычный снимок.").strip()
+            if len(job.frames) == len(job.steps) + 1:
                 review = ScrollingReviewDialog(
-                    job.frames, job.steps, job.fixed_bottoms, message, self)
+                    job.frames, job.steps, job.fixed_bottoms, review_message, self)
                 if review.exec() == QDialog.Accepted:
                     image = review.result_image()
                 else:
                     image = QImage()
             if not image.isNull():
-                self._handle_captured_image(image, capture_kind="scroll")
+                self._handle_captured_image(
+                    image, capture_kind="scroll" if confirmed_steps > 0 else "shot")
         elif confirmed_steps == 0:
             message = (
                 (message + " ") if message else ""
