@@ -4728,6 +4728,7 @@ def _scroll_overlap(previous: QImage, current: QImage) -> int:
         equal = sum(1 for y in comparable if a[y] == b[y - shift])
         exact_scores.append((equal / len(comparable), equal, shift))
     exact_scores.sort(reverse=True)
+    log.warning("scroll debug: candidate ratios %s", exact_scores[:8])
     if exact_scores:
         ratio, equal_count, exact_shift = exact_scores[0]
         if ratio >= 0.70 and equal_count >= 10:
