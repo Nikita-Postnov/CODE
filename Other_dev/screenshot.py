@@ -7,8 +7,12 @@ import math
 import base64
 import os
 import shutil
+import socket
 import subprocess
 import sys
+import urllib.error
+import urllib.parse
+import urllib.request
 import threading
 import time
 import tempfile
@@ -34,6 +38,7 @@ from PySide6.QtCore import (
     QEventLoop,
     QAbstractNativeEventFilter,
     QObject,
+    QThread,
     Slot,
     QProcess,
     QUrl,
@@ -73,6 +78,9 @@ from PySide6.QtWidgets import (
     QWidget,
     QVBoxLayout,
     QHBoxLayout,
+    QGridLayout,
+    QGroupBox,
+    QSplitter,
     QScrollArea,
     QPushButton,
     QLabel,
@@ -4813,24 +4821,327 @@ def ocr_layout_to_markdown_table(payload: dict) -> str:
 _ocr_dialogs: list[QDialog] = []
 
 
-class OCRResultDialog(QDialog):
-    """Результат OCR: редактирование, копирование, таблица, перевод и TXT."""
+def _npcore_normalize_server(value: str) -> str:
+    if not isinstance(value, str):
+        raise ValueError("Не указан адрес NPCore")
+    parsed = urllib.parse.urlsplit(value.strip())
+    local = parsed.hostname in ("localhost", "127.0.0.1")
+    if (not parsed.hostname or parsed.username or parsed.password or parsed.query or
+            parsed.fragment or parsed.path not in ("", "/") or
+            (parsed.scheme != "https" and not (parsed.scheme == "http" and local))):
+        raise ValueError("Укажи HTTPS-адрес NPCore без пути и параметров")
+    return f"{parsed.scheme}://{parsed.netloc}"
 
-    def __init__(self, text: str, payload: Optional[dict] = None, parent=None):
+
+def _npcore_pair_config(value: str) -> tuple[str, str]:
+    try:
+        data = json.loads(value)
+        server, code = data.get("server"), data.get("code")
+    except (ValueError, AttributeError):
+        parts = (value or "").strip().split()
+        server, code = (parts + ["", ""])[:2] if len(parts) == 2 else ("", "")
+    server = _npcore_normalize_server(server)
+    if not isinstance(code, str) or len(code) != 24 or not all(
+            ch.isalnum() or ch in "-_" for ch in code):
+        raise ValueError("Код подключения должен быть из 24 символов")
+    return server, code
+
+
+class _NPCoreBlob(ctypes.Structure):
+    _fields_ = [("cbData", ctypes.c_uint32),
+                ("pbData", ctypes.POINTER(ctypes.c_char))]
+
+
+def _npcore_dpapi(data: bytes, protect: bool) -> bytes:
+    if not sys.platform.startswith("win"):
+        raise RuntimeError("Защищённое хранение ключа доступно только в Windows")
+    crypt = ctypes.WinDLL("crypt32", use_last_error=True)
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    buffer = ctypes.create_string_buffer(data, len(data))
+    source = _NPCoreBlob(len(data), ctypes.cast(buffer, ctypes.POINTER(ctypes.c_char)))
+    output = _NPCoreBlob()
+    if protect:
+        fn = crypt.CryptProtectData
+        fn.argtypes = [ctypes.POINTER(_NPCoreBlob), ctypes.c_wchar_p, ctypes.c_void_p,
+                       ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint32,
+                       ctypes.POINTER(_NPCoreBlob)]
+        ok = fn(ctypes.byref(source), "NP Screenshot NPCore", None, None, None, 0x1,
+                ctypes.byref(output))
+    else:
+        fn = crypt.CryptUnprotectData
+        fn.argtypes = [ctypes.POINTER(_NPCoreBlob), ctypes.c_void_p, ctypes.c_void_p,
+                       ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint32,
+                       ctypes.POINTER(_NPCoreBlob)]
+        ok = fn(ctypes.byref(source), None, None, None, None, 0x1, ctypes.byref(output))
+    if not ok:
+        raise OSError(ctypes.get_last_error(), "Windows DPAPI")
+    try:
+        return ctypes.string_at(output.pbData, output.cbData)
+    finally:
+        kernel.LocalFree.argtypes = [ctypes.c_void_p]
+        kernel.LocalFree(ctypes.cast(output.pbData, ctypes.c_void_p))
+
+
+def _npcore_link_path() -> Path:
+    return DATA_DIR / "npcore_screenshot_link.json"
+
+
+def _npcore_load_link() -> Optional[tuple[str, str]]:
+    try:
+        data = json.loads(_npcore_link_path().read_text(encoding="utf-8"))
+        server = _npcore_normalize_server(data.get("server"))
+        if isinstance(data.get("token_dpapi"), str):
+            token = _npcore_dpapi(base64.b64decode(data["token_dpapi"]), False).decode("utf-8")
+        else:
+            token = str(data.get("token") or "")
+        if len(token) != 43 or not all(ch.isalnum() or ch in "-_" for ch in token):
+            return None
+        return server, token
+    except (OSError, ValueError, TypeError, KeyError, RuntimeError):
+        return None
+
+
+def _npcore_save_link(server: str, token: str) -> None:
+    protected = base64.b64encode(_npcore_dpapi(token.encode("utf-8"), True)).decode("ascii")
+    path = _npcore_link_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(".tmp")
+    temporary.write_text(json.dumps({"server": server, "token_dpapi": protected,
+                                     "saved": int(time.time())},
+                                    ensure_ascii=False, indent=1), encoding="utf-8")
+    os.replace(temporary, path)
+
+
+def _npcore_http_json(method: str, url: str, token: str = "",
+                      body: Optional[dict] = None, timeout: float = 20) -> dict:
+    raw = None if body is None else json.dumps(body, ensure_ascii=False).encode("utf-8")
+    request = urllib.request.Request(url, data=raw, method=method)
+    request.add_header("Accept", "application/json")
+    request.add_header("User-Agent", "NP-Screenshot/1.0")
+    if raw is not None:
+        request.add_header("Content-Type", "application/json; charset=utf-8")
+    if token:
+        request.add_header("Authorization", "Bearer " + token)
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return json.loads(response.read().decode("utf-8") or "{}")
+    except urllib.error.HTTPError as exc:
+        try:
+            data = json.loads(exc.read().decode("utf-8"))
+            detail = str(data.get("detail") or data.get("error") or "")
+        except Exception:
+            detail = ""
+        if exc.code == 401:
+            raise RuntimeError("Подключение NPCore истекло или отозвано. Подключи заново.") from None
+        raise RuntimeError(detail or f"NPCore вернул HTTP {exc.code}") from None
+    except urllib.error.URLError:
+        raise RuntimeError("Не удалось связаться с NPCore. Проверь подключение и адрес сервера.") from None
+
+
+def _npcore_pair(value: str) -> tuple[str, str]:
+    server, code = _npcore_pair_config(value)
+    name = (os.environ.get("COMPUTERNAME") or socket.gethostname() or "Компьютер")[:40]
+    result = _npcore_http_json("POST", server + "/api/desk/pair",
+                               body={"code": code, "name": "NP Screenshot · " + name})
+    token = result.get("token")
+    if not result.get("ok") or not isinstance(token, str) or len(token) != 43:
+        raise RuntimeError("NPCore не подтвердил подключение")
+    _npcore_save_link(server, token)
+    return server, token
+
+
+def _npcore_translate(text: str, target: str) -> dict:
+    link = _npcore_load_link()
+    if link is None:
+        raise RuntimeError("Сначала подключи NP Screenshot к NPCore")
+    server, token = link
+    result = _npcore_http_json("POST", server + "/api/desk/translate", token,
+                               {"text": text, "source": "auto", "target": target},
+                               timeout=75)
+    if not result.get("ok") or not isinstance(result.get("text"), str):
+        raise RuntimeError(str(result.get("error") or "NPCore не вернул перевод"))
+    return result
+
+
+class _NPCoreWorker(QThread):
+    completed = Signal(object)
+
+    def __init__(self, callback, parent=None):
+        super().__init__(parent)
+        self.callback = callback
+
+    def run(self):
+        try:
+            result = self.callback()
+            self.completed.emit({"ok": True, "result": result})
+        except Exception as exc:
+            self.completed.emit({"ok": False, "error": str(exc)})
+
+
+class NPCoreConnectionDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Подключение NP Screenshot к NPCore")
+        self.setMinimumWidth(520)
+        layout = QVBoxLayout(self)
+        self._pair_worker: Optional[_NPCoreWorker] = None
+        self.status = QLabel(self)
+        link = _npcore_load_link()
+        self.status.setText(
+            f"Подключено к NPCore: {link[0]}" if link else "NP Screenshot пока не подключён к NPCore.")
+        self.status.setWordWrap(True)
+        layout.addWidget(self.status)
+        hint = QLabel(
+            "В Mini App открой: Напоминания → «Николас на компьютере» → "
+            "«Получить код» → «Копировать подключение». Вставь скопированную строку сюда.", self)
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+        self.config = QPlainTextEdit(self)
+        self.config.setPlaceholderText(
+            '{"server":"https://адрес-npcore","code":"одноразовый-код"}')
+        self.config.setMaximumHeight(105)
+        layout.addWidget(self.config)
+        buttons = QHBoxLayout()
+        self.connect_button = QPushButton("Подключить", self)
+        self.connect_button.clicked.connect(self.connect_npcore)
+        buttons.addWidget(self.connect_button)
+        self.disconnect_button = QPushButton("Отключить", self)
+        self.disconnect_button.setEnabled(link is not None)
+        self.disconnect_button.clicked.connect(self.disconnect_npcore)
+        buttons.addWidget(self.disconnect_button)
+        buttons.addStretch(1)
+        close = QPushButton("Закрыть", self)
+        close.clicked.connect(self.accept)
+        buttons.addWidget(close)
+        layout.addLayout(buttons)
+
+    def connect_npcore(self):
+        value = self.config.toPlainText().strip()
+        if not value:
+            QMessageBox.information(self, "NPCore", "Вставь строку подключения из Mini App.")
+            return
+        try:
+            _npcore_pair_config(value)
+        except ValueError as exc:
+            QMessageBox.warning(self, "NPCore", str(exc))
+            return
+        if self._pair_worker is not None and self._pair_worker.isRunning():
+            return
+        self.connect_button.setEnabled(False)
+        self.status.setText("Подключаюсь к NPCore…")
+        self._pair_worker = _NPCoreWorker(lambda: _npcore_pair(value), QApplication.instance())
+        self._pair_worker.completed.connect(self._pair_completed)
+        self._pair_worker.finished.connect(self._pair_worker.deleteLater)
+        self._pair_worker.start()
+
+    def _pair_completed(self, response: dict) -> None:
+        self.connect_button.setEnabled(True)
+        self._pair_worker = None
+        if not response.get("ok"):
+            self.status.setText("Подключение не выполнено.")
+            QMessageBox.warning(self, "NPCore", str(response.get("error") or "Ошибка подключения"))
+            return
+        server, _token = response["result"]
+        self.status.setText(f"Подключено к NPCore: {server}")
+        self.disconnect_button.setEnabled(True)
+        self.config.clear()
+        QMessageBox.information(self, "NPCore", "NP Screenshot успешно подключён.")
+
+    def disconnect_npcore(self):
+        link = _npcore_load_link()
+        if link:
+            try:
+                _npcore_http_json("POST", link[0] + "/api/desk/disconnect", link[1], {})
+            except Exception:
+                pass
+        try:
+            _npcore_link_path().unlink(missing_ok=True)
+        except OSError:
+            pass
+        self.status.setText("NP Screenshot отключён от NPCore.")
+        self.disconnect_button.setEnabled(False)
+
+
+class OCRResultDialog(QDialog):
+    """Результат OCR: редактирование, копирование, таблица и встроенный ИИ-перевод."""
+
+    def __init__(self, text: str, payload: Optional[dict] = None, parent=None, launcher=None):
         super().__init__(parent)
         self.payload = payload or {}
+        self.launcher = launcher
+        self._translation_worker: Optional[_NPCoreWorker] = None
         self.setWindowTitle("Распознанный текст")
-        self.resize(760, 560)
+        self.resize(900, 720)
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(10)
+
+        header = QLabel("<b>Распознанный текст</b><br>"
+                        "<span style='color:#8b929c'>Редактируй оригинал или переведи его через ИИ NPCore.</span>",
+                        self)
+        header.setWordWrap(True)
+        layout.addWidget(header)
+
         self.text_edit = QPlainTextEdit(self)
+        self.text_edit.setObjectName("ocr_source_text")
         self.text_edit.setPlainText(text)
         self.text_edit.setPlaceholderText("Распознанный текст…")
-        layout.addWidget(self.text_edit, 1)
+        self.text_edit.setStyleSheet(
+            "QPlainTextEdit { border: 1px solid palette(mid); border-radius: 8px; padding: 9px; }")
+        layout.addWidget(self.text_edit, 3)
+
+        translate_row = QHBoxLayout()
+        translate_label = QLabel("Перевести на:", self)
+        translate_row.addWidget(translate_label)
+        self.target_language = QComboBox(self)
+        self.target_language.setObjectName("ocr_translation_target")
+        for label, code in (
+            ("Русский", "ru"), ("Английский", "en"), ("Немецкий", "de"),
+            ("Французский", "fr"), ("Испанский", "es"), ("Итальянский", "it"),
+            ("Португальский", "pt"), ("Китайский", "zh"), ("Японский", "ja"),
+            ("Корейский", "ko"), ("Арабский", "ar"), ("Турецкий", "tr"),
+            ("Украинский", "uk"), ("Белорусский", "be"), ("Польский", "pl"),
+            ("Чешский", "cs"), ("Словацкий", "sk"), ("Болгарский", "bg"),
+            ("Сербский", "sr"), ("Хорватский", "hr"), ("Румынский", "ro"),
+            ("Венгерский", "hu"), ("Греческий", "el"), ("Нидерландский", "nl"),
+            ("Шведский", "sv"), ("Норвежский", "no"), ("Датский", "da"),
+            ("Финский", "fi"), ("Эстонский", "et"), ("Латышский", "lv"),
+            ("Литовский", "lt"), ("Иврит", "he"), ("Персидский", "fa"),
+            ("Хинди", "hi"), ("Бенгальский", "bn"), ("Урду", "ur"),
+            ("Тайский", "th"), ("Вьетнамский", "vi"), ("Индонезийский", "id"),
+            ("Малайский", "ms"), ("Филиппинский", "tl"), ("Казахский", "kk"),
+            ("Узбекский", "uz"), ("Киргизский", "ky"), ("Таджикский", "tg"),
+            ("Азербайджанский", "az"), ("Армянский", "hy"), ("Грузинский", "ka"),
+            ("Монгольский", "mn"), ("Суахили", "sw"), ("Африкаанс", "af"),
+            ("Латынь", "la"),
+        ):
+            self.target_language.addItem(label, code)
+        translate_row.addWidget(self.target_language, 1)
+        self.translate_button = QPushButton("✨ Перевести через ИИ", self)
+        self.translate_button.setObjectName("ocr_ai_translate")
+        self.translate_button.clicked.connect(self.translate_text)
+        translate_row.addWidget(self.translate_button)
+        layout.addLayout(translate_row)
+
+        self.translation_status = QLabel("Перевод появится здесь. Оригинал останется без изменений.", self)
+        self.translation_status.setWordWrap(True)
+        self.translation_status.setStyleSheet("color: palette(placeholder-text);")
+        layout.addWidget(self.translation_status)
+
+        self.translation_edit = QPlainTextEdit(self)
+        self.translation_edit.setObjectName("ocr_translation_result")
+        self.translation_edit.setReadOnly(True)
+        self.translation_edit.setPlaceholderText("Здесь появится перевод…")
+        self.translation_edit.setStyleSheet(
+            "QPlainTextEdit { border: 1px solid palette(mid); border-radius: 8px; padding: 9px; }")
+        self.translation_edit.hide()
+        layout.addWidget(self.translation_edit, 2)
+
         actions = QHBoxLayout()
         for title, handler in (
-            ("Копировать", self.copy_text),
+            ("Копировать оригинал", self.copy_text),
+            ("Копировать перевод", self.copy_translation),
             ("Таблица", self.convert_table),
-            ("Перевести", self.translate_text),
             ("Сохранить TXT", self.save_text),
             ("Закрыть", self.close),
         ):
@@ -4842,6 +5153,12 @@ class OCRResultDialog(QDialog):
     def copy_text(self) -> None:
         QApplication.clipboard().setText(self.text_edit.toPlainText(), QClipboard.Clipboard)
 
+    def copy_translation(self) -> None:
+        translated = self.translation_edit.toPlainText()
+        if translated.strip():
+            QApplication.clipboard().setText(translated, QClipboard.Clipboard)
+            self.translation_status.setText("Перевод скопирован в буфер обмена.")
+
     def convert_table(self) -> None:
         table = ocr_layout_to_markdown_table(self.payload)
         if not table:
@@ -4851,13 +5168,55 @@ class OCRResultDialog(QDialog):
         self.text_edit.setPlainText(table)
 
     def translate_text(self) -> None:
+        if self._translation_worker is not None and self._translation_worker.isRunning():
+            return
         selected = self.text_edit.textCursor().selectedText().replace("\u2029", "\n").strip()
         text = selected or self.text_edit.toPlainText().strip()
         if not text:
+            QMessageBox.information(self, "Перевод", "Нет текста для перевода.")
             return
-        encoded = bytes(QUrl.toPercentEncoding(text)).decode("ascii")
-        QDesktopServices.openUrl(QUrl(
-            "https://translate.google.com/?sl=auto&tl=ru&text=" + encoded + "&op=translate"))
+        if len(text) > 8000:
+            QMessageBox.information(
+                self, "Перевод", "За один запрос можно перевести до 8 000 символов. "
+                                 "Выдели нужный фрагмент или раздели текст на части.")
+            return
+        if _npcore_load_link() is None:
+            dialog = NPCoreConnectionDialog(self)
+            if dialog.exec() != QDialog.Accepted and _npcore_load_link() is None:
+                return
+            if _npcore_load_link() is None:
+                return
+        target = str(self.target_language.currentData() or "ru")
+        self.translate_button.setEnabled(False)
+        self.translate_button.setText("Перевожу…")
+        self.translation_status.setText("Отправляю текст в NPCore. Оригинал не изменяется.")
+        self._translation_worker = _NPCoreWorker(
+            lambda: _npcore_translate(text, target), QApplication.instance())
+        self._translation_worker.completed.connect(self._translation_completed)
+        self._translation_worker.finished.connect(self._translation_worker.deleteLater)
+        self._translation_worker.start()
+
+    def _translation_completed(self, response: dict) -> None:
+        self.translate_button.setEnabled(True)
+        self.translate_button.setText("✨ Перевести через ИИ")
+        self._translation_worker = None
+        if not response.get("ok"):
+            error = str(response.get("error") or "Не удалось выполнить перевод")
+            self.translation_status.setText("Ошибка перевода: " + error)
+            if "Подключение NPCore истекло" in error:
+                QMessageBox.warning(self, "NPCore", error)
+            return
+        result = response.get("result") or {}
+        translated = result.get("text")
+        if not isinstance(translated, str) or not translated.strip():
+            self.translation_status.setText("ИИ не вернул текст перевода.")
+            return
+        self.translation_edit.setPlainText(translated)
+        self.translation_edit.show()
+        detected = str(result.get("detected_language") or "язык не определён")
+        target = self.target_language.currentText()
+        self.translation_status.setText(f"Готово · исходный язык: {detected} · перевод: {target}")
+        self.translation_edit.setFocus()
 
     def save_text(self) -> None:
         path, _ = QFileDialog.getSaveFileName(
@@ -4869,7 +5228,6 @@ class OCRResultDialog(QDialog):
             Path(path).write_text(self.text_edit.toPlainText(), encoding="utf-8")
         except OSError as exc:
             QMessageBox.warning(self, "Сохранение", str(exc))
-
 
 def start_ocr(img: QImage, launcher=None, history_path: Optional[Path] = None) -> None:
     """Асинхронно распознаёт текст, сохраняет OCR-индекс истории и показывает результат."""
@@ -4944,7 +5302,7 @@ def start_ocr(img: QImage, launcher=None, history_path: Optional[Path] = None) -
                 QApplication.clipboard().setText(text, QClipboard.Clipboard)
                 preview = text.replace("\n", " ")
                 notify("Текст скопирован", preview[:120] + ("…" if len(preview) > 120 else ""))
-                dialog = OCRResultDialog(text, payload)
+                dialog = OCRResultDialog(text, payload, launcher=launcher)
                 _ocr_dialogs.append(dialog)
                 dialog.destroyed.connect(lambda *_: _ocr_dialogs.remove(dialog)
                                           if dialog in _ocr_dialogs else None)
@@ -6162,11 +6520,12 @@ class Launcher(QMainWindow):
         screen = QGuiApplication.primaryScreen()
         if screen is not None:
             available = screen.availableGeometry()
-            window_width = min(560, max(360, round(available.width() * 0.85)))
-            window_height = min(760, max(340, round(available.height() * 0.80)))
+            window_width = min(720, max(420, round(available.width() * 0.85)))
+            window_height = min(820, max(560, round(available.height() * 0.82)))
         else:
-            window_width, window_height = 520, 720
+            window_width, window_height = 680, 760
         self.resize(window_width, window_height)
+        self._capture_preferences = load_capture_preferences()
         self._capture_preferences = load_capture_preferences()
         scroll_area = QScrollArea(self)
         scroll_area.setObjectName("launcher_scroll_area")
@@ -6175,53 +6534,65 @@ class Launcher(QMainWindow):
         w = QWidget()
         w.setObjectName("launcher_scroll_content")
         v = QVBoxLayout(w)
-        v.setContentsMargins(18, 18, 18, 18)
-        v.setSpacing(10)
+        v.setContentsMargins(20, 18, 20, 18)
+        v.setSpacing(14)
         scroll_area.setWidget(w)
         self.setCentralWidget(scroll_area)
-        title = QLabel(
-            "<b>Скриншоты</b><br>"
-            "PrintScreen — выбор действия (Скриншот / Запись экрана / Текст) "
-            "и объекта (Область / Окно). Tab — действие; Shift+Tab — объект; "
-            "ПКМ или Esc — отмена.<br>"
-            "Shift+PrintScreen — сразу распознать текст в буфер обмена.<br>"
-            "В редакторе: Ctrl+S — сохранить, Ctrl+C — копировать, PrintScreen — новый снимок."
-        )
-        title.setWordWrap(True)
-        v.addWidget(title)
-        btn = QPushButton("Сделать скриншот")
-        btn.clicked.connect(self.make_shot)
-        v.addWidget(btn)
-        btn_window = QPushButton("Снимок отдельного окна")
-        btn_window.clicked.connect(self.make_window_shot)
-        v.addWidget(btn_window)
-        btn_rec = QPushButton("Запись экрана")
-        btn_rec.clicked.connect(self.start_recording)
-        v.addWidget(btn_rec)
-        btn_window_rec = QPushButton("Запись отдельного окна")
-        btn_window_rec.clicked.connect(self.start_window_recording)
-        v.addWidget(btn_window_rec)
-        btn_ocr = QPushButton("Распознать текст")
-        btn_ocr.clicked.connect(self.make_ocr)
-        v.addWidget(btn_ocr)
-        btn_open = QPushButton("Открыть изображение…")
-        btn_open.clicked.connect(self._open_image)
-        v.addWidget(btn_open)
-        btn_project = QPushButton("Открыть редактируемый проект…")
-        btn_project.clicked.connect(self._open_project)
-        v.addWidget(btn_project)
-        btn_scroll = QPushButton("Длинный снимок с прокруткой")
-        btn_scroll.clicked.connect(self.start_scrolling_capture)
-        v.addWidget(btn_scroll)
-        btn_pin = QPushButton("Закрепить изображение из буфера")
-        btn_pin.clicked.connect(self.pin_clipboard_image)
-        v.addWidget(btn_pin)
-        btn_compare = QPushButton("Сравнить два изображения")
-        btn_compare.clicked.connect(self.compare_two_files)
-        v.addWidget(btn_compare)
-        btn_history = QPushButton("История скриншотов")
-        btn_history.clicked.connect(self.open_history)
-        v.addWidget(btn_history)
+
+        header = QLabel(
+            "<div style='font-size:22px;font-weight:700'>NP Screenshot</div>"
+            "<div style='color:#89919c;margin-top:4px'>Захват экрана, запись, OCR и инструменты изображений</div>",
+            self)
+        header.setWordWrap(True)
+        v.addWidget(header)
+
+        def action_button(title, callback, primary=False):
+            button = QPushButton(title, self)
+            button.setMinimumHeight(42)
+            button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            button.clicked.connect(callback)
+            if primary:
+                button.setObjectName("screenshot_primary_action")
+            return button
+
+        def group_box(title, actions):
+            group = QGroupBox(title, w)
+            grid = QGridLayout(group)
+            grid.setContentsMargins(12, 16, 12, 12)
+            grid.setHorizontalSpacing(8)
+            grid.setVerticalSpacing(8)
+            for index, (label, callback, primary) in enumerate(actions):
+                grid.addWidget(action_button(label, callback, primary),
+                               index // 2, index % 2)
+            return group
+
+        v.addWidget(group_box("Захват", [
+            ("Скриншот области", self.make_shot, True),
+            ("Снимок отдельного окна", self.make_window_shot, False),
+            ("Длинный снимок", self.start_scrolling_capture, False),
+            ("Распознать текст", self.make_ocr, False),
+        ]))
+        v.addWidget(group_box("Запись экрана", [
+            ("Запись экрана", self.start_recording, True),
+            ("Запись отдельного окна", self.start_window_recording, False),
+        ]))
+        v.addWidget(group_box("Изображения и проекты", [
+            ("Открыть изображение…", self._open_image, False),
+            ("Открыть проект…", self._open_project, False),
+            ("Закрепить изображение из буфера", self.pin_clipboard_image, False),
+            ("Сравнить изображения", self.compare_two_files, False),
+        ]))
+        v.addWidget(group_box("Библиотека и подключение", [
+            ("История скриншотов", self.open_history, False),
+            ("Подключение к NPCore", self.open_npcore_connection, False),
+        ]))
+
+        self.npcore_status_label = QLabel(self)
+        self.npcore_status_label.setWordWrap(True)
+        self.npcore_status_label.setStyleSheet("color: palette(placeholder-text); padding: 2px 4px;")
+        self._refresh_npcore_status()
+        v.addWidget(self.npcore_status_label)
+
         self.edit_after_capture_check = QCheckBox("Открывать редактор после снимка")
         self.edit_after_capture_check.setChecked(
             self._capture_preferences["edit_after_capture"])
@@ -6230,22 +6601,39 @@ class Launcher(QMainWindow):
         self.edit_after_capture_check.toggled.connect(
             lambda enabled: self._set_capture_preference("edit_after_capture", enabled))
         v.addWidget(self.edit_after_capture_check)
+
         info = QLabel(
-            "Инструменты: Переместиться (H), Перо (P), Маркер (M), Прямоуг. (R), Овал (O), "
-            "Стрелка (A), Текст (T), Блюр (B), Пиксели (X), Обрезать (C), Редация (D), "
-            "Шаг (1), Заливка (F), Ластик (E), Затемнение (K), Выноска (Q), Линейка (U). "
-            "«⧉ Заливка форм» — заливка у прямоугольника и овала."
-        )
+            "Горячие клавиши: PrintScreen — выбор действия и объекта; "
+            "Shift+PrintScreen — OCR в буфер обмена. "
+            "Инструменты: перо, маркер, стрелка, текст, блюр, пиксели, выноска и линейка. "
+            "В редакторе: Ctrl+S — сохранить, Ctrl+C — копировать, PrintScreen — новый снимок.",
+            self)
         info.setWordWrap(True)
-        info.setStyleSheet("color: gray;")
+        info.setStyleSheet("color: palette(placeholder-text); padding: 4px;")
         v.addWidget(info)
-        for button in (
-            btn, btn_window, btn_rec, btn_window_rec, btn_ocr,
-            btn_open, btn_project, btn_scroll, btn_pin, btn_compare, btn_history,
-        ):
-            button.setMinimumHeight(38)
-            button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         v.addStretch(1)
+        self.setStyleSheet(self.styleSheet() + """
+            QGroupBox {
+                border: 1px solid palette(mid);
+                border-radius: 10px;
+                margin-top: 10px;
+                padding-top: 8px;
+                font-weight: 600;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 12px;
+                padding: 0 5px;
+            }
+            QPushButton {
+                border-radius: 7px;
+                padding: 7px 10px;
+            }
+            QPushButton#screenshot_primary_action {
+                font-weight: 600;
+                border: 1px solid #397bd2;
+            }
+        """)
         _setup_logging()
         self._scroll_job: Optional[ScrollingScreenshotJob] = None
         self._scroll_panel: Optional[ScrollingCapturePanel] = None
@@ -6263,6 +6651,18 @@ class Launcher(QMainWindow):
         act_f8.triggered.connect(self.make_shot)
         self.addAction(act_f8)
         center_on_screen(self)
+
+    def _refresh_npcore_status(self) -> None:
+        if hasattr(self, "npcore_status_label"):
+            link = _npcore_load_link()
+            self.npcore_status_label.setText(
+                "NPCore подключён · " + link[0] if link else
+                "NPCore не подключён · ИИ-перевод доступен после подключения")
+
+    def open_npcore_connection(self) -> None:
+        dialog = NPCoreConnectionDialog(self)
+        dialog.exec()
+        self._refresh_npcore_status()
 
     def showEvent(self, e):
         super().showEvent(e)
