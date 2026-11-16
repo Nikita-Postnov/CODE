@@ -6587,7 +6587,9 @@ class Launcher(QMainWindow):
         img = run_capture_flow(initial_mode, self)
         log.info("capture: result %s", None if img is None else f"{img.width()}x{img.height()}")
         if img is not None:
-            self._handle_captured_image(img)
+            capture_kind = ("window" if initial_mode == SelectionOverlay.MODE_WINDOW
+                            else "shot")
+            self._handle_captured_image(img, capture_kind=capture_kind)
         self.hide()
 
     def _open_project(self):
