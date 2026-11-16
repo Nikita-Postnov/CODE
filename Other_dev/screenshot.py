@@ -7334,9 +7334,36 @@ def select_region_rect() -> Optional[QRect]:
 
 
 # ── построение команд ffmpeg ─────────────────────────────────────────────────
+def _append_record_audio(args: list[str], audio_inputs: list[tuple[str, float]]) -> None:
+    """Добавляет один или несколько входов звука с независимой громкостью."""
+    valid = [(str(device), max(0.0, min(2.0, float(gain))))
+             for device, gain in audio_inputs if str(device).strip()]
+    for device, _gain in valid:
+        args += ["-f", "dshow", "-i", f"audio={device}"]
+    if not valid:
+        return
+    if len(valid) == 1:
+        gain = valid[0][1]
+        if abs(gain - 1.0) > 0.001:
+            args += ["-filter:a", f"volume={gain:.3f}"]
+        args += ["-c:a", "aac", "-b:a", "160k", "-map", "0:v", "-map", "1:a"]
+        return
+    filters = []
+    labels = []
+    for index, (_device, gain) in enumerate(valid, start=1):
+        label = f"audio{index}"
+        filters.append(f"[{index}:a]volume={gain:.3f}[{label}]")
+        labels.append(f"[{label}]")
+    filters.append("".join(labels) +
+                   f"amix=inputs={len(valid)}:duration=longest:dropout_transition=2[aout]")
+    args += ["-filter_complex", ";".join(filters), "-map", "0:v", "-map", "[aout]",
+             "-c:a", "aac", "-b:a", "160k"]
+
+
 def build_record_cmd(out: str, rect: QRect, fps: int,
                      audio_mode: str, audio_device: Optional[str],
-                     draw_mouse: bool = True) -> list[str]:
+                     draw_mouse: bool = True,
+                     audio_inputs: Optional[list[tuple[str, float]]] = None) -> list[str]:
     ff = ffmpeg_path()
     x, y, w, h = _physical_rect(rect)
     a = [ff, "-y",
@@ -7345,7 +7372,9 @@ def build_record_cmd(out: str, rect: QRect, fps: int,
          "-video_size", f"{w}x{h}",
          "-draw_mouse", "1" if draw_mouse else "0",
          "-i", "desktop"]
-    if audio_mode in ("mic", "system") and audio_device:
+    if audio_inputs is not None:
+        _append_record_audio(a, audio_inputs)
+    elif audio_mode in ("mic", "system") and audio_device:
         a += ["-f", "dshow", "-i", f"audio={audio_device}",
               "-c:a", "aac", "-b:a", "160k", "-map", "0:v", "-map", "1:a"]
     a += ["-c:v", "libx264", "-pix_fmt", "yuv420p",
@@ -7357,14 +7386,17 @@ def build_record_cmd(out: str, rect: QRect, fps: int,
 
 def build_window_record_cmd(out: str, hwnd: int, fps: int,
                             audio_mode: str, audio_device: Optional[str],
-                            draw_mouse: bool = True) -> list[str]:
+                            draw_mouse: bool = True,
+                            audio_inputs: Optional[list[tuple[str, float]]] = None) -> list[str]:
     """Запись конкретного HWND: при перемещении окна захват следует за ним."""
     if sys.platform != "win32" or not isinstance(hwnd, int) or hwnd <= 0:
         raise ValueError("Для записи необходимо выбрать окно Windows")
     ff = ffmpeg_path()
     a = [ff, "-y", "-f", "gdigrab", "-framerate", str(fps),
          "-draw_mouse", "1" if draw_mouse else "0", "-i", f"hwnd={hwnd}"]
-    if audio_mode in ("mic", "system") and audio_device:
+    if audio_inputs is not None:
+        _append_record_audio(a, audio_inputs)
+    elif audio_mode in ("mic", "system") and audio_device:
         a += ["-f", "dshow", "-i", f"audio={audio_device}",
               "-c:a", "aac", "-b:a", "160k", "-map", "0:v", "-map", "1:a"]
     #НП: У окон могут быть нечётные стороны; libx264 требует чётные размеры.
