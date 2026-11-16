@@ -4687,9 +4687,14 @@ def _scroll_overlap(previous: QImage, current: QImage) -> int:
 
     # Стационарные панели (заголовки, навигация, нижние кнопки) исключены
     # из сравнения. Белые/однотонные строки не дают ложных совпадений.
+    def textured(rows_data: list[bytes], y: int) -> bool:
+        row = rows_data[y]
+        return (max(row) - min(row) >= 35 or
+                (y > 0 and abs(row[sample_w // 2] -
+                               rows_data[y - 1][sample_w // 2]) >= 2))
+
     informative_a = [
-        y for y in range(top, bottom)
-        if max(a[y]) - min(a[y]) >= 35
+        y for y in range(top, bottom) if textured(a, y)
     ]
     if len(informative_a) < 6:
         return 0
@@ -4697,7 +4702,7 @@ def _scroll_overlap(previous: QImage, current: QImage) -> int:
     index: dict[bytes, list[int]] = {}
     for y in range(top, bottom):
         row = b[y]
-        if max(row) - min(row) >= 35:
+        if textured(b, y):
             index.setdefault(row, []).append(y)
 
     votes: dict[int, int] = {}
@@ -4731,7 +4736,9 @@ def _scroll_overlap(previous: QImage, current: QImage) -> int:
             for x in xs:
                 edge_a = abs(row_a[x] - row_a[x - col_step])
                 edge_b = abs(row_b[x] - row_b[x - col_step])
-                if edge_a + edge_b >= 32:
+                vertical_a = abs(row_a[x] - a[y - 1][x])
+                vertical_b = abs(row_b[x] - b[y - shift - 1][x])
+                if edge_a + edge_b >= 32 or vertical_a + vertical_b >= 6:
                     total += abs(row_a[x] - row_b[x])
                     count += 1
         if count < 24:
