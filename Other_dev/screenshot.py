@@ -7501,6 +7501,211 @@ def build_export_cmd(src: str, dst: str, t_in: float, t_out: float,
 
 
 # ── HUD записи: плавающая панелька рядом с областью ──────────────────────────
+class AudioSettingsDialog(QDialog):
+    """Независимые источники и уровни системного звука и микрофона."""
+
+    def __init__(self, devices: list[str], parent=None, initial=None):
+        super().__init__(parent)
+        self.setWindowTitle("Настройка звука записи")
+        self.resize(520, 270)
+        self.devices = list(devices)
+        initial = list(initial or [])
+        system_device = guess_system_audio(self.devices)
+        mic_devices = [device for device in self.devices if device != system_device]
+        layout = QVBoxLayout(self)
+        form = QFormLayout()
+        self.system_check = QCheckBox("Записывать системный звук", self)
+        self.system_combo = QComboBox(self)
+        for device in self.devices:
+            self.system_combo.addItem(device, device)
+        if system_device:
+            self.system_combo.setCurrentIndex(max(0, self.system_combo.findData(system_device)))
+        self.system_gain = QSlider(Qt.Horizontal, self)
+        self.system_gain.setRange(0, 200)
+        self.system_gain.setValue(100)
+        self.system_gain_label = QLabel("100%", self)
+        system_row = QHBoxLayout()
+        system_row.addWidget(self.system_check)
+        system_row.addWidget(self.system_combo, 1)
+        form.addRow("Системный звук", system_row)
+        system_gain_row = QHBoxLayout()
+        system_gain_row.addWidget(self.system_gain, 1)
+        system_gain_row.addWidget(self.system_gain_label)
+        form.addRow("Громкость системы", system_gain_row)
+
+        self.mic_check = QCheckBox("Записывать микрофон", self)
+        self.mic_combo = QComboBox(self)
+        for device in mic_devices or self.devices:
+            self.mic_combo.addItem(device, device)
+        self.mic_gain = QSlider(Qt.Horizontal, self)
+        self.mic_gain.setRange(0, 200)
+        self.mic_gain.setValue(100)
+        self.mic_gain_label = QLabel("100%", self)
+        mic_row = QHBoxLayout()
+        mic_row.addWidget(self.mic_check)
+        mic_row.addWidget(self.mic_combo, 1)
+        form.addRow("Микрофон", mic_row)
+        mic_gain_row = QHBoxLayout()
+        mic_gain_row.addWidget(self.mic_gain, 1)
+        mic_gain_row.addWidget(self.mic_gain_label)
+        form.addRow("Громкость микрофона", mic_gain_row)
+        layout.addLayout(form)
+        self.system_gain.valueChanged.connect(
+            lambda value: self.system_gain_label.setText(f"{value}%"))
+        self.mic_gain.valueChanged.connect(
+            lambda value: self.mic_gain_label.setText(f"{value}%"))
+
+        initial_by_device = {device: gain for device, gain in initial}
+        if system_device in initial_by_device:
+            self.system_check.setChecked(True)
+            self.system_gain.setValue(round(initial_by_device[system_device] * 100))
+        if mic_devices:
+            selected_mic = next((device for device in mic_devices
+                                 if device in initial_by_device), None)
+            if selected_mic:
+                self.mic_check.setChecked(True)
+                self.mic_combo.setCurrentIndex(self.mic_combo.findData(selected_mic))
+                self.mic_gain.setValue(round(initial_by_device[selected_mic] * 100))
+        if not self.devices:
+            self.system_check.setEnabled(False)
+            self.system_combo.setEnabled(False)
+            self.mic_check.setEnabled(False)
+            self.mic_combo.setEnabled(False)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel, self)
+        buttons.button(QDialogButtonBox.Ok).setText("Применить")
+        buttons.button(QDialogButtonBox.Cancel).setText("Отмена")
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def selected_inputs(self) -> list[tuple[str, float]]:
+        result = []
+        if self.system_check.isChecked() and self.system_combo.currentData():
+            result.append((str(self.system_combo.currentData()),
+                           self.system_gain.value() / 100.0))
+        if self.mic_check.isChecked() and self.mic_combo.currentData():
+            result.append((str(self.mic_combo.currentData()),
+                           self.mic_gain.value() / 100.0))
+        return result
+
+
+class RecordingInputOverlay(QWidget):
+    """Ненавязчивая подсветка кликов и названий клавиш во время записи области."""
+
+    _KEY_NAMES = {
+        0x08: "Backspace", 0x09: "Tab", 0x0D: "Enter", 0x1B: "Esc",
+        0x20: "Space", 0x21: "Page Up", 0x22: "Page Down", 0x23: "End",
+        0x24: "Home", 0x25: "←", 0x26: "↑", 0x27: "→", 0x28: "↓",
+        0x2D: "Insert", 0x2E: "Delete", 0x70: "F1", 0x71: "F2",
+        0x72: "F3", 0x73: "F4", 0x74: "F5", 0x75: "F6",
+        0x76: "F7", 0x77: "F8", 0x78: "F9", 0x79: "F10",
+        0x7A: "F11", 0x7B: "F12",
+    }
+    _MODIFIERS = {
+        0x11: ("Ctrl", 0xA2, 0xA3),
+        0x12: ("Alt", 0xA4, 0xA5),
+        0x10: ("Shift", 0xA0, 0xA1),
+        0x5B: ("Win", 0x5B, 0x5C),
+    }
+
+    def __init__(self, region: QRect):
+        super().__init__(None, Qt.Tool | Qt.FramelessWindowHint |
+                         Qt.WindowStaysOnTopHint | Qt.WindowDoesNotAcceptFocus)
+        self.region = QRect(region)
+        self.setGeometry(self.region)
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        self.setAttribute(Qt.WA_ShowWithoutActivating, True)
+        self._timer = QTimer(self)
+        self._timer.setInterval(30)
+        self._timer.timeout.connect(self._poll)
+        self._keys_down: set[int] = set()
+        self._left_down = False
+        self._right_down = False
+        self._click_pos: Optional[QPoint] = None
+        self._click_at = 0.0
+        self._key_label = ""
+        self._key_until = 0.0
+
+    @staticmethod
+    def _down(vk: int) -> bool:
+        if sys.platform != "win32":
+            return False
+        try:
+            return bool(ctypes.windll.user32.GetAsyncKeyState(int(vk)) & 0x8000)
+        except (AttributeError, OSError):
+            return False
+
+    def _poll(self) -> None:
+        now = time.monotonic()
+        cursor = QCursor.pos()
+        left = self._down(0x01)
+        right = self._down(0x02)
+        if left and not self._left_down and self.region.contains(cursor):
+            self._click_pos, self._click_at = cursor, now
+        elif right and not self._right_down and self.region.contains(cursor):
+            self._click_pos, self._click_at = cursor, now
+        self._left_down, self._right_down = left, right
+
+        current = {vk for vk in range(0x08, 0x7C) if self._down(vk)}
+        current.update(vk for vk in (0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0x5B, 0x5C)
+                       if self._down(vk))
+        pressed = current - self._keys_down
+        modifier_codes = {code for _name, *codes in self._MODIFIERS.values()
+                          for code in codes}
+        for vk in sorted(pressed):
+            if vk in modifier_codes or vk in (0x10, 0x11, 0x12):
+                continue
+            name = self._KEY_NAMES.get(vk)
+            if name is None and (0x30 <= vk <= 0x39 or 0x41 <= vk <= 0x5A):
+                name = chr(vk)
+            if name is None:
+                continue
+            modifiers = []
+            for _base, (label, *codes) in self._MODIFIERS.items():
+                if any(self._down(code) for code in codes):
+                    modifiers.append(label)
+            self._key_label = "+".join(modifiers + [name])
+            self._key_until = now + 1.25
+        self._keys_down = current
+        self.update()
+
+    def start(self) -> None:
+        self.show()
+        self.raise_()
+        self._timer.start()
+
+    def stop(self) -> None:
+        self._timer.stop()
+        self.hide()
+        self.deleteLater()
+
+    def paintEvent(self, _event) -> None:
+        now = time.monotonic()
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        if self._click_pos is not None and now - self._click_at < 0.75:
+            progress = max(0.0, min(1.0, (now - self._click_at) / 0.75))
+            center = self._click_pos - self.region.topLeft()
+            radius = 10 + progress * 28
+            painter.setPen(QPen(QColor(50, 160, 255, int(230 * (1 - progress))), 3))
+            painter.setBrush(QColor(50, 160, 255, int(55 * (1 - progress))))
+            painter.drawEllipse(QPointF(center), radius, radius)
+        if self._key_label and now < self._key_until:
+            rect = QRect(12, max(12, self.height() - 58),
+                         min(self.width() - 24, 360), 42)
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(QColor(20, 24, 32, 220))
+            painter.drawRoundedRect(rect, 9, 9)
+            painter.setPen(QColor(255, 255, 255))
+            font = QFont()
+            font.setBold(True)
+            font.setPointSize(13)
+            painter.setFont(font)
+            painter.drawText(rect, Qt.AlignCenter, self._key_label)
+        painter.end()
+
+
 class RecordHUD(QWidget):
     finished = Signal(str)   # путь к готовому mp4
     cancelled = Signal()
@@ -7515,16 +7720,26 @@ class RecordHUD(QWidget):
         self.setAttribute(Qt.WA_DeleteOnClose, True)
         self.region = region
         self._proc: Optional[QProcess] = None
+        self._concat_proc: Optional[QProcess] = None
         self._out_path: Optional[str] = None
-        self._t0 = 0.0
+        self._segment_path: Optional[str] = None
+        self._segment_paths: list[str] = []
+        self._concat_list_path: Optional[str] = None
         self._recording = False
+        self._paused = False
+        self._pause_requested = False
+        self._stop_requested = False
+        self._finalizing = False
         self._done = False
+        self._elapsed_total = 0.0
+        self._segment_t0 = 0.0
+        self._audio_inputs_override: Optional[list[tuple[str, float]]] = None
+        self._input_overlay: Optional[RecordingInputOverlay] = None
         self._devices = list_dshow_audio()
 
         root = QHBoxLayout(self)
         root.setContentsMargins(10, 6, 10, 6)
         root.setSpacing(8)
-
         if self.window_hwnd:
             self.setToolTip("Запись окна: " + self.window_title)
             root.addWidget(QLabel("▣ " + (self.window_title[:35] or "Окно"), self))
@@ -7534,19 +7749,34 @@ class RecordHUD(QWidget):
         sysdev = guess_system_audio(self._devices)
         if sysdev:
             self.audio_combo.addItem("Системный звук", ("system", sysdev))
-        for d in self._devices:
-            if d != sysdev:
-                self.audio_combo.addItem(f"Микрофон: {d}", ("mic", d))
+        for device in self._devices:
+            if device != sysdev:
+                self.audio_combo.addItem(f"Микрофон: {device}", ("mic", device))
         root.addWidget(self.audio_combo)
+
+        self.audio_settings_btn = QPushButton("Звук…", self)
+        self.audio_settings_btn.clicked.connect(self._open_audio_settings)
+        root.addWidget(self.audio_settings_btn)
+        self.input_overlay_check = QCheckBox("Клики и клавиши", self)
+        self.input_overlay_check.setToolTip(
+            "Показывает круги кликов и названия сочетаний клавиш в записи области. "
+            "Текст вводимых символов не записывается.")
+        if self.window_hwnd:
+            self.input_overlay_check.setEnabled(False)
+            self.input_overlay_check.setToolTip(
+                "Подсветка кликов и клавиш доступна при записи области экрана.")
+        root.addWidget(self.input_overlay_check)
 
         self.time_lbl = QLabel("00:00", self)
         self.time_lbl.setStyleSheet("font-weight:bold; min-width:44px;")
         root.addWidget(self.time_lbl)
-
         self.start_btn = QPushButton("● Старт", self)
         self.start_btn.clicked.connect(self._on_start)
         root.addWidget(self.start_btn)
-
+        self.pause_btn = QPushButton("Ⅱ Пауза", self)
+        self.pause_btn.setEnabled(False)
+        self.pause_btn.clicked.connect(self._toggle_pause)
+        root.addWidget(self.pause_btn)
         self.cancel_btn = QPushButton("✕", self)
         self.cancel_btn.setFixedWidth(28)
         self.cancel_btn.clicked.connect(self._on_cancel)
@@ -7557,32 +7787,94 @@ class RecordHUD(QWidget):
             "QPushButton{background:#3c4043;border:none;padding:4px 10px;border-radius:6px;}"
             "QPushButton:hover{background:#5f6368;}"
             "QComboBox{background:#3c4043;border:none;padding:3px 6px;border-radius:6px;}"
-        )
-
-        self._tick = QTimer(self); self._tick.setInterval(250)
+            "QCheckBox{spacing:4px;}")
+        self._tick = QTimer(self)
+        self._tick.setInterval(250)
         self._tick.timeout.connect(self._update_time)
-
         self.adjustSize()
         self._place()
 
     def _place(self) -> None:
-        """Панель ставится ВНЕ области (сверху, иначе снизу), чтобы не попасть в кадр."""
+        """Панель ставится ВНЕ области, чтобы не попасть в кадр."""
         self.adjustSize()
-        w = self.width(); h = self.height()
-        scr = QGuiApplication.screenAt(self.region.center()) or QGuiApplication.primaryScreen()
-        geo = scr.availableGeometry() if scr else QRect(0, 0, 1920, 1080)
+        w, h = self.width(), self.height()
+        screen = QGuiApplication.screenAt(self.region.center()) or QGuiApplication.primaryScreen()
+        geo = screen.availableGeometry() if screen else QRect(0, 0, 1920, 1080)
         x = self.region.center().x() - w // 2
         y = self.region.top() - h - 8
         if y < geo.top():
             y = self.region.bottom() + 8
-        x = max(geo.left(), min(x, geo.right() - w))
-        y = max(geo.top(), min(y, geo.bottom() - h))
-        self.move(x, y)
+        self.move(max(geo.left(), min(x, geo.right() - w)),
+                  max(geo.top(), min(y, geo.bottom() - h)))
 
-    # ── старт/стоп ────────────────────────────────────────────────────────────
+    def _open_audio_settings(self) -> None:
+        dialog = AudioSettingsDialog(self._devices, self, self._audio_inputs_override)
+        if dialog.exec() == QDialog.Accepted:
+            self._audio_inputs_override = dialog.selected_inputs()
+
+    def _build_segment_command(self, output: str) -> list[str]:
+        mode, device = self.audio_combo.currentData()
+        audio_inputs = self._audio_inputs_override
+        if self.window_hwnd:
+            return build_window_record_cmd(
+                output, self.window_hwnd, DEFAULT_FPS, mode, device,
+                audio_inputs=audio_inputs)
+        return build_record_cmd(
+            output, self.region, DEFAULT_FPS, mode, device,
+            audio_inputs=audio_inputs)
+
+    def _start_segment(self) -> bool:
+        if self.window_hwnd and not recordable_window_is_ready(self.window_hwnd):
+            QMessageBox.warning(self, "Окно недоступно",
+                                "Выбранное окно закрыто или свёрнуто. Разверни его и выбери заново.")
+            return False
+        segment = _rec_tmp_dir() / (
+            f"record_segment_{uuid.uuid4().hex}.mp4")
+        self._segment_path = str(segment)
+        cmd = self._build_segment_command(self._segment_path)
+        proc = QProcess(self)
+        if sys.platform.startswith("win"):
+            try:
+                proc.setCreateProcessArgumentsModifier(
+                    lambda args: setattr(args, "flags", args.flags | _CREATE_NO_WINDOW))
+            except Exception:
+                pass
+        proc.setProgram(cmd[0])
+        proc.setArguments(cmd[1:])
+        proc.finished.connect(self._on_proc_finished)
+        proc.errorOccurred.connect(self._on_proc_error)
+        self._proc = proc
+        log.info("REC segment start: %s", " ".join(cmd))
+        proc.start()
+        if not proc.waitForStarted(4000):
+            error = proc.errorString()
+            log.error("REC ffmpeg failed to start: %s", error)
+            proc.deleteLater()
+            self._proc = None
+            self._segment_path = None
+            QMessageBox.warning(self, "Ошибка", f"Не удалось запустить ffmpeg:\n{error}")
+            return False
+        self._recording = True
+        self._paused = False
+        self._segment_t0 = time.monotonic()
+        self._tick.start()
+        if self.input_overlay_check.isChecked() and not self.window_hwnd:
+            self._input_overlay = RecordingInputOverlay(self.region)
+            self._input_overlay.start()
+        self.pause_btn.setText("Ⅱ Пауза")
+        self.pause_btn.setEnabled(True)
+        self.audio_combo.setEnabled(False)
+        self.audio_settings_btn.setEnabled(False)
+        self.input_overlay_check.setEnabled(False)
+        if self._launcher is not None:
+            try:
+                self._launcher.set_recording_active(True, self)
+            except Exception:
+                pass
+        return True
+
     def _on_start(self) -> None:
-        ff = ffmpeg_path()
-        if not ff:
+        if not ffmpeg_path():
             QMessageBox.warning(self, "ffmpeg не найден",
                                 "Положи ffmpeg.exe в папку Data рядом с программой.")
             return
@@ -7591,61 +7883,32 @@ class RecordHUD(QWidget):
                 self, "Окно недоступно",
                 "Выбранное окно закрыто или свёрнуто. Разверни его и выбери заново.")
             return
-        mode, dev = self.audio_combo.currentData()
         stamp = time.strftime("%Y-%m-%d_%H-%M-%S")
-        self._out_path = str(_recordings_dir() / f"rec_{stamp}_{time.time_ns() % 1_000_000_000:09d}.mp4")
-        cmd = (build_window_record_cmd(self._out_path, self.window_hwnd,
-                                       DEFAULT_FPS, mode, dev)
-               if self.window_hwnd else
-               build_record_cmd(self._out_path, self.region, DEFAULT_FPS, mode, dev))
-
-        self._proc = QProcess(self)
-        if sys.platform.startswith("win"):
-            # прячем консоль ffmpeg
-            def _mod(args):
-                args.flags |= _CREATE_NO_WINDOW
-            try:
-                self._proc.setCreateProcessArgumentsModifier(_mod)
-            except Exception:
-                pass
-        self._proc.setProgram(cmd[0])
-        self._proc.setArguments(cmd[1:])
-        self._proc.finished.connect(self._on_proc_finished)
-        self._proc.errorOccurred.connect(self._on_proc_error)
-        log.info("REC start: %s", " ".join(cmd))
-        self._proc.start()
-        if not self._proc.waitForStarted(4000):
-            emsg = self._proc.errorString()
-            log.error("REC ffmpeg failed to start: %s", emsg)
-            QMessageBox.warning(self, "Ошибка", f"Не удалось запустить ffmpeg:\n{emsg}")
-            self._proc = None
+        self._out_path = str(_recordings_dir() /
+                             f"rec_{stamp}_{time.time_ns() % 1_000_000_000:09d}.mp4")
+        self._segment_paths = []
+        self._elapsed_total = 0.0
+        self._stop_requested = False
+        self._pause_requested = False
+        self._finalizing = False
+        if not self._start_segment():
+            self._out_path = None
             return
-        log.info("REC recording -> %s", self._out_path)
-
-        self._recording = True
-        self._t0 = time.monotonic()
-        self._tick.start()
-        self.audio_combo.setEnabled(False)
         self.start_btn.setText("■ Стоп")
         self.start_btn.clicked.disconnect()
         self.start_btn.clicked.connect(self._on_stop)
         self.start_btn.setStyleSheet("background:#a50e0e;")
-        if self._launcher is not None:
-            try:
-                self._launcher.set_recording_active(True, self)
-            except Exception:
-                pass
 
-    def _on_stop(self) -> None:
-        if not self._proc or not self._recording:
+    def _stop_overlay(self) -> None:
+        if self._input_overlay is not None:
+            overlay = self._input_overlay
+            self._input_overlay = None
+            overlay.stop()
+
+    def _request_segment_stop(self) -> None:
+        if self._proc is None or self._proc.state() == QProcess.NotRunning:
+            self._on_proc_finished(0, QProcess.NormalExit)
             return
-        self._recording = False
-        self._tick.stop()
-        self.start_btn.setEnabled(False)
-        self.start_btn.setText("…")
-        # Мягкая остановка: 'q' в stdin → ffmpeg дописывает moov-атом.
-        # Финализация АСИНХРОННО в _on_proc_finished: без вложенного
-        # waitForFinished, из-за которого self мог удаляться до emit.
         try:
             self._proc.write(b"q")
             self._proc.closeWriteChannel()
@@ -7656,66 +7919,203 @@ class RecordHUD(QWidget):
         self._kill_timer.timeout.connect(self._force_finish)
         self._kill_timer.start(7000)
 
+    def _toggle_pause(self) -> None:
+        if self._recording:
+            self._pause_requested = True
+            self._recording = False
+            self._elapsed_total += max(0.0, time.monotonic() - self._segment_t0)
+            self._tick.stop()
+            self.pause_btn.setEnabled(False)
+            self._stop_overlay()
+            self._request_segment_stop()
+            return
+        if self._paused and not self._done:
+            self._paused = False
+            if self._start_segment():
+                self.pause_btn.setText("Ⅱ Пауза")
+            else:
+                self._stop_requested = True
+                self._finalize_recording()
+
+    def _on_stop(self) -> None:
+        if self._done or self._finalizing:
+            return
+        self._stop_requested = True
+        if self._recording:
+            self._recording = False
+            self._elapsed_total += max(0.0, time.monotonic() - self._segment_t0)
+            self._tick.stop()
+            self.start_btn.setEnabled(False)
+            self.pause_btn.setEnabled(False)
+            self._stop_overlay()
+            self._request_segment_stop()
+        elif self._paused:
+            self._paused = False
+            self.pause_btn.setEnabled(False)
+            self._finalize_recording()
+
     def _force_finish(self) -> None:
-        # ffmpeg не завершился по 'q' за отведённое время — дожимаем
         if self._proc and self._proc.state() != QProcess.NotRunning:
             self._proc.kill()
 
     def _on_cancel(self) -> None:
         self._done = True
-        if self._proc and self._recording:
-            self._recording = False
-            self._tick.stop()
+        self._recording = False
+        self._tick.stop()
+        self._stop_overlay()
+        for proc in (self._proc, self._concat_proc):
+            if proc is not None and proc.state() != QProcess.NotRunning:
+                proc.kill()
+                proc.waitForFinished(2500)
+        paths = list(self._segment_paths)
+        if self._segment_path:
+            paths.append(self._segment_path)
+        if self._out_path:
+            paths.append(self._out_path)
+        if self._concat_list_path:
+            paths.append(self._concat_list_path)
+        for value in set(paths):
             try:
-                self._proc.write(b"q"); self._proc.closeWriteChannel()
-            except Exception:
-                pass
-            self._proc.waitForFinished(3000)
-            self._proc.kill()
-        if self._out_path and Path(self._out_path).exists():
-            try:
-                Path(self._out_path).unlink()
-            except Exception:
+                Path(value).unlink(missing_ok=True)
+            except OSError:
                 pass
         self.cancelled.emit()
         self.close()
 
     def _on_proc_finished(self, code, status) -> None:
+        kill_timer = getattr(self, "_kill_timer", None)
+        if kill_timer is not None:
+            kill_timer.stop()
+        proc = self._proc
+        if proc is not None:
+            try:
+                err_tail = bytes(proc.readAllStandardError()).decode("utf-8", "replace")
+            except Exception:
+                err_tail = ""
+            proc.deleteLater()
+        self._proc = None
+        segment = self._segment_path
+        self._segment_path = None
+        if segment and Path(segment).exists() and Path(segment).stat().st_size > 0:
+            self._segment_paths.append(segment)
+        elif segment:
+            log.warning("REC segment missing or empty: %s (code=%s)", segment, code)
+        if err_tail:
+            log.info("REC segment stderr tail:\n%s", err_tail[-1800:])
+        if self._done:
+            return
+        if self._pause_requested:
+            self._pause_requested = False
+            self._paused = True
+            self.pause_btn.setText("▶ Продолжить")
+            self.pause_btn.setEnabled(True)
+            self.start_btn.setEnabled(True)
+            self._update_time()
+            return
+        if self._stop_requested:
+            self._finalize_recording()
+            return
+        # FFmpeg завершился самостоятельно — сохранить уже готовые сегменты.
+        self._recording = False
+        self._tick.stop()
+        self._stop_requested = True
+        self._stop_overlay()
+        self._finalize_recording()
+
+    def _finalize_recording(self) -> None:
+        if self._finalizing or self._done:
+            return
+        self._finalizing = True
+        self._stop_overlay()
+        if not self._segment_paths or not self._out_path:
+            self._complete_recording(False, "FFmpeg не создал ни одного пригодного фрагмента.")
+            return
+        if len(self._segment_paths) == 1:
+            try:
+                shutil.move(self._segment_paths[0], self._out_path)
+                self._segment_paths.clear()
+                self._complete_recording(True)
+            except OSError as exc:
+                self._complete_recording(False, str(exc))
+            return
+        list_path = _rec_tmp_dir() / f"record_concat_{uuid.uuid4().hex}.txt"
+        self._concat_list_path = str(list_path)
+        try:
+            with open(list_path, "w", encoding="utf-8", newline="\n") as handle:
+                for segment in self._segment_paths:
+                    escaped = Path(segment).resolve().as_posix().replace("'", "'\\''")
+                    handle.write(f"file '{escaped}'\n")
+        except OSError as exc:
+            self._complete_recording(False, str(exc))
+            return
+        proc = QProcess(self)
+        if sys.platform.startswith("win"):
+            try:
+                proc.setCreateProcessArgumentsModifier(
+                    lambda args: setattr(args, "flags", args.flags | _CREATE_NO_WINDOW))
+            except Exception:
+                pass
+        cmd = [ffmpeg_path(), "-y", "-f", "concat", "-safe", "0",
+               "-i", self._concat_list_path, "-c", "copy",
+               "-movflags", "+faststart", self._out_path]
+        proc.setProgram(cmd[0])
+        proc.setArguments(cmd[1:])
+        proc.finished.connect(self._on_concat_finished)
+        proc.errorOccurred.connect(self._on_concat_error)
+        self._concat_proc = proc
+        log.info("REC concat: %s", " ".join(cmd))
+        proc.start()
+        if not proc.waitForStarted(4000):
+            self._complete_recording(False, proc.errorString())
+
+    def _on_concat_finished(self, code, status) -> None:
+        proc = self._concat_proc
+        err = ""
+        if proc is not None:
+            err = bytes(proc.readAllStandardError()).decode("utf-8", "replace")
+            proc.deleteLater()
+        self._concat_proc = None
+        if err:
+            log.info("REC concat stderr tail:\n%s", err[-1800:])
+        ok = (status == QProcess.NormalExit and code == 0 and self._out_path
+              and Path(self._out_path).exists() and Path(self._out_path).stat().st_size > 0)
+        self._complete_recording(bool(ok), "" if ok else "Не удалось объединить фрагменты FFmpeg.")
+
+    def _on_concat_error(self, error) -> None:
+        proc = self._concat_proc
+        if error == QProcess.FailedToStart and proc is not None:
+            self._complete_recording(False, proc.errorString())
+
+    def _complete_recording(self, success: bool, message: str = "") -> None:
         if self._done:
             return
         self._done = True
-        kt = getattr(self, "_kill_timer", None)
-        if kt is not None:
-            kt.stop()
-        try:
-            err_tail = ""
-            try:
-                err_tail = bytes(self._proc.readAllStandardError()).decode("utf-8", "replace")
-            except Exception:
-                pass
-            out = self._out_path
-            exists = bool(out and Path(out).exists())
-            size = Path(out).stat().st_size if exists else 0
-            log.info("REC finished: code=%s exists=%s size=%s path=%s", code, exists, size, out)
-            if err_tail:
-                log.info("REC ffmpeg stderr tail:\n%s", err_tail[-2000:])
-            if exists and size > 0:
-                self.finished.emit(out)   # emit ДО close
-            else:
-                QMessageBox.warning(
-                    None, "Запись не удалась",
-                    "ffmpeg не создал файл (код выхода " + str(code) + ").\n\n"
-                    "Последние строки ffmpeg:\n" + (err_tail[-1200:] or "(пусто)"))
-                self.cancelled.emit()
-        except Exception:
-            tb = traceback.format_exc()
-            log.error("REC post-finish handling failed:\n%s", tb)
-            try:
-                QMessageBox.critical(None, "Ошибка после записи", tb[-1500:])
-            except Exception:
-                pass
-        finally:
-            self.close()
+        self._finalizing = False
+        self._tick.stop()
+        self._stop_overlay()
+        if success and self._out_path and Path(self._out_path).exists():
+            for segment in self._segment_paths:
+                try:
+                    Path(segment).unlink(missing_ok=True)
+                except OSError:
+                    pass
+            self._segment_paths.clear()
+            if self._concat_list_path:
+                Path(self._concat_list_path).unlink(missing_ok=True)
+            log.info("REC finished: path=%s size=%s", self._out_path,
+                     Path(self._out_path).stat().st_size)
+            self.finished.emit(self._out_path)
+        else:
+            log.error("REC finalization failed: %s", message)
+            if self._out_path:
+                try:
+                    Path(self._out_path).unlink(missing_ok=True)
+                except OSError:
+                    pass
+            QMessageBox.warning(None, "Запись не удалась",
+                                message or "Не удалось сохранить запись.")
+            self.cancelled.emit()
+        self.close()
 
     def _on_proc_error(self, err) -> None:
         try:
@@ -7725,10 +8125,14 @@ class RecordHUD(QWidget):
             log.error("ffmpeg QProcess error: %s", err)
 
     def _update_time(self) -> None:
-        s = int(time.monotonic() - self._t0)
-        self.time_lbl.setText(f"{s // 60:02d}:{s % 60:02d}")
+        elapsed = self._elapsed_total
+        if self._recording:
+            elapsed += max(0.0, time.monotonic() - self._segment_t0)
+        seconds = int(elapsed)
+        self.time_lbl.setText(f"{seconds // 60:02d}:{seconds % 60:02d}")
 
-    def closeEvent(self, e):
+    def closeEvent(self, event):
+        self._stop_overlay()
         try:
             if self._launcher is not None:
                 self._launcher.set_recording_active(False, None)
@@ -7736,8 +8140,7 @@ class RecordHUD(QWidget):
             pass
         if self in _active_huds:
             _active_huds.remove(self)
-        super().closeEvent(e)
-
+        super().closeEvent(event)
 
 # ── виджет рисования «замазок» поверх видео ──────────────────────────────────
 class _CensorOverlay(QWidget):
