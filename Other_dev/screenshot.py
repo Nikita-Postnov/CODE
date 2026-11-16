@@ -4833,6 +4833,48 @@ def _windows_scroll_state(point: QPoint) -> Optional[tuple[int, int]]:
     return None
 
 
+def _windows_target_for_scroll(point: QPoint) -> Optional[int]:
+    """Найти окно приложения под выделенной областью, а не окно скриншотера."""
+    if sys.platform != "win32":
+        return None
+    try:
+        user = ctypes.windll.user32
+        user.WindowFromPoint.argtypes = (wintypes.POINT,)
+        user.WindowFromPoint.restype = wintypes.HWND
+        user.GetAncestor.argtypes = (wintypes.HWND, wintypes.UINT)
+        user.GetAncestor.restype = wintypes.HWND
+        child = user.WindowFromPoint(wintypes.POINT(point.x(), point.y()))
+        if not child:
+            return None
+        root = user.GetAncestor(child, 2)  # GA_ROOT
+        return int(root or child)
+    except (AttributeError, OSError, TypeError, ValueError):
+        log.debug("scroll: target HWND is unavailable", exc_info=True)
+        return None
+
+
+def _windows_focus_scroll_target(hwnd: Optional[int]) -> bool:
+    """Вернуть фокус выбранному окну до отправки колеса мыши.
+
+    Если Win32 отклонит активацию, захват не считается успешным только по
+    результату этого вызова: движение будет отдельно подтверждено кадрами.
+    """
+    if sys.platform != "win32" or not hwnd:
+        return False
+    try:
+        user = ctypes.windll.user32
+        user.SetForegroundWindow.argtypes = (wintypes.HWND,)
+        user.SetForegroundWindow.restype = wintypes.BOOL
+        user.GetForegroundWindow.argtypes = ()
+        user.GetForegroundWindow.restype = wintypes.HWND
+        user.SetForegroundWindow(wintypes.HWND(hwnd))
+        active = user.GetForegroundWindow()
+        return bool(active and int(active) == int(hwnd))
+    except (AttributeError, OSError, TypeError, ValueError):
+        log.debug("scroll: cannot focus target window", exc_info=True)
+        return False
+
+
 class ScrollingCapturePanel(QWidget):
     """Компактная немодальная панель; скрывается во время самого захвата."""
 
@@ -4902,6 +4944,7 @@ class ScrollingScreenshotJob(QObject):
         self._alignment_retries = 0
         self._ever_scrolled = False
         self.max_idle_retries = 3
+        self._target_hwnd: Optional[int] = None
 
     def attach_panel(self, panel: ScrollingCapturePanel):
         self._scroll_panel = panel
@@ -4926,6 +4969,8 @@ class ScrollingScreenshotJob(QObject):
                 self._finish("error", "Не удалось снять область для прокрутки.")
                 return
             self.frames.append(first)
+            self._target_hwnd = _windows_target_for_scroll(self.area.center())
+            log.info("scroll: candidate target window=%s", self._target_hwnd)
             self.progress.emit(0, self.max_steps)
             self._advance()
         except Exception:
@@ -4940,20 +4985,35 @@ class ScrollingScreenshotJob(QObject):
             return
         QCursor.setPos(self.area.center())
         self._last_scroll_state = _windows_scroll_state(self.area.center())
-        # Даже реальная Win32-полоса может относиться к родительскому окну,
-        # а не к прокручиваемой странице. Нужна проверка фактического движения.
         self.status_changed.emit("Прокрутка страницы и проверка изменений…")
         if self._scroll_panel is not None:
             self._scroll_panel.hide()
+        # После hide() Qt должен передать управление циклу событий, чтобы
+        # окно панели действительно исчезло до инъекции мышиного колеса.
+        QTimer.singleShot(110, self._send_scroll)
+
+    def _send_scroll(self):
+        if self._finished:
+            return
+        QCursor.setPos(self.area.center())
+        if self._target_hwnd is None:
+            self._target_hwnd = _windows_target_for_scroll(self.area.center())
+        focused = _windows_focus_scroll_target(self._target_hwnd)
+        log.info("scroll: wheel target=%s foreground=%s",
+                 self._target_hwnd, focused)
         try:
-            # Два деления мыши вниз. Курсор расположен внутри выделения.
+            # Настоящее колесо мыши для окна под курсором; панель управления
+            # появляется лишь после того, как событие уже обработано.
             ctypes.windll.user32.mouse_event(0x0800, 0, 0, (-240) & 0xFFFFFFFF, 0)
-            if self._scroll_panel is not None:
-                self._scroll_panel.show()
         except (OSError, AttributeError):
             self._finish("error", "Windows не разрешила прокрутку окна.")
             return
-        QTimer.singleShot(650, self._capture_next)
+        QTimer.singleShot(230, self._show_scroll_panel)
+        QTimer.singleShot(900, self._capture_next)
+
+    def _show_scroll_panel(self):
+        if not self._finished and self._scroll_panel is not None:
+            self._scroll_panel.show()
 
     def _capture_next(self):
         if self._finished:
@@ -5448,8 +5508,15 @@ class Launcher(QMainWindow):
             panel.close_silently()
         if job is not None:
             job.deleteLater()
-        if not image.isNull():
+        # Один исходный кадр — не длинный снимок. При провале прокрутки
+        # сообщаем причину и сохраняем существующий буфер обмена как есть.
+        confirmed_steps = len(job.steps) if job is not None else 0
+        if not image.isNull() and confirmed_steps > 0:
             self._handle_captured_image(image)
+        elif confirmed_steps == 0:
+            message = (
+                message + " " if message else ""
+            ) + "Длинный снимок не создан: страница не была прокручена."
         if message:
             log.info("Длинный снимок: %s", message)
             if hasattr(self, "tray"):
