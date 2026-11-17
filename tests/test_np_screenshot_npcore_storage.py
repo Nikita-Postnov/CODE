@@ -34,6 +34,14 @@ class HTTPResponse:
         return json.dumps(self._body).encode("utf-8")
 
 
+class FakeOpener:
+    def __init__(self, operation):
+        self.operation = operation
+
+    def open(self, request, timeout=0):
+        return self.operation(request, timeout=timeout)
+
+
 class ScreenshotNPCoreUploadTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -61,16 +69,19 @@ class ScreenshotNPCoreUploadTests(unittest.TestCase):
 
         with patch.object(shot, "_npcore_load_link",
                           return_value=("https://npcore.example", "x" * 43)), \
-             patch.object(shot.urllib.request, "urlopen", side_effect=urlopen):
+             patch.object(shot.urllib.request, "build_opener",
+                          return_value=FakeOpener(urlopen)):
             result = shot._npcore_upload_image(self.sample)
         self.assertEqual(result, reply)
 
     def test_uploaded_name_and_real_file_path_are_server_owned(self):
         with patch.object(shot, "_npcore_load_link",
                           return_value=("https://npcore.example", "x" * 43)), \
-             patch.object(shot.urllib.request, "urlopen",
-                          return_value=HTTPResponse({"ok": True,
-                            "entry": {"rel": "Скриншоты/NP Screenshot/NP_a.png"}})):
+             patch.object(shot.urllib.request, "build_opener",
+                          return_value=FakeOpener(
+                              lambda _request, timeout=0: HTTPResponse({
+                                  "ok": True, "entry": {
+                                  "rel": "Скриншоты/NP Screenshot/NP_a.png"}}))):
             result = shot._npcore_upload_image(self.sample)
         self.assertEqual(result["entry"]["rel"],
                          "Скриншоты/NP Screenshot/NP_a.png")
@@ -78,7 +89,7 @@ class ScreenshotNPCoreUploadTests(unittest.TestCase):
     def test_upload_rejects_bad_input_and_oversized_png_before_network(self):
         with patch.object(shot, "_npcore_load_link",
                           return_value=("https://npcore.example", "x" * 43)), \
-             patch.object(shot.urllib.request, "urlopen") as network:
+             patch.object(shot.urllib.request, "build_opener") as network:
             with self.assertRaises(ValueError):
                 shot._npcore_upload_png_bytes(b"not png")
             with self.assertRaises(ValueError):
@@ -92,9 +103,25 @@ class ScreenshotNPCoreUploadTests(unittest.TestCase):
             "Unauthorised", {}, io.BytesIO(b'{"detail":"expired"}'))
         with patch.object(shot, "_npcore_load_link",
                           return_value=("https://npcore.example", "x" * 43)), \
-             patch.object(shot.urllib.request, "urlopen", side_effect=error):
+             patch.object(shot.urllib.request, "build_opener",
+                          return_value=FakeOpener(
+                              lambda _request, timeout=0: (_ for _ in ()).throw(error))):
             with self.assertRaisesRegex(RuntimeError, "Нет доступа"):
                 shot._npcore_upload_png_bytes(b"\x89PNG\r\n\x1a\n" + b"abc")
+
+    def test_upload_redirects_are_disabled(self):
+        with patch.object(shot, "_npcore_load_link",
+                          return_value=("https://npcore.example", "x" * 43)), \
+             patch.object(shot.urllib.request, "build_opener",
+                          return_value=FakeOpener(
+                              lambda _request, timeout=0:
+                              HTTPResponse({"ok": True, "entry": {
+                                  "rel": "Скриншоты/NP Screenshot/x.png"}}))) as factory:
+            shot._npcore_upload_png_bytes(b"\x89PNG\r\n\x1a\n" + b"abc")
+            self.assertEqual(factory.call_count, 1)
+            handler = factory.call_args.args[0]
+            self.assertIsNone(handler.redirect_request(
+                None, None, 302, "Moved", {}, "https://other.example"))
 
     def test_listing_uses_separate_authenticated_endpoint(self):
         expected = {"ok": True, "files": [{"rel": "Скриншоты/NP Screenshot/x.png"}]}
