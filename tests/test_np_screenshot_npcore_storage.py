@@ -51,6 +51,11 @@ class ScreenshotNPCoreUploadTests(unittest.TestCase):
         self.sample = QImage(200, 90, QImage.Format_RGB32)
         self.sample.fill(QColor("#1177aa"))
 
+    def tearDown(self):
+        # Qt offscreen сохраняет MIME-владельца до завершения процесса.
+        # Явно освобождаем его перед удалением QApplication.
+        QApplication.clipboard().clear()
+
     def test_current_clipboard_png_data_is_decoded(self):
         """Некоторые приложения кладут только MIME image/png, а не QImage."""
         image = self.sample
