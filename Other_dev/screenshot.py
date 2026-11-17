@@ -5813,6 +5813,91 @@ def _scroll_body_unchanged(before: QImage, after: QImage) -> bool:
     return changed / (140 * 110) < .008
 
 
+def _scroll_stationary_content(before: QImage, after: QImage) -> bool:
+    """Подтверждает неподвижность ОСНОВНОГО содержимого при локальных анимациях.
+
+    Обычная проверка пикселей считает GIF, видео, мигающий курсор и
+    динамические карточки движением страницы. Здесь сравниваются штрихи
+    текста в нескольких независимых участках изображения. Фон и
+    однотонные области не служат доказательством остановки.
+    """
+    if (before.isNull() or after.isNull() or
+            before.size() != after.size() or
+            before.width() < 100 or before.height() < 150):
+        return False
+
+    width, height = before.width(), before.height()
+    area = QRect(round(width * .06), round(height * .11),
+                 round(width * .88), round(height * .76))
+    if area.width() < 90 or area.height() < 100:
+        return False
+    sample_w = min(300, area.width())
+    sample_h = min(190, area.height())
+
+    def sample(image: QImage) -> tuple[bytes, int]:
+        scaled = image.copy(area).scaled(
+            sample_w, sample_h, Qt.IgnoreAspectRatio,
+            Qt.FastTransformation).convertToFormat(QImage.Format_Grayscale8)
+        return bytes(scaled.constBits()), scaled.bytesPerLine()
+
+    old, old_stride = sample(before)
+    new, new_stride = sample(after)
+    tile_cols, tile_rows = 5, 5
+    informative_tiles = stable_tiles = 0
+    central_tiles = central_stable = 0
+    stable_bands: set[int] = set()
+
+    for ty in range(tile_rows):
+        y0 = ty * sample_h // tile_rows
+        y1 = (ty + 1) * sample_h // tile_rows
+        for tx in range(tile_cols):
+            x0 = tx * sample_w // tile_cols
+            x1 = (tx + 1) * sample_w // tile_cols
+            edges = matches = 0
+            for y in range(max(1, y0 + 1), min(sample_h - 1, y1 - 1), 2):
+                arow, brow = y * old_stride, y * new_stride
+                for x in range(max(1, x0 + 1), min(sample_w - 1, x1 - 1), 2):
+                    a = old[arow + x]
+                    horizontal = abs(old[arow + x + 1] - old[arow + x - 1])
+                    vertical = abs(old[(y + 1) * old_stride + x] -
+                                   old[(y - 1) * old_stride + x])
+                    if max(horizontal, vertical) < 28:
+                        continue
+                    edges += 1
+                    b = new[brow + x]
+                    new_horizontal = abs(new[brow + x + 1] - new[brow + x - 1])
+                    new_vertical = abs(new[(y + 1) * new_stride + x] -
+                                       new[(y - 1) * new_stride + x])
+                    if (abs(a - b) <= 20 and
+                            abs(horizontal - new_horizontal) <= 26 and
+                            abs(vertical - new_vertical) <= 26):
+                        matches += 1
+            if edges < 8:
+                continue
+            informative_tiles += 1
+            if 1 <= tx <= 3:
+                central_tiles += 1
+            if matches / edges >= .72:
+                stable_tiles += 1
+                if 1 <= tx <= 3:
+                    central_stable += 1
+                    stable_bands.add(ty)
+
+    if informative_tiles < 6 or central_tiles < 4:
+        return False
+    return (stable_tiles / informative_tiles >= .66 and
+            central_stable / central_tiles >= .65 and
+            len(stable_bands) >= 2)
+
+
+def _scrollbar_progressed(before: Optional[tuple[int, int]],
+                          after: Optional[tuple[int, int]]) -> bool:
+    """Нативный ползунок полезен как индикатор движения, но не конца страницы."""
+    return (before is not None and after is not None and
+            before[1] == after[1] and
+            0 <= before[0] < after[0] <= after[1])
+
+
 def _windows_scroll_state(point: QPoint) -> Optional[tuple[int, int]]:
     """Позиция нативной вертикальной полосы Win32 (pos, maximum).
 
@@ -6167,6 +6252,26 @@ class ScrollingScreenshotJob(QObject):
             self._scroll_panel.hide()
         QTimer.singleShot(90, self._take_next_frame)
 
+    def _handle_still_frame(self) -> None:
+        """Несколько подтверждённых неподвижных кадров означают конец страницы."""
+        self._alignment_retries = 0
+        self._idle_retries += 1
+        if self._idle_retries < self.max_idle_retries:
+            self.status_changed.emit(
+                f"Проверяем конец страницы: "
+                f"{self._idle_retries + 1} из {self.max_idle_retries}…")
+            self._advance()
+            return
+        if self._ever_scrolled:
+            self._finish("end", "Достигнут конец прокручиваемой области: "
+                         "содержимое остаётся на месте, хотя отдельные "
+                         "элементы могут обновляться.")
+        else:
+            self._pause("no_movement",
+                        "Прокрутка не обнаружена. Нажми «Продолжить захват», "
+                        "затем наведи курсор на прокручиваемую часть "
+                        "страницы. Можно сохранить первый экран.")
+
     def _take_next_frame(self):
         if self._finished or self._paused:
             return
@@ -6176,27 +6281,24 @@ class ScrollingScreenshotJob(QObject):
                 self._finish("error", "Размер области изменился во время прокрутки.")
                 return
 
-            if _scroll_body_unchanged(self.frames[-1], frame):
-                self._idle_retries += 1
-                if self._idle_retries < self.max_idle_retries:
-                    self.status_changed.emit(
-                        f"Ожидаем движение страницы: попытка "
-                        f"{self._idle_retries + 1} из {self.max_idle_retries}…")
-                    self._advance()
-                    return
-                if self._ever_scrolled:
-                    self._finish("end", "Содержимое не менялось после нескольких "
-                                 "попыток прокрутки. Вероятно, достигнут конец страницы.")
-                else:
-                    self._pause("no_movement",
-                                "Прокрутка не обнаружена. Нажми «Продолжить захват», "
-                                "затем наведи курсор на прокручиваемую часть "
-                                "страницы. Можно сохранить первый экран.")
+            native_progress = _scrollbar_progressed(
+                self._last_scroll_state, _windows_scroll_state(self._scroll_point))
+            if (not native_progress and
+                    _scroll_body_unchanged(self.frames[-1], frame)):
+                self._handle_still_frame()
                 return
 
-            self._idle_retries = 0
             offset = _scroll_overlap(self.frames[-1], frame)
             if offset <= 0:
+                # На страницах с анимацией старый пиксельный критерий
+                # видел «движение», хотя все текстовые блоки оставались
+                # на месте. При достоверном статичном тексте продолжаем
+                # проверять конец, а не требуем ручной коррекции шва.
+                if (not native_progress and
+                        _scroll_stationary_content(self.frames[-1], frame)):
+                    self._handle_still_frame()
+                    return
+                self._idle_retries = 0
                 self._alignment_retries += 1
                 if self._alignment_retries < 3:
                     self.status_changed.emit(
@@ -6210,6 +6312,7 @@ class ScrollingScreenshotJob(QObject):
                             "или «Завершить и сохранить».")
                 return
             self._alignment_retries = 0
+            self._idle_retries = 0
 
             next_height = self.frames[0].height() + sum(self.steps) + offset
             safe_height = min(40000, self.max_output_pixels //
