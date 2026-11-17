@@ -377,7 +377,7 @@ def load_history_metadata(path: Path) -> dict:
             value = data.get(key, "")
             result[key] = str(value)[:limit] if isinstance(value, str) else ""
         kind = data.get("kind", "shot")
-        result["kind"] = kind if kind in ("shot", "scroll", "window") else "shot"
+        result["kind"] = kind if kind in ("shot", "quick", "scroll", "window") else "shot"
         return result
     except (OSError, ValueError, TypeError):
         return defaults
@@ -7951,6 +7951,8 @@ class ScreenshotHistoryListWidget(QListWidget):
     """Сетка снимков с заголовками групп на всю ширину области просмотра."""
 
     HEADER_ROLE = Qt.UserRole + 1
+    KIND_ROLE = Qt.UserRole + 2
+    KIND_LABEL_ROLE = Qt.UserRole + 3
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
@@ -7962,6 +7964,36 @@ class ScreenshotHistoryListWidget(QListWidget):
             item = self.item(index)
             if item.data(self.HEADER_ROLE) is True:
                 item.setSizeHint(QSize(width, 34))
+
+
+class ScreenshotHistoryCardWidget(QWidget):
+    """Карточка истории с миниатюрой, временем и компактной меткой типа."""
+
+    def __init__(self, preview: QImage, capture_time: str,
+                 kind_label: str, kind_style: str, parent=None):
+        super().__init__(parent)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        self.setFixedSize(190, 154)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(3, 3, 3, 3)
+        layout.setSpacing(3)
+
+        preview_label = QLabel(self)
+        preview_label.setFixedSize(152, 100)
+        preview_label.setAlignment(Qt.AlignCenter)
+        preview_label.setPixmap(QPixmap.fromImage(preview))
+        preview_label.setStyleSheet("background: transparent;")
+        layout.addWidget(preview_label, 0, Qt.AlignHCenter)
+
+        time_label = QLabel(capture_time, self)
+        time_label.setAlignment(Qt.AlignCenter)
+        time_label.setStyleSheet("background: transparent; font-size: 11px;")
+        layout.addWidget(time_label)
+
+        self.badge_label = QLabel(kind_label, self)
+        self.badge_label.setAlignment(Qt.AlignCenter)
+        self.badge_label.setStyleSheet(kind_style)
+        layout.addWidget(self.badge_label, 0, Qt.AlignHCenter)
 
 
 class ScreenshotHistoryDialog(QDialog):
@@ -7987,6 +8019,7 @@ class ScreenshotHistoryDialog(QDialog):
         self.type_filter = QComboBox(self)
         self.type_filter.addItem("Все типы", "all")
         self.type_filter.addItem("Обычные снимки", "shot")
+        self.type_filter.addItem("Быстрые захваты", "quick")
         self.type_filter.addItem("Длинные снимки", "scroll")
         self.type_filter.addItem("Снимки окон", "window")
         self.type_filter.currentIndexChanged.connect(self.refresh)
@@ -8116,16 +8149,48 @@ class ScreenshotHistoryDialog(QDialog):
                 else:
                     capture_time = time.strftime(
                         "%H:%M:%S", time.localtime(_modified))
-                entry = QListWidgetItem(icon, prefix + capture_time)
-                entry.setSizeHint(QSize(190, 148))
+                kind_labels = {
+                    "shot": "Снимок",
+                    "quick": "Быстрый захват",
+                    "scroll": "Длинный скриншот",
+                    "window": "Окно",
+                }
+                kind_styles = {
+                    "shot": (
+                        "QLabel { background: #3b3b3b; color: #e5e7eb; "
+                        "border: 1px solid #555555; border-radius: 8px; "
+                        "padding: 2px 8px; font-size: 10px; font-weight: 600; }"),
+                    "quick": (
+                        "QLabel { background: #45246b; color: #e9d5ff; "
+                        "border: 1px solid #8b5cf6; border-radius: 8px; "
+                        "padding: 2px 8px; font-size: 10px; font-weight: 600; }"),
+                    "scroll": (
+                        "QLabel { background: #173b59; color: #bfdbfe; "
+                        "border: 1px solid #3b82f6; border-radius: 8px; "
+                        "padding: 2px 8px; font-size: 10px; font-weight: 600; }"),
+                    "window": (
+                        "QLabel { background: #174a3a; color: #bbf7d0; "
+                        "border: 1px solid #22c55e; border-radius: 8px; "
+                        "padding: 2px 8px; font-size: 10px; font-weight: 600; }"),
+                }
+                kind = metadata["kind"]
+                kind_label = kind_labels.get(kind, kind_labels["shot"])
+                entry = QListWidgetItem(prefix + capture_time)
+                entry.setSizeHint(QSize(190, 154))
                 entry.setToolTip(
-                    f"{path.name}\nТип: {metadata['kind']}\n"
+                    f"{path.name}\nТип: {kind_label}\n"
                     f"Категория: {metadata['category'] or '—'}\n"
                     f"Проект: {metadata['project'] or '—'}\n"
                     f"Теги: {', '.join(metadata['tags']) or '—'}\n"
                     f"OCR: {'есть' if metadata['ocr_text'] else 'не индексирован'}")
                 entry.setData(Qt.UserRole, str(path))
+                entry.setData(ScreenshotHistoryListWidget.KIND_ROLE, kind)
+                entry.setData(ScreenshotHistoryListWidget.KIND_LABEL_ROLE, kind_label)
                 self.items.addItem(entry)
+                card = ScreenshotHistoryCardWidget(
+                    preview, capture_time, kind_label,
+                    kind_styles.get(kind, kind_styles["shot"]))
+                self.items.setItemWidget(entry, card)
                 if first_item is None or (selected is not None and path == selected):
                     first_item = entry
         self.items.update_header_sizes()
@@ -9166,7 +9231,7 @@ class Launcher(QMainWindow):
         self._last_captured_image = image.copy()
         history_enabled = self._capture_preferences.get("history_enabled", False)
         if history_enabled:
-            self._archive_capture(image, "shot")
+            self._archive_capture(image, "quick")
         if action == "copy":
             self._set_clipboard_image(image, suppress_history=history_enabled)
             self._quick_notify("Снимок скопирован в буфер обмена.")
