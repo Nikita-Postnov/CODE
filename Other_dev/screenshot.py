@@ -5687,6 +5687,48 @@ def _npcore_upload_png_bytes(data: bytes) -> dict:
     return result
 
 
+def _npcore_current_clipboard_image() -> QImage:
+    """Читает только текущее содержимое буфера, включая изображения-файлы.
+
+    Win+V хранит *историю*, которую Qt QClipboard не предоставляет. Нельзя
+    автоматически подменять текущий текст старым изображением без выбора.
+    """
+    clipboard = QApplication.clipboard()
+    image = clipboard.image(QClipboard.Clipboard)
+    if not image.isNull():
+        return image
+    pixmap = clipboard.pixmap(QClipboard.Clipboard)
+    if not pixmap.isNull():
+        return pixmap.toImage()
+    mime = clipboard.mimeData(QClipboard.Clipboard)
+    if mime is None:
+        return QImage()
+    if mime.hasImage():
+        value = mime.imageData()
+        if isinstance(value, QImage) and not value.isNull():
+            return value
+        if isinstance(value, QPixmap) and not value.isNull():
+            return value.toImage()
+    # Некоторые приложения публикуют PNG/JPEG как бинарные MIME-данные,
+    # не предоставляя Qt изображение через clipboard.image().
+    for fmt in ("image/png", "image/jpeg", "image/bmp", "image/webp"):
+        if mime.hasFormat(fmt):
+            payload = bytes(mime.data(fmt))
+            if payload and len(payload) <= _NPCORE_UPLOAD_LIMIT:
+                decoded = QImage.fromData(payload)
+                if not decoded.isNull():
+                    return decoded
+    # Копирование PNG из Проводника создаёт список файлов, а не пиксели.
+    if mime.hasUrls() and len(mime.urls()) == 1:
+        url = mime.urls()[0]
+        if url.isLocalFile():
+            path = Path(url.toLocalFile())
+            if path.suffix.lower() in (".png", ".jpg", ".jpeg",
+                                       ".bmp", ".webp") and path.is_file():
+                return QImage(str(path))
+    return QImage()
+
+
 def _npcore_upload_image(image: QImage) -> dict:
     if image.isNull():
         raise ValueError("Нет изображения для отправки")
@@ -8446,6 +8488,9 @@ class Launcher(QMainWindow):
         """)
         _setup_logging()
         self._quick_capture_pending = False
+        # Последний реально созданный снимок остаётся доступным в рамках
+        # текущего сеанса, даже если OCR заменил буфер обмена текстом.
+        self._last_captured_image = QImage()
         self._scroll_job: Optional[ScrollingScreenshotJob] = None
         self._scroll_panel: Optional[ScrollingCapturePanel] = None
         self._editors: List[EditorWindow] = []
@@ -8470,20 +8515,58 @@ class Launcher(QMainWindow):
                 "NPCore подключён · " + link[0] if link else
                 "NPCore не подключён · ИИ-перевод доступен после подключения")
 
+    def _choose_npcore_source(self) -> QImage:
+        """Предлагаем явный источник вместо догадки по истории Win+V."""
+        prompt = QMessageBox(self)
+        prompt.setWindowTitle("Изображение для NPCore")
+        prompt.setIcon(QMessageBox.Information)
+        prompt.setText("В текущем буфере обмена нет изображения.")
+        prompt.setInformativeText(
+            "Win+V показывает историю, а не обязательно текущий буфер. "
+            "Выбери нужную миниатюру в Win+V и повтори отправку "
+            "либо воспользуйся одним из вариантов ниже.")
+        last_button = None
+        if not self._last_captured_image.isNull():
+            last_button = prompt.addButton(
+                "Последний снимок", QMessageBox.ActionRole)
+        file_button = prompt.addButton(
+            "Выбрать изображение…", QMessageBox.ActionRole)
+        prompt.addButton("Отмена", QMessageBox.RejectRole)
+        prompt.exec()
+        chosen = prompt.clickedButton()
+        if last_button is not None and chosen is last_button:
+            return self._last_captured_image.copy()
+        if chosen is file_button:
+            filename, _filter = QFileDialog.getOpenFileName(
+                self, "Изображение для NPCore", "",
+                "Изображения (*.png *.jpg *.jpeg *.bmp *.webp)")
+            if not filename:
+                return QImage()
+            image = QImage(filename)
+            if image.isNull():
+                QMessageBox.warning(
+                    self, "NPCore", "Не удалось открыть изображение.")
+            return image
+        return QImage()
+
+    def _show_npcore_upload(self, image: QImage) -> None:
+        if image.isNull():
+            return
+        # Запрос загрузки отправляется только после второго явного
+        # подтверждения «Отправить» в NPCoreUploadDialog.
+        dialog = NPCoreUploadDialog(image, self)
+        dialog.exec()
+
     def upload_clipboard_npcore(self) -> None:
         """Явная отправка, автоматической фоновой синхронизации нет."""
         if _npcore_load_link() is None:
             self.open_npcore_connection()
             if _npcore_load_link() is None:
                 return
-        image = QApplication.clipboard().image(QClipboard.Clipboard)
+        image = _npcore_current_clipboard_image()
         if image.isNull():
-            QMessageBox.information(
-                self, "NPCore",
-                "В буфере обмена нет изображения. Сделай снимок экрана.")
-            return
-        dialog = NPCoreUploadDialog(image, self)
-        dialog.exec()
+            image = self._choose_npcore_source()
+        self._show_npcore_upload(image)
 
     def open_npcore_screenshots(self) -> None:
         if _npcore_load_link() is None:
@@ -8915,6 +8998,7 @@ class Launcher(QMainWindow):
             self._quick_notify("Не удалось получить снимок выбранной области.",
                                error=True)
             return
+        self._last_captured_image = image.copy()
         if self._capture_preferences.get("history_enabled", False):
             archive_screenshot(image, kind="shot")
         if action == "copy":
@@ -9020,6 +9104,9 @@ class Launcher(QMainWindow):
 
     def _handle_captured_image(self, img: QImage, capture_kind: str = "shot") -> None:
         """Буфер, история и действия для всех способов создания снимка."""
+        if img.isNull():
+            return
+        self._last_captured_image = img.copy()
         QApplication.clipboard().setImage(img, QClipboard.Clipboard)
         saved = None
         if self._capture_preferences.get("history_enabled", False):
