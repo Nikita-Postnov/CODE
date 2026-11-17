@@ -209,6 +209,125 @@ class OCRTableLayoutTests(unittest.TestCase):
             dialog.close()
 
 
+class QuickCaptureTests(unittest.TestCase):
+    """Повторный захват, сохранение и устойчивость сохранённой области."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QApplication.instance() or QApplication([])
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.folder = Path(self.temp.name)
+        settings = self.folder / "prefs.json"
+        self.path_patch = patch.object(shot, "SCREENSHOT_HISTORY_SETTINGS", settings)
+        self.path_patch.start()
+        self.addCleanup(self.path_patch.stop)
+        with patch.object(shot.Launcher, "_init_tray"), \
+             patch.object(shot.Launcher, "_install_global_hotkey"):
+            self.launcher = shot.Launcher()
+        self.addCleanup(self.close_launcher)
+
+    def close_launcher(self):
+        self.launcher._real_quit = True
+        self.launcher.close()
+
+    def _rect(self):
+        screen = QApplication.primaryScreen().geometry()
+        return shot.QRect(screen.x() + 10, screen.y() + 10, 85, 65)
+
+    def _sample_image(self):
+        image = QImage(85, 65, QImage.Format_ARGB32)
+        image.fill(QColor("#2488bb"))
+        return image
+
+    def test_region_settings_survive_restart_and_manual_checkboxes(self):
+        rect = self._rect()
+        self.assertTrue(self.launcher.remember_last_region(rect))
+        preferences = shot.load_capture_preferences()
+        self.assertEqual(preferences["last_region"], list(rect.getRect()))
+        self.assertEqual(preferences["last_screens"], shot._quick_screen_layout())
+        self.launcher._set_capture_preference("edit_after_capture", False)
+        preferences = shot.load_capture_preferences()
+        self.assertEqual(preferences["last_region"], list(rect.getRect()))
+        self.assertFalse(preferences["edit_after_capture"])
+        self.assertEqual(self.launcher._last_valid_quick_region(), rect)
+
+    def test_quick_repeat_copies_without_area_selection_or_editor(self):
+        rect = self._rect()
+        self.assertTrue(self.launcher.remember_last_region(rect))
+        image = self._sample_image()
+        with patch.object(shot, "grab_region_highdpi", return_value=image) as capture, \
+             patch.object(shot.QTimer, "singleShot") as timer, \
+             patch.object(self.launcher, "_open_editor_image") as open_editor:
+            self.launcher.quick_repeat("copy")
+            timer.assert_called_once()
+            self.assertTrue(self.launcher._quick_capture_pending)
+            timer.call_args.args[1]()
+            capture.assert_called_once_with(rect)
+            open_editor.assert_not_called()
+        copied = QApplication.clipboard().image()
+        self.assertEqual(copied.pixelColor(1, 1).name(), "#2488bb")
+        self.assertFalse(self.launcher._quick_capture_pending)
+
+    def test_quick_repeat_saves_png_without_dialog(self):
+        self.assertTrue(self.launcher.remember_last_region(self._rect()))
+        with patch.object(shot, "grab_region_highdpi",
+                          return_value=self._sample_image()), \
+             patch.object(shot.QStandardPaths, "writableLocation",
+                          return_value=str(self.folder)), \
+             patch.object(shot.QTimer, "singleShot") as timer, \
+             patch.object(shot.QFileDialog, "getSaveFileName") as save_dialog:
+            self.launcher.quick_repeat("save")
+            timer.call_args.args[1]()
+            save_dialog.assert_not_called()
+        files = list((self.folder / "NP Screenshot").glob("Screenshot_*.png"))
+        self.assertEqual(len(files), 1)
+        self.assertEqual(QImage(str(files[0])).pixelColor(1, 1).name(),
+                         "#2488bb")
+
+    def test_new_area_sets_last_region_then_performs_selected_action(self):
+        rect = self._rect()
+        def select(on_selected=None):
+            self.assertIsNotNone(on_selected)
+            on_selected(rect)
+            return self._sample_image()
+        with patch.object(shot, "capture_region_interactive",
+                          side_effect=select) as capture:
+            self.launcher._quick_select_area("copy")
+            capture.assert_called_once()
+        self.assertEqual(self.launcher._last_valid_quick_region(), rect)
+        self.assertEqual(QApplication.clipboard().image().width(), 85)
+
+    def test_changing_monitors_disables_stale_region_safely(self):
+        self.assertTrue(self.launcher.remember_last_region(self._rect()))
+        self.launcher._capture_preferences["last_screens"] = []
+        with patch.object(shot.QMessageBox, "information") as inform, \
+             patch.object(shot, "grab_region_highdpi") as capture:
+            self.launcher.quick_repeat("copy")
+        inform.assert_called_once()
+        capture.assert_not_called()
+        self.assertIsNone(self.launcher._last_valid_quick_region())
+
+    def test_invalid_preferences_cannot_force_offscreen_capture(self):
+        preferences = shot.load_capture_preferences()
+        preferences["last_region"] = [1, 2, -99999, 20]
+        preferences["last_screens"] = [[0, 0, 1280, 800]]
+        self.assertTrue(shot.save_capture_preferences(preferences))
+        self.assertIsNone(shot.load_capture_preferences()["last_region"])
+        self.assertIsNone(shot._quick_region_data([1, True, 60, 70]))
+        self.assertFalse(shot._quick_region_is_visible(
+            shot.QRect(50000, 50000, 30, 30)))
+
+    def test_rapid_duplicate_requests_do_not_capture_twice(self):
+        self.assertTrue(self.launcher.remember_last_region(self._rect()))
+        with patch.object(shot.QTimer, "singleShot") as timer:
+            self.launcher.quick_repeat("copy")
+            self.launcher.quick_repeat("save")
+            timer.assert_called_once()
+            self.launcher._quick_capture_pending = False
+
 class DelayedCaptureTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
