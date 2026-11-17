@@ -6003,9 +6003,11 @@ def find_private_data_regions(payload: dict, image_size: QSize,
         if not isinstance(line, dict):
             continue
         words = line.get("words")
-        usable = [item for item in words[:250]
-                  if isinstance(item, dict) and str(item.get("text") or "").strip()]
-                  if isinstance(words, list) else []
+        usable = []
+        if isinstance(words, list):
+            usable = [item for item in words[:250]
+                      if isinstance(item, dict) and
+                      str(item.get("text") or "").strip()]
         if not usable:
             usable = [line]
         for item in usable:
