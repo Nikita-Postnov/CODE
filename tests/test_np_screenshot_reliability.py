@@ -326,6 +326,27 @@ class QuickCaptureTests(unittest.TestCase):
         self.assertFalse(shot._quick_region_is_visible(
             shot.QRect(50000, 50000, 30, 30)))
 
+    def test_printscreen_during_pending_quick_capture_is_ignored(self):
+        self.launcher._quick_capture_pending = True
+        with patch.object(shot.QTimer, "singleShot") as timer, \
+             patch.object(shot, "run_capture_flow") as capture:
+            self.launcher.hotkey_capture()
+            self.launcher._capture(shot.SelectionOverlay.MODE_SHOT)
+            timer.assert_not_called()
+            capture.assert_not_called()
+        self.launcher._quick_capture_pending = False
+
+    def test_monitor_change_during_timer_skips_capture(self):
+        self.assertTrue(self.launcher.remember_last_region(self._rect()))
+        region = self._rect()
+        self.launcher._quick_capture_pending = True
+        with patch.object(shot, "_quick_screen_layout",
+                          return_value=[[50_000, 50_000, 120, 100]]), \
+             patch.object(shot, "grab_region_highdpi") as capture:
+            self.launcher._quick_repeat_now(region, "copy")
+            capture.assert_not_called()
+        self.assertFalse(self.launcher._quick_capture_pending)
+
     def test_rapid_duplicate_requests_do_not_capture_twice(self):
         self.assertTrue(self.launcher.remember_last_region(self._rect()))
         with patch.object(shot.QTimer, "singleShot") as timer:
