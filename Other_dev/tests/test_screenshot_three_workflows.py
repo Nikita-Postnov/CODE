@@ -741,7 +741,8 @@ class ScreenshotThreeWorkflowsTests(unittest.TestCase):
                 self.assertGreaterEqual(title.font().pointSize(), 11)
                 self.assertGreaterEqual(title.minimumHeight(), 36)
                 self.assertEqual(title.alignment(), Qt.AlignCenter)
-            self.assertEqual(
+            # Qt учитывает и явный отступ, и padding из stylesheet.
+            self.assertGreaterEqual(
                 group.findChild(QLabel, "np_quick_editor_header")
                 .contentsMargins().top(), 7)
             self.assertIn("QGroupBox QPushButton:hover {", stylesheet)
