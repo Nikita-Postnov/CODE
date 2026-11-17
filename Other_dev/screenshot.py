@@ -173,6 +173,7 @@ PASSWORDS_DIR = ROOT_DIR / "Passwords"
 SCREENSHOT_STATE_PATH = DATA_DIR / "screenshot_editor_state.json"
 SCREENSHOT_HISTORY_DIR = DATA_DIR / "ScreenshotHistory"
 SCREENSHOT_HISTORY_SETTINGS = DATA_DIR / "screenshot_history_settings.json"
+SCREENSHOT_QUICK_REGION_SETTINGS = DATA_DIR / "screenshot_quick_region.json"
 SCREENSHOT_HISTORY_DISPLAY_LIMIT = 150
 
 
@@ -211,11 +212,61 @@ def _quick_region_is_visible(rect, screens: Optional[list[list[int]]] = None) ->
     return QRegion(QRect(*values)).subtracted(visible).isEmpty()
 
 
+def load_quick_region() -> dict:
+    """Отдельные координаты — существующий формат настроек захвата неизменен."""
+    empty = {"last_region": None, "last_screens": []}
+    try:
+        data = json.loads(SCREENSHOT_QUICK_REGION_SETTINGS.read_text(
+            encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return empty
+    if not isinstance(data, dict):
+        return empty
+    region = _quick_region_data(data.get("last_region"))
+    screens = data.get("last_screens")
+    if not isinstance(screens, list) or len(screens) > 16 or any(
+            _quick_region_data(item) is None for item in screens):
+        screens = []
+    return {"last_region": region, "last_screens": [list(x) for x in screens]}
+
+
+def save_quick_region(region: QRect, screens: list[list[int]]) -> bool:
+    values = _quick_region_data(region)
+    if (values is None or not isinstance(screens, list) or
+            not 1 <= len(screens) <= 16 or any(
+                _quick_region_data(item) is None for item in screens) or
+            not _quick_region_is_visible(values, screens)):
+        return False
+    path = SCREENSHOT_QUICK_REGION_SETTINGS
+    temporary = None
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, temporary = tempfile.mkstemp(
+            prefix=".quick_region_", suffix=".tmp", dir=str(path.parent))
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            json.dump({"last_region": values, "last_screens": screens},
+                      stream, ensure_ascii=False, indent=2)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+        temporary = None
+        return True
+    except (OSError, ValueError, TypeError):
+        log.exception("quick capture: ошибка записи координат")
+        return False
+    finally:
+        if temporary is not None:
+            try:
+                Path(temporary).unlink(missing_ok=True)
+            except OSError:
+                log.debug("quick capture: ошибка удаления временного файла",
+                          exc_info=True)
+
+
 def load_capture_preferences() -> dict:
     defaults = {"quick_actions": False, "history_enabled": False,
                 "edit_after_capture": True, "capture_target": "area",
-                "capture_kind": "shot", "last_region": None,
-                "last_screens": []}
+                "capture_kind": "shot"}
     try:
         data = json.loads(SCREENSHOT_HISTORY_SETTINGS.read_text(encoding="utf-8"))
     except (OSError, ValueError, TypeError):
@@ -228,13 +279,6 @@ def load_capture_preferences() -> dict:
     result["capture_target"] = target if target in ("area", "window") else "area"
     kind = data.get("capture_kind", "shot")
     result["capture_kind"] = kind if kind in ("shot", "record", "ocr") else "shot"
-    region = _quick_region_data(data.get("last_region"))
-    screens = data.get("last_screens")
-    if not isinstance(screens, list) or len(screens) > 16 or any(
-            _quick_region_data(item) is None for item in screens):
-        screens = []
-    result["last_region"] = region
-    result["last_screens"] = [list(item) for item in screens]
     return result
 
 
@@ -245,13 +289,6 @@ def save_capture_preferences(preferences: dict) -> bool:
     payload["capture_target"] = target if target in ("area", "window") else "area"
     kind = preferences.get("capture_kind", "shot")
     payload["capture_kind"] = kind if kind in ("shot", "record", "ocr") else "shot"
-    payload["last_region"] = _quick_region_data(preferences.get("last_region"))
-    screens = preferences.get("last_screens")
-    payload["last_screens"] = (
-        [list(value) for value in screens]
-        if (isinstance(screens, list) and len(screens) <= 16 and
-            all(_quick_region_data(value) is not None for value in screens))
-        else [])
     path = SCREENSHOT_HISTORY_SETTINGS
     temporary = None
     try:
@@ -7832,7 +7869,7 @@ class Launcher(QMainWindow):
     def _update_quick_region_label(self) -> None:
         if not hasattr(self, "quick_region_label"):
             return
-        stored = self._capture_preferences.get("last_region")
+        stored = load_quick_region().get("last_region")
         if stored is None:
             text = "Последняя область: ещё не выбрана"
         elif self._last_valid_quick_region() is None:
@@ -7843,7 +7880,7 @@ class Launcher(QMainWindow):
         self.quick_region_label.setText(text)
 
     def _last_valid_quick_region(self) -> Optional[QRect]:
-        preferences = self._capture_preferences
+        preferences = load_quick_region()
         values = _quick_region_data(preferences.get("last_region"))
         if values is None:
             return None
@@ -7859,13 +7896,9 @@ class Launcher(QMainWindow):
         screens = _quick_screen_layout()
         if values is None or not _quick_region_is_visible(values, screens):
             return False
-        preferences = load_capture_preferences()
-        preferences["last_region"] = values
-        preferences["last_screens"] = screens
-        if not save_capture_preferences(preferences):
+        if not save_quick_region(QRect(*values), screens):
             log.warning("quick capture: не удалось запомнить область")
             return False
-        self._capture_preferences = preferences
         self._update_quick_region_label()
         return True
 
