@@ -5552,6 +5552,21 @@ def _scroll_overlap_tolerant(previous: QImage, current: QImage) -> int:
                 for y in range(height)]
 
     a, b = signatures(previous), signatures(current)
+
+    def structure_masks(rows: list[bytes]) -> list[bytes]:
+        """Положение штрихов текста относительно фона каждой строки.
+
+        Изменение общей яркости и контраста не влияет на бинарный профиль,
+        поэтому мягкая цветовая коррекция не рвёт склейку.
+        """
+        result = []
+        for row in rows:
+            upper, lower = max(row), min(row)
+            threshold = upper - max(14, (upper - lower) // 3)
+            result.append(bytes(value < threshold for value in row))
+        return result
+
+    masks_a, masks_b = structure_masks(a), structure_masks(b)
     # Только текстурные строки. Однотонные области не дают информации
     # о смещении и часто вызывают ложное совпадение.
     anchor_step = max(3, height // 145)
@@ -5579,8 +5594,14 @@ def _scroll_overlap_tolerant(previous: QImage, current: QImage) -> int:
             other = b[y - shift]
             # Средняя яркостная ошибка: антиалиасинг, мягкая анимация,
             # небольшие изменения цвета не должны ломать сопоставление.
-            if sum(abs(left - right) for left, right in zip(a[y], other)) <= (
-                    14 * len(x_positions)):
+            raw_error = sum(abs(left - right)
+                            for left, right in zip(a[y], other))
+            mask_error = sum(left != right for left, right in
+                             zip(masks_a[y], masks_b[y - shift]))
+            # При глобальном осветлении или смене цветовой темы
+            # совпадающие штрихи важнее абсолютной яркости.
+            if (raw_error <= 14 * len(x_positions) or
+                    mask_error <= max(2, len(x_positions) // 10)):
                 matched += 1
         if matched >= 8:
             ratio = matched / len(eligible)
