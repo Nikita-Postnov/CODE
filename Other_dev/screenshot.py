@@ -7924,21 +7924,23 @@ class Launcher(QMainWindow):
         w = QWidget()
         w.setObjectName("launcher_scroll_content")
         v = QVBoxLayout(w)
-        v.setContentsMargins(20, 18, 20, 18)
-        v.setSpacing(14)
+        # Компактная компоновка: кнопки остаются удобными для мыши,
+        # сокращается только пустое пространство между секциями.
+        v.setContentsMargins(14, 8, 14, 8)
+        v.setSpacing(6)
         scroll_area.setWidget(w)
         self.setCentralWidget(scroll_area)
 
         header = QLabel(
-            "<div style='font-size:22px;font-weight:700'>NP Screenshot</div>"
-            "<div style='color:#89919c;margin-top:4px'>Захват экрана, запись, OCR и инструменты изображений</div>",
+            "<div style='font-size:20px;font-weight:700'>NP Screenshot</div>"
+            "<div style='color:#89919c;margin-top:1px'>Захват экрана, запись, OCR и инструменты изображений</div>",
             self)
         header.setWordWrap(True)
         v.addWidget(header)
 
         def action_button(title, callback, primary=False):
             button = QPushButton(title, self)
-            button.setMinimumHeight(42)
+            button.setMinimumHeight(38)
             button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
             button.setCursor(Qt.PointingHandCursor)
             button.clicked.connect(callback)
@@ -7949,9 +7951,9 @@ class Launcher(QMainWindow):
         def group_box(title, actions):
             group = QGroupBox(title, w)
             grid = QGridLayout(group)
-            grid.setContentsMargins(12, 16, 12, 12)
-            grid.setHorizontalSpacing(8)
-            grid.setVerticalSpacing(8)
+            grid.setContentsMargins(8, 8, 8, 6)
+            grid.setHorizontalSpacing(6)
+            grid.setVerticalSpacing(3)
             for index, (label, callback, primary) in enumerate(actions):
                 grid.addWidget(action_button(label, callback, primary),
                                index // 2, index % 2)
@@ -7968,9 +7970,9 @@ class Launcher(QMainWindow):
         quick_group = QGroupBox("Быстрый захват", w)
         quick_group.setObjectName("np_quick_capture_group")
         quick_grid = QGridLayout(quick_group)
-        quick_grid.setContentsMargins(12, 16, 12, 12)
-        quick_grid.setHorizontalSpacing(8)
-        quick_grid.setVerticalSpacing(8)
+        quick_grid.setContentsMargins(8, 8, 8, 6)
+        quick_grid.setHorizontalSpacing(6)
+        quick_grid.setVerticalSpacing(3)
         quick_grid.setColumnStretch(0, 1)
         quick_grid.setColumnStretch(1, 1)
 
@@ -7980,10 +7982,10 @@ class Launcher(QMainWindow):
             font.setWeight(QFont.DemiBold)
             font.setPointSize(max(11, font.pointSize() + 1))
             label.setFont(font)
-            label.setMinimumHeight(36)
+            label.setMinimumHeight(28)
             label.setAlignment(Qt.AlignCenter)
             if separate_section:
-                label.setContentsMargins(0, 7, 0, 0)
+                label.setContentsMargins(0, 3, 0, 0)
 
         clipboard_title = QLabel("В буфер обмена", quick_group)
         clipboard_title.setObjectName("np_quick_clipboard_header")
@@ -8077,15 +8079,32 @@ class Launcher(QMainWindow):
             "В редакторе: Ctrl+S — сохранить, Ctrl+C — копировать, PrintScreen — новый снимок.",
             self)
         info.setWordWrap(True)
-        info.setStyleSheet("color: palette(placeholder-text); padding: 4px;")
+        info.setObjectName("launcher_shortcut_details")
+        info.setStyleSheet("color: palette(placeholder-text); padding: 2px 4px;")
+        info.setHidden(True)
+        self.shortcut_details = info
+        self.help_toggle = QToolButton(self)
+        self.help_toggle.setObjectName("launcher_help_toggle")
+        self.help_toggle.setText("Горячие клавиши и инструменты ▸")
+        self.help_toggle.setCheckable(True)
+        self.help_toggle.setChecked(False)
+        self.help_toggle.setCursor(Qt.PointingHandCursor)
+        self.help_toggle.setToolTip("Показать или скрыть подробную памятку по горячим клавишам")
+        self.help_toggle.toggled.connect(
+            lambda checked: (
+                info.setVisible(checked),
+                self.help_toggle.setText(
+                    "Горячие клавиши и инструменты ▾" if checked else
+                    "Горячие клавиши и инструменты ▸")))
+        v.addWidget(self.help_toggle)
         v.addWidget(info)
         v.addStretch(1)
         self.setStyleSheet(self.styleSheet() + """
             QGroupBox {
                 border: 1px solid palette(mid);
                 border-radius: 10px;
-                margin-top: 10px;
-                padding-top: 8px;
+                margin-top: 8px;
+                padding-top: 3px;
                 font-weight: 600;
             }
             QGroupBox::title {
@@ -8103,8 +8122,18 @@ class Launcher(QMainWindow):
                 border: 1px solid rgba(57, 123, 210, 90);
                 border-left: 3px solid #397bd2;
                 border-radius: 6px;
-                padding: 6px 10px;
+                padding: 3px 8px;
                 font-weight: 700;
+            }
+            QToolButton#launcher_help_toggle {
+                color: palette(mid);
+                background-color: transparent;
+                border: none;
+                padding: 2px 4px;
+                text-align: left;
+            }
+            QToolButton#launcher_help_toggle:hover {
+                color: palette(window-text);
             }
             /* Команды в лаунчере нейтральны до наведения указателя. */
             QGroupBox QPushButton {
@@ -8112,7 +8141,7 @@ class Launcher(QMainWindow):
                 background-color: transparent;
                 border: 1px solid transparent;
                 border-radius: 7px;
-                padding: 7px 10px;
+                padding: 4px 8px;
             }
             QGroupBox QPushButton:hover {
                 background-color: rgba(57, 123, 210, 48);
