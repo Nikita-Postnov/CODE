@@ -666,6 +666,20 @@ class ScreenshotThreeWorkflowsTests(unittest.TestCase):
         self.assertEqual(job.finish_reason, "limit")
         self.assertEqual(job.steps, [])
 
+    def test_source_frame_budget_stops_before_memory_exhaustion(self):
+        job, frame = self._job_with_first_frame()
+        job.max_frame_pixels = frame.width() * frame.height()
+        changed = frame.copy()
+        changed.fill(QColor("#334455"))
+        with patch("screenshot.grab_region_highdpi", return_value=changed), \
+             patch("screenshot._scroll_body_unchanged", return_value=False), \
+             patch("screenshot._scroll_overlap", return_value=45), \
+             patch("screenshot._windows_scroll_state", return_value=None):
+            job._take_next_frame()
+        self.assertEqual(job.finish_reason, "limit")
+        self.assertEqual(len(job.frames), 1)
+        self.assertEqual(job.steps, [])
+
     def test_review_offers_native_resolution_seam(self):
         first = QImage(120, 170, QImage.Format_RGB32)
         second = QImage(120, 170, QImage.Format_RGB32)
