@@ -258,6 +258,46 @@ class HistoryGuiTests(unittest.TestCase):
             f"{stamp[:2]}:{stamp[2:4]}:{stamp[4:6]}")
         self.assertIn(path.name, entry.toolTip())
 
+    def test_history_cards_show_type_badges_for_all_capture_kinds(self):
+        kinds = {
+            "shot": "Снимок",
+            "quick": "Быстрый захват",
+            "scroll": "Длинный скриншот",
+            "window": "Окно",
+        }
+        for kind in kinds:
+            self.assertIsNotNone(shot.archive_screenshot(
+                sample_image("#11ccbb"), kind=kind))
+        dialog = shot.ScreenshotHistoryDialog(Mock())
+        self.addCleanup(dialog.close)
+        found = {}
+        for index in range(dialog.items.count()):
+            item = dialog.items.item(index)
+            kind = item.data(shot.ScreenshotHistoryListWidget.KIND_ROLE)
+            if kind:
+                found[kind] = (
+                    item.data(shot.ScreenshotHistoryListWidget.KIND_LABEL_ROLE),
+                    dialog.items.itemWidget(item).badge_label.text())
+        self.assertEqual(found, {
+            kind: (label, label) for kind, label in kinds.items()
+        })
+
+    def test_quick_capture_is_stored_as_quick_type_and_filterable(self):
+        quick_path = shot.archive_screenshot(sample_image(), kind="quick")
+        shot.archive_screenshot(sample_image("#11ccbb"), kind="shot")
+        dialog = shot.ScreenshotHistoryDialog(Mock())
+        self.addCleanup(dialog.close)
+        dialog.type_filter.setCurrentIndex(
+            dialog.type_filter.findData("quick"))
+        paths = [
+            dialog.items.item(i).data(shot.Qt.UserRole)
+            for i in range(dialog.items.count())
+            if dialog.items.item(i).data(shot.Qt.UserRole)
+        ]
+        self.assertEqual(paths, [str(quick_path)])
+        self.assertEqual(
+            shot.load_history_metadata(quick_path)["kind"], "quick")
+
     def test_history_dialog_filters_by_type_favorite_and_ocr_text(self):
         path = shot.archive_screenshot(sample_image(), kind="scroll", project="NPCore")
         shot.update_history_metadata(path, favorite=True, ocr_text="Счёт-фактура")
@@ -414,6 +454,11 @@ class CaptureRoutingTests(unittest.TestCase):
                  for i in range(history.items.count())
                  if history.items.item(i).data(shot.Qt.UserRole)]
         self.assertEqual(len(paths), 2)
+        kinds = {
+            shot.load_history_metadata(Path(path))["kind"]
+            for path in paths
+        }
+        self.assertEqual(kinds, {"shot", "quick"})
 
     def test_external_clipboard_image_is_archived_when_enabled(self):
         self.launcher.history_enabled_check.setChecked(True)
