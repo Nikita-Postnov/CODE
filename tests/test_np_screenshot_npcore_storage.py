@@ -10,7 +10,7 @@ from unittest.mock import patch
 import urllib.error
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-from PySide6.QtWidgets import QApplication, QPushButton
+from PySide6.QtWidgets import QApplication, QToolButton
 from PySide6.QtGui import QImage, QColor
 
 SOURCE = Path(__file__).resolve().parents[1] / "Other_dev" / "screenshot.py"
@@ -128,9 +128,9 @@ class ScreenshotNPCoreUploadTests(unittest.TestCase):
             launcher = shot.Launcher()
         try:
             self.assertIsNotNone(launcher.findChild(
-                QPushButton, "np_upload_clipboard_npcore"))
+                QToolButton, "np_upload_clipboard_npcore"))
             self.assertIsNotNone(launcher.findChild(
-                QPushButton, "np_npcore_screenshots"))
+                QToolButton, "np_npcore_screenshots"))
         finally:
             launcher._real_quit = True
             launcher.close()
