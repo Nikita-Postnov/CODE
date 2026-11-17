@@ -6018,6 +6018,9 @@ class ScrollingScreenshotJob(QObject):
         self.area = QRect(area)
         self.max_steps = max(1, min(80, max_steps))
         self.max_output_pixels = 36_000_000
+        # Исходные кадры нужны для ручной проверки швов; ограничиваем
+        # суммарную память под них отдельно от итогового изображения.
+        self.max_frame_pixels = 60_000_000
         self.frames: list[QImage] = []
         self.steps: list[int] = []
         self.fixed_bottoms: list[int] = []
@@ -6214,6 +6217,11 @@ class ScrollingScreenshotJob(QObject):
             if next_height > safe_height:
                 self._finish("limit", "Достигнут безопасный предел высоты "
                              "изображения. Сохранены подтверждённые кадры.")
+                return
+            if ((len(self.frames) + 1) * frame.width() * frame.height()
+                    > self.max_frame_pixels):
+                self._finish("limit", "Достигнут безопасный предел памяти "
+                             "для кадров. Сохранены подтверждённые кадры.")
                 return
 
             _fixed_top, fixed_bottom = _scroll_fixed_bands(self.frames[-1], frame)
