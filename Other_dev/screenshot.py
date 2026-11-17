@@ -9295,6 +9295,83 @@ def _setup_logging() -> None:
 # ============================================================================
 _CREATE_NO_WINDOW = 0x08000000 if sys.platform.startswith("win") else 0
 DEFAULT_FPS = 30
+_RECORD_QUALITY = {
+    "standard": (20, "veryfast"),
+    "high": (17, "fast"),
+    "compact": (25, "veryfast"),
+}
+_RECORD_FPS = (24, 30, 60)
+
+
+def _recording_settings_file() -> Path:
+    return DATA_DIR / "screenshot_recording_settings.json"
+
+
+def load_recording_settings() -> dict:
+    """Локальные настройки записи, не содержащие приватных данных."""
+    defaults = {"fps": DEFAULT_FPS, "quality": "standard",
+                "show_actions": False, "show_mouse": True}
+    try:
+        data = json.loads(_recording_settings_file().read_text(encoding="utf-8"))
+    except (OSError, TypeError, ValueError):
+        return dict(defaults)
+    if not isinstance(data, dict):
+        return dict(defaults)
+    result = dict(defaults)
+    if type(data.get("fps")) is int and data["fps"] in _RECORD_FPS:
+        result["fps"] = data["fps"]
+    if data.get("quality") in _RECORD_QUALITY:
+        result["quality"] = data["quality"]
+    for key in ("show_actions", "show_mouse"):
+        if type(data.get(key)) is bool:
+            result[key] = data[key]
+    return result
+
+
+def save_recording_settings(value: dict) -> bool:
+    """Запись через os.replace защищает от усечённого JSON."""
+    if not isinstance(value, dict):
+        return False
+    fps, quality = value.get("fps"), value.get("quality")
+    if type(fps) is not int or fps not in _RECORD_FPS:
+        return False
+    if quality not in _RECORD_QUALITY:
+        return False
+    if (type(value.get("show_actions")) is not bool or
+            type(value.get("show_mouse")) is not bool):
+        return False
+    path = _recording_settings_file()
+    temporary = None
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, temporary = tempfile.mkstemp(prefix=".record_settings_",
+                                        suffix=".tmp", dir=str(path.parent))
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump({key: value[key] for key in
+                       ("fps", "quality", "show_actions", "show_mouse")},
+                      handle, ensure_ascii=False)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+        temporary = None
+        return True
+    except OSError:
+        log.exception("Не удалось сохранить параметры записи экрана")
+        return False
+    finally:
+        if temporary is not None:
+            try:
+                Path(temporary).unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
+def _recording_encoding(quality: str) -> tuple[str, str]:
+    if quality not in _RECORD_QUALITY:
+        raise ValueError("Некорректный профиль качества записи")
+    crf, preset = _RECORD_QUALITY[quality]
+    return str(crf), preset
+
 
 def _rec_tmp_dir() -> Path:
     d = DATA_DIR / "_rec_tmp"
@@ -9559,7 +9636,8 @@ def _append_record_audio(args: list[str], audio_inputs: list[tuple[str, float]])
 def build_record_cmd(out: str, rect: QRect, fps: int,
                      audio_mode: str, audio_device: Optional[str],
                      draw_mouse: bool = True,
-                     audio_inputs: Optional[list[tuple[str, float]]] = None) -> list[str]:
+                     audio_inputs: Optional[list[tuple[str, float]]] = None,
+                     quality: str = "standard") -> list[str]:
     ff = ffmpeg_path()
     x, y, w, h = _physical_rect(rect)
     a = [ff, "-y",
@@ -9573,8 +9651,9 @@ def build_record_cmd(out: str, rect: QRect, fps: int,
     elif audio_mode in ("mic", "system") and audio_device:
         a += ["-f", "dshow", "-i", f"audio={audio_device}",
               "-c:a", "aac", "-b:a", "160k", "-map", "0:v", "-map", "1:a"]
+    crf, preset = _recording_encoding(quality)
     a += ["-c:v", "libx264", "-pix_fmt", "yuv420p",
-          "-preset", "veryfast", "-crf", "20",
+          "-preset", preset, "-crf", crf,
           "-g", str(fps), "-keyint_min", str(fps),
           "-movflags", "+faststart", out]
     return a
@@ -9583,7 +9662,8 @@ def build_record_cmd(out: str, rect: QRect, fps: int,
 def build_window_record_cmd(out: str, hwnd: int, fps: int,
                             audio_mode: str, audio_device: Optional[str],
                             draw_mouse: bool = True,
-                            audio_inputs: Optional[list[tuple[str, float]]] = None) -> list[str]:
+                            audio_inputs: Optional[list[tuple[str, float]]] = None,
+                            quality: str = "standard") -> list[str]:
     """Запись конкретного HWND: при перемещении окна захват следует за ним."""
     if sys.platform != "win32" or not isinstance(hwnd, int) or hwnd <= 0:
         raise ValueError("Для записи необходимо выбрать окно Windows")
@@ -9596,9 +9676,10 @@ def build_window_record_cmd(out: str, hwnd: int, fps: int,
         a += ["-f", "dshow", "-i", f"audio={audio_device}",
               "-c:a", "aac", "-b:a", "160k", "-map", "0:v", "-map", "1:a"]
     #НП: У окон могут быть нечётные стороны; libx264 требует чётные размеры.
+    crf, preset = _recording_encoding(quality)
     a += ["-vf", "pad=ceil(iw/2)*2:ceil(ih/2)*2",
           "-c:v", "libx264", "-pix_fmt", "yuv420p",
-          "-preset", "veryfast", "-crf", "20",
+          "-preset", preset, "-crf", crf,
           "-g", str(fps), "-keyint_min", str(fps),
           "-movflags", "+faststart", out]
     return a
@@ -9873,6 +9954,12 @@ class RecordingInputOverlay(QWidget):
             for _base, (label, *codes) in self._MODIFIERS.items():
                 if any(self._down(code) for code in codes):
                     modifiers.append(label)
+            # Не показываем обычный ввод букв и цифр: это может раскрыть
+            # набираемый пароль или токен в итоговом видеоролике.
+            if 0x30 <= vk <= 0x5A and not (
+                    "Ctrl" in modifiers or "Alt" in modifiers or
+                    "Win" in modifiers):
+                continue
             self._key_label = "+".join(modifiers + [name])
             self._key_until = now + 1.25
         self._keys_down = current
@@ -9892,6 +9979,13 @@ class RecordingInputOverlay(QWidget):
         now = time.monotonic()
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing, True)
+        # Мягкий ореол вокруг указателя помогает проследить действия.
+        # Отображается только в выбранной области и при включённой подсветке.
+        cursor = QCursor.pos()
+        if self.region.contains(cursor):
+            painter.setPen(QPen(QColor(50, 160, 255, 135), 2))
+            painter.setBrush(QColor(50, 160, 255, 20))
+            painter.drawEllipse(QPointF(cursor - self.region.topLeft()), 13, 13)
         if self._click_pos is not None and now - self._click_at < 0.75:
             progress = max(0.0, min(1.0, (now - self._click_at) / 0.75))
             center = self._click_pos - self.region.topLeft()
@@ -9943,6 +10037,7 @@ class RecordHUD(QWidget):
         self._segment_t0 = 0.0
         self._audio_inputs_override: Optional[list[tuple[str, float]]] = None
         self._input_overlay: Optional[RecordingInputOverlay] = None
+        self._record_settings = load_recording_settings()
         self._devices = list_dshow_audio()
 
         root = QHBoxLayout(self)
@@ -9965,15 +10060,50 @@ class RecordHUD(QWidget):
         self.audio_settings_btn = QPushButton("Звук…", self)
         self.audio_settings_btn.clicked.connect(self._open_audio_settings)
         root.addWidget(self.audio_settings_btn)
-        self.input_overlay_check = QCheckBox("Клики и клавиши", self)
+
+        self.fps_combo = QComboBox(self)
+        self.fps_combo.setObjectName("np_rec_fps")
+        self.fps_combo.setToolTip("Частота кадров записи. 60 FPS требует больше ресурсов.")
+        for fps in _RECORD_FPS:
+            self.fps_combo.addItem(f"{fps} FPS", fps)
+        self.fps_combo.setCurrentIndex(
+            self.fps_combo.findData(self._record_settings["fps"]))
+        root.addWidget(self.fps_combo)
+
+        self.quality_combo = QComboBox(self)
+        self.quality_combo.setObjectName("np_rec_quality")
+        self.quality_combo.setToolTip(
+            "Высокое качество — больший файл и нагрузка; компактное — меньший файл.")
+        for name, key in (
+                ("Стандартное", "standard"), ("Высокое", "high"),
+                ("Компактное", "compact")):
+            self.quality_combo.addItem(name, key)
+        self.quality_combo.setCurrentIndex(
+            self.quality_combo.findData(self._record_settings["quality"]))
+        root.addWidget(self.quality_combo)
+
+        self.input_overlay_check = QCheckBox("Клики и сочетания", self)
         self.input_overlay_check.setToolTip(
             "Показывает круги кликов и названия сочетаний клавиш в записи области. "
             "Текст вводимых символов не записывается.")
+        self.input_overlay_check.setChecked(self._record_settings["show_actions"])
         if self.window_hwnd:
             self.input_overlay_check.setEnabled(False)
             self.input_overlay_check.setToolTip(
-                "Подсветка кликов и клавиш доступна при записи области экрана.")
+                "Подсветка кликов и сочетаний доступна при записи области экрана.")
         root.addWidget(self.input_overlay_check)
+        self.mouse_check = QCheckBox("Курсор", self)
+        self.mouse_check.setObjectName("np_rec_mouse")
+        self.mouse_check.setChecked(self._record_settings["show_mouse"])
+        self.mouse_check.setToolTip("Включить или скрыть курсор в видеозаписи")
+        root.addWidget(self.mouse_check)
+        for control in (
+                self.fps_combo, self.quality_combo, self.input_overlay_check,
+                self.mouse_check):
+            if isinstance(control, QComboBox):
+                control.currentIndexChanged.connect(self._save_video_settings)
+            else:
+                control.toggled.connect(self._save_video_settings)
 
         self.time_lbl = QLabel("00:00", self)
         self.time_lbl.setStyleSheet("font-weight:bold; min-width:44px;")
@@ -10020,16 +10150,34 @@ class RecordHUD(QWidget):
         if dialog.exec() == QDialog.Accepted:
             self._audio_inputs_override = dialog.selected_inputs()
 
+    def _video_settings(self) -> dict:
+        return {
+            "fps": self.fps_combo.currentData(),
+            "quality": self.quality_combo.currentData(),
+            "show_actions": self.input_overlay_check.isChecked(),
+            "show_mouse": self.mouse_check.isChecked(),
+        }
+
+    def _save_video_settings(self, *_unused) -> None:
+        settings = self._video_settings()
+        if save_recording_settings(settings):
+            self._record_settings = settings
+
     def _build_segment_command(self, output: str) -> list[str]:
         mode, device = self.audio_combo.currentData()
         audio_inputs = self._audio_inputs_override
+        settings = self._video_settings()
+        fps = settings["fps"]
+        quality = settings["quality"]
         if self.window_hwnd:
             return build_window_record_cmd(
-                output, self.window_hwnd, DEFAULT_FPS, mode, device,
-                audio_inputs=audio_inputs)
+                output, self.window_hwnd, fps, mode, device,
+                draw_mouse=settings["show_mouse"],
+                audio_inputs=audio_inputs, quality=quality)
         return build_record_cmd(
-            output, self.region, DEFAULT_FPS, mode, device,
-            audio_inputs=audio_inputs)
+            output, self.region, fps, mode, device,
+            draw_mouse=settings["show_mouse"],
+            audio_inputs=audio_inputs, quality=quality)
 
     def _start_segment(self) -> bool:
         if self.window_hwnd and not recordable_window_is_ready(self.window_hwnd):
@@ -10074,6 +10222,9 @@ class RecordHUD(QWidget):
         self.audio_combo.setEnabled(False)
         self.audio_settings_btn.setEnabled(False)
         self.input_overlay_check.setEnabled(False)
+        self.fps_combo.setEnabled(False)
+        self.quality_combo.setEnabled(False)
+        self.mouse_check.setEnabled(False)
         if self._launcher is not None:
             try:
                 self._launcher.set_recording_active(True, self)
