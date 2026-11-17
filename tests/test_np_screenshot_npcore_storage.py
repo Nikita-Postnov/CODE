@@ -51,6 +51,129 @@ class ScreenshotNPCoreUploadTests(unittest.TestCase):
         self.sample = QImage(200, 90, QImage.Format_RGB32)
         self.sample.fill(QColor("#1177aa"))
 
+    def tearDown(self):
+        # Qt offscreen сохраняет MIME-владельца до завершения процесса.
+        # Явно освобождаем его перед удалением QApplication.
+        QApplication.clipboard().clear()
+
+    def test_current_clipboard_png_data_is_decoded(self):
+        """Некоторые приложения кладут только MIME image/png, а не QImage."""
+        image = self.sample
+        buffer = shot.QBuffer()
+        self.assertTrue(buffer.open(shot.QIODevice.WriteOnly))
+        self.assertTrue(image.save(buffer, "PNG"))
+        mime = shot.QMimeData()
+        mime.setData("image/png", bytes(buffer.data()))
+        QApplication.clipboard().setMimeData(mime)
+        extracted = shot._npcore_current_clipboard_image()
+        self.assertFalse(extracted.isNull())
+        self.assertEqual(extracted.pixelColor(8, 8).name(), "#1177aa")
+
+    def test_windows_clipboard_history_does_not_override_current_text(self):
+        """Win+V может хранить снимок, когда активным содержимым стал OCR-текст."""
+        QApplication.clipboard().setText("Текст, полученный через OCR")
+        self.assertTrue(shot._npcore_current_clipboard_image().isNull())
+
+    def test_copy_image_file_from_explorer_is_supported(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as folder:
+            filename = Path(folder) / "capture.png"
+            self.assertTrue(self.sample.save(str(filename), "PNG"))
+            mime = shot.QMimeData()
+            mime.setUrls([shot.QUrl.fromLocalFile(str(filename))])
+            QApplication.clipboard().setMimeData(mime)
+            extracted = shot._npcore_current_clipboard_image()
+            self.assertEqual(extracted.size(), self.sample.size())
+
+    def test_normal_capture_keeps_last_image_when_ocr_replaces_clipboard(self):
+        with patch.object(shot.Launcher, "_init_tray"), \
+             patch.object(shot.Launcher, "_install_global_hotkey"), \
+             patch.object(shot, "_npcore_load_link", return_value=None):
+            launcher = shot.Launcher()
+        try:
+            with patch.object(launcher, "_open_editor_image"):
+                launcher._handle_captured_image(self.sample)
+            QApplication.clipboard().setText("OCR теперь в буфере")
+            self.assertTrue(shot._npcore_current_clipboard_image().isNull())
+            self.assertEqual(
+                launcher._last_captured_image.pixelColor(2, 3).name(),
+                "#1177aa")
+
+            class SourceChoice:
+                Information = 1
+                ActionRole = 2
+                RejectRole = 3
+
+                def __init__(self, _parent):
+                    self.buttons = {}
+
+                def setWindowTitle(self, _value): pass
+                def setIcon(self, _value): pass
+                def setText(self, _value): pass
+                def setInformativeText(self, _value): pass
+
+                def addButton(self, title, _role):
+                    button = object()
+                    self.buttons[title] = button
+                    return button
+
+                def exec(self):
+                    self.chosen = self.buttons["Последний исходный снимок"]
+
+                def clickedButton(self):
+                    return self.chosen
+
+            with patch.object(shot, "QMessageBox", SourceChoice):
+                selected = launcher._choose_npcore_source()
+            self.assertEqual(selected.size(), self.sample.size())
+        finally:
+            launcher._real_quit = True
+            launcher.close()
+
+    def test_upload_when_clipboard_contains_text_prompts_before_network(self):
+        with patch.object(shot.Launcher, "_init_tray"), \
+             patch.object(shot.Launcher, "_install_global_hotkey"), \
+             patch.object(shot, "_npcore_load_link",
+                          return_value=("https://npcore.example", "x" * 43)):
+            launcher = shot.Launcher()
+        try:
+            QApplication.clipboard().setText("Скопирован текст")
+            with patch.object(shot, "_npcore_load_link",
+                              return_value=("https://npcore.example", "x" * 43)), \
+                 patch.object(launcher, "_choose_npcore_source",
+                              return_value=self.sample) as choose, \
+                 patch.object(launcher, "_show_npcore_upload") as upload, \
+                 patch.object(shot, "_npcore_upload_image") as network:
+                launcher.upload_clipboard_npcore()
+                choose.assert_called_once()
+                upload.assert_called_once()
+                self.assertEqual(
+                    upload.call_args.args[0].pixelColor(4, 4).name(),
+                    "#1177aa")
+                network.assert_not_called()
+        finally:
+            launcher._real_quit = True
+            launcher.close()
+
+    def test_quick_save_remembers_image_without_changing_clipboard(self):
+        with patch.object(shot.Launcher, "_init_tray"), \
+             patch.object(shot.Launcher, "_install_global_hotkey"):
+            launcher = shot.Launcher()
+        try:
+            import tempfile
+            with tempfile.TemporaryDirectory() as folder, \
+                 patch.object(shot.QStandardPaths, "writableLocation",
+                              return_value=folder):
+                QApplication.clipboard().setText("Важный текст")
+                launcher._quick_finish_image(self.sample, "save")
+                self.assertEqual(QApplication.clipboard().text(), "Важный текст")
+                self.assertEqual(
+                    launcher._last_captured_image.pixelColor(4, 4).name(),
+                    "#1177aa")
+        finally:
+            launcher._real_quit = True
+            launcher.close()
+
     def test_upload_uses_paired_bearer_and_multipart_png(self):
         reply = {"ok": True, "entry": {
             "rel": "Скриншоты/NP Screenshot/NP_abc.png", "size": 512}}
@@ -139,6 +262,10 @@ class ScreenshotNPCoreUploadTests(unittest.TestCase):
             self.assertTrue(dialog.send_button.isEnabled())
             self.assertFalse(dialog.copy_button.isEnabled())
             self.assertIsNone(dialog._worker)
+            self.assertEqual(dialog.preview_label.objectName(),
+                             "np_npcore_upload_preview")
+            self.assertFalse(dialog.preview_label.pixmap().isNull())
+            self.assertLessEqual(dialog.preview_label.pixmap().width(), 420)
             dialog._complete({"ok": True, "result": {"entry": {
                 "rel": "Скриншоты/NP Screenshot/NP_test.png"}}})
             self.assertTrue(dialog.copy_button.isEnabled())
