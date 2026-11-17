@@ -5601,7 +5601,7 @@ def _scroll_overlap_tolerant(previous: QImage, current: QImage) -> int:
             # При глобальном осветлении или смене цветовой темы
             # совпадающие штрихи важнее абсолютной яркости.
             if (raw_error <= 14 * len(x_positions) or
-                    mask_error <= max(2, len(x_positions) // 10)):
+                    mask_error <= max(1, len(x_positions) // 32)):
                 matched += 1
         if matched >= 8:
             ratio = matched / len(eligible)
@@ -6065,7 +6065,19 @@ class ScrollingScreenshotJob(QObject):
             self._scroll_panel.show_resume(message)
 
     def resume(self) -> None:
-        """Продолжить после смены области наведения или ожидания загрузки."""
+        """Дать время после нажатия кнопки навести курсор на страницу."""
+        if self._finished or not self._paused:
+            return
+        if self._pause_reason == "no_movement":
+            if self._scroll_panel is not None:
+                self._scroll_panel.hide()
+            self.status_changed.emit(
+                "Перемести курсор на прокручиваемую часть страницы…")
+            QTimer.singleShot(1700, self._resume_at_pointer)
+            return
+        self._resume_at_pointer()
+
+    def _resume_at_pointer(self) -> None:
         if self._finished or not self._paused:
             return
         point = QCursor.pos()
@@ -6172,9 +6184,9 @@ class ScrollingScreenshotJob(QObject):
                                  "попыток прокрутки. Вероятно, достигнут конец страницы.")
                 else:
                     self._pause("no_movement",
-                                "Прокрутка не обнаружена. Наведи курсор на "
-                                "прокручиваемую часть страницы и нажми "
-                                "«Продолжить захват». Можно сохранить первый экран.")
+                                "Прокрутка не обнаружена. Нажми «Продолжить захват», "
+                                "затем наведи курсор на прокручиваемую часть "
+                                "страницы. Можно сохранить первый экран.")
                 return
 
             self._idle_retries = 0
