@@ -16,7 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from PySide6.QtCore import Qt, QRect, QPoint
 from PySide6.QtGui import QColor, QImage, QPainter, QFont
-from PySide6.QtWidgets import QApplication, QLabel, QScrollArea, QPushButton
+from PySide6.QtWidgets import QApplication, QLabel, QScrollArea, QPushButton, QGroupBox, QGridLayout
 
 from screenshot import (
     PinnedScreenshotWindow,
@@ -675,6 +675,48 @@ class ScreenshotThreeWorkflowsTests(unittest.TestCase):
             self.assertFalse(dialog.translation_edit.isHidden())
         finally:
             dialog.close()
+
+    def test_quick_capture_is_grouped_by_destination_and_editor_below(self):
+        """Левая колонка — буфер, правая — файл, редактор отдельно."""
+        with patch.object(Launcher, "_init_tray"), \
+             patch.object(Launcher, "_install_global_hotkey"):
+            window = Launcher()
+        try:
+            group = window.findChild(QGroupBox, "np_quick_capture_group")
+            self.assertIsNotNone(group)
+            layout = group.layout()
+            self.assertIsInstance(layout, QGridLayout)
+            self.assertEqual(layout.itemAtPosition(0, 0).widget().text(),
+                             "В буфер обмена")
+            self.assertEqual(layout.itemAtPosition(0, 1).widget().text(),
+                             "В файл PNG")
+            expected = (
+                (1, 0, "np_quick_new_copy", "Выбрать область"),
+                (1, 1, "np_quick_new_save", "Выбрать область"),
+                (2, 0, "np_quick_repeat_copy", "Повторить область"),
+                (2, 1, "np_quick_repeat_save", "Повторить область"),
+                (4, 0, "np_quick_new_edit", "Выбрать область"),
+                (4, 1, "np_quick_repeat_edit", "Повторить область"),
+            )
+            for row, column, name, label in expected:
+                button = layout.itemAtPosition(row, column).widget()
+                self.assertIsInstance(button, QPushButton)
+                self.assertEqual(button.objectName(), name)
+                self.assertEqual(button.text(), label)
+            self.assertEqual(layout.itemAtPosition(3, 0).widget().text(),
+                             "В редактор")
+            with patch.object(window, "quick_new_area") as select, \
+                 patch.object(window, "quick_repeat") as repeat:
+                for name in ("np_quick_new_copy", "np_quick_new_save",
+                             "np_quick_new_edit", "np_quick_repeat_copy",
+                             "np_quick_repeat_save", "np_quick_repeat_edit"):
+                    window.findChild(QPushButton, name).click()
+                self.assertEqual([args.args for args in select.call_args_list],
+                                 [("copy",), ("save",), ("edit",)])
+                self.assertEqual([args.args for args in repeat.call_args_list],
+                                 [("copy",), ("save",), ("edit",)])
+        finally:
+            window.close()
 
     def test_default_capture_is_not_changed_by_new_features(self):
         preferences = load_capture_preferences()

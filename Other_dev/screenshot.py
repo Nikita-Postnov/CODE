@@ -7374,14 +7374,62 @@ class Launcher(QMainWindow):
             ("Длинный снимок", self.start_scrolling_capture, False),
             ("Распознать текст", self.make_ocr, False),
         ]))
-        v.addWidget(group_box("Быстрый захват", [
-            ("Область → в буфер", lambda: self.quick_new_area("copy"), False),
-            ("Область → в файл", lambda: self.quick_new_area("save"), False),
-            ("Область → в редактор", lambda: self.quick_new_area("edit"), False),
-            ("Повторить → в буфер", lambda: self.quick_repeat("copy"), False),
-            ("Повторить → в файл", lambda: self.quick_repeat("save"), False),
-            ("Повторить → в редактор", lambda: self.quick_repeat("edit"), False),
-        ]))
+        # Быстрые действия сгруппированы ПО РЕЗУЛЬТАТУ: буфер слева,
+        # файл справа. Действия с редактором — отдельная строка ниже.
+        quick_group = QGroupBox("Быстрый захват", w)
+        quick_group.setObjectName("np_quick_capture_group")
+        quick_grid = QGridLayout(quick_group)
+        quick_grid.setContentsMargins(12, 16, 12, 12)
+        quick_grid.setHorizontalSpacing(8)
+        quick_grid.setVerticalSpacing(8)
+        quick_grid.setColumnStretch(0, 1)
+        quick_grid.setColumnStretch(1, 1)
+
+        clipboard_title = QLabel("В буфер обмена", quick_group)
+        clipboard_title.setObjectName("np_quick_clipboard_header")
+        clipboard_title.setAlignment(Qt.AlignCenter)
+        quick_grid.addWidget(clipboard_title, 0, 0)
+
+        file_title = QLabel("В файл PNG", quick_group)
+        file_title.setObjectName("np_quick_file_header")
+        file_title.setAlignment(Qt.AlignCenter)
+        quick_grid.addWidget(file_title, 0, 1)
+
+        for row, (label, actions) in enumerate((
+            ("Выбрать область", (
+                ("copy", lambda: self.quick_new_area("copy")),
+                ("save", lambda: self.quick_new_area("save")),
+            )),
+            ("Повторить область", (
+                ("copy", lambda: self.quick_repeat("copy")),
+                ("save", lambda: self.quick_repeat("save")),
+            )),
+        ), start=1):
+            for column, (destination, callback) in enumerate(actions):
+                button = action_button(label, callback)
+                button.setObjectName(
+                    f"np_quick_{'new' if row == 1 else 'repeat'}_{destination}")
+                button.setToolTip(
+                    f"{label} и " +
+                    ("скопировать снимок" if destination == "copy"
+                     else "сохранить PNG без диалога"))
+                quick_grid.addWidget(button, row, column)
+
+        editor_title = QLabel("В редактор", quick_group)
+        editor_title.setObjectName("np_quick_editor_header")
+        editor_title.setAlignment(Qt.AlignCenter)
+        quick_grid.addWidget(editor_title, 3, 0, 1, 2)
+        for column, (label, callback, name) in enumerate((
+            ("Выбрать область", lambda: self.quick_new_area("edit"),
+             "np_quick_new_edit"),
+            ("Повторить область", lambda: self.quick_repeat("edit"),
+             "np_quick_repeat_edit"),
+        )):
+            button = action_button(label, callback)
+            button.setObjectName(name)
+            button.setToolTip("Открыть снимок в редакторе")
+            quick_grid.addWidget(button, 4, column)
+        v.addWidget(quick_group)
         self.quick_region_label = QLabel(self)
         self.quick_region_label.setObjectName("np_quick_region_status")
         self.quick_region_label.setStyleSheet(
