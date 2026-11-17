@@ -363,7 +363,7 @@ class ScreenshotThreeWorkflowsTests(unittest.TestCase):
         self.assertEqual(job._idle_retries, 1)
         advance.assert_called_once()
 
-    def test_real_end_requires_three_still_frames_after_movement(self):
+    def test_real_end_requires_five_still_frames_after_movement(self):
         job, frame = self._job_with_first_frame()
         job._ever_scrolled = True
         output = []
@@ -372,7 +372,7 @@ class ScreenshotThreeWorkflowsTests(unittest.TestCase):
              patch("screenshot._scroll_body_unchanged", return_value=True), \
              patch("screenshot._windows_scroll_state", return_value=None), \
              patch.object(job, "_advance"):
-            for _ in range(2):
+            for _ in range(job.max_idle_retries - 1):
                 job._take_next_frame()
                 self.assertIsNone(job.finish_reason)
             job._take_next_frame()
@@ -386,9 +386,11 @@ class ScreenshotThreeWorkflowsTests(unittest.TestCase):
              patch("screenshot._scroll_body_unchanged", return_value=True), \
              patch("screenshot._windows_scroll_state", return_value=(100, 100)), \
              patch.object(job, "_advance"):
-            for _ in range(3):
+            for _ in range(job.max_idle_retries):
                 job._take_next_frame()
-        self.assertEqual(job.finish_reason, "no_movement")
+        self.assertIsNone(job.finish_reason)
+        self.assertTrue(job._paused)
+        self.assertEqual(job._pause_reason, "no_movement")
 
     def test_scroll_panel_does_not_take_focus(self):
         panel = ScrollingCapturePanel(24)
@@ -405,9 +407,11 @@ class ScreenshotThreeWorkflowsTests(unittest.TestCase):
              patch("screenshot._scroll_body_unchanged", return_value=True), \
              patch("screenshot._windows_scroll_state", return_value=(20, 100)), \
              patch.object(job, "_advance"):
-            for _ in range(3):
+            for _ in range(job.max_idle_retries):
                 job._take_next_frame()
-        self.assertEqual(job.finish_reason, "no_movement")
+        self.assertIsNone(job.finish_reason)
+        self.assertTrue(job._paused)
+        self.assertEqual(job._pause_reason, "no_movement")
 
     def test_missing_native_scrollbar_uses_visual_no_change_signal(self):
         job, frame = self._job_with_first_frame()
@@ -415,9 +419,11 @@ class ScreenshotThreeWorkflowsTests(unittest.TestCase):
              patch("screenshot._scroll_body_unchanged", return_value=True), \
              patch("screenshot._windows_scroll_state", return_value=None), \
              patch.object(job, "_advance"):
-            for _ in range(3):
+            for _ in range(job.max_idle_retries):
                 job._take_next_frame()
-        self.assertEqual(job.finish_reason, "no_movement")
+        self.assertIsNone(job.finish_reason)
+        self.assertTrue(job._paused)
+        self.assertEqual(job._pause_reason, "no_movement")
 
     def test_alignment_error_does_not_append_corrupt_frame(self):
         job, frame = self._job_with_first_frame()
@@ -436,8 +442,13 @@ class ScreenshotThreeWorkflowsTests(unittest.TestCase):
             job._take_next_frame()
             advance.assert_not_called()
             self.assertEqual(timer.call_count, 2)
-        self.assertEqual(job.finish_reason, "alignment")
+        self.assertIsNone(job.finish_reason)
+        self.assertTrue(job._paused)
+        self.assertEqual(job._pause_reason, "alignment")
         self.assertEqual(len(job.frames), 1)
+        self.assertEqual(result, [])
+        job.stop()
+        self.assertEqual(job.finish_reason, "manual")
         self.assertEqual(result[0].height(), 200)
 
     def test_scroll_after_idle_retry_resets_idle_counter(self):
@@ -542,6 +553,109 @@ class ScreenshotThreeWorkflowsTests(unittest.TestCase):
         self.assertIn("edit_after_capture", preferences)
         self.assertIn("history_enabled", preferences)
 
+
+    def test_tolerant_alignment_handles_color_drift_and_sticky_header(self):
+        """Склейка должна переживать небольшое изменение цвета всех строк."""
+        width, height, offset = 520, 660, 187
+        source = QImage(width, height + offset + 100, QImage.Format_RGB32)
+        source.fill(QColor("white"))
+        painter = QPainter(source)
+        painter.setPen(QColor("#15273a"))
+        painter.setFont(QFont("Arial", 15))
+        for i, y in enumerate(range(92, source.height(), 26)):
+            painter.drawText(30, y, f"Строка №{i:03d}: проверка длинного снимка")
+            painter.fillRect(40, y - 20, 8 + (i * 17) % 65, 3,
+                             QColor("#4774a6"))
+        painter.end()
+        first = source.copy(0, 0, width, height)
+        second = source.copy(0, offset, width, height)
+        # Полупрозрачное перекрытие меняет яркость исходного текста и фона,
+        # поэтому точное сопоставление целых строк больше невозможно.
+        painter = QPainter(second)
+        painter.fillRect(second.rect(), QColor(50, 35, 65, 38))
+        painter.end()
+        for frame in (first, second):
+            painter = QPainter(frame)
+            painter.fillRect(0, 0, width, 70, QColor("#293450"))
+            painter.setPen(Qt.white)
+            painter.drawText(30, 35, "ЗАКРЕПЛЁННОЕ МЕНЮ")
+            painter.end()
+        detected = _scroll_overlap(first, second)
+        self.assertEqual(detected, offset)
+        stitched = _stitch_scroll_frames([first, second], [detected])
+        self.assertEqual(stitched.height(), height + offset)
+        self.assertEqual(stitched.width(), width)
+
+    def test_tolerant_alignment_rejects_uninformative_background(self):
+        first = QImage(450, 560, QImage.Format_RGB32)
+        second = QImage(450, 560, QImage.Format_RGB32)
+        first.fill(QColor("#fdfdfd"))
+        second.fill(QColor("#fafafa"))
+        self.assertEqual(_scroll_overlap(first, second), 0)
+
+    def test_no_movement_pauses_and_can_continue_from_user_pointer(self):
+        job, frame = self._job_with_first_frame()
+        panel = ScrollingCapturePanel(12)
+        job.attach_panel(panel)
+        try:
+            with patch("screenshot.grab_region_highdpi", return_value=frame.copy()), \
+                 patch("screenshot._scroll_body_unchanged", return_value=True), \
+                 patch("screenshot._windows_scroll_state", return_value=None), \
+                 patch.object(job, "_advance"):
+                for _ in range(job.max_idle_retries):
+                    job._take_next_frame()
+            self.assertTrue(job._paused)
+            self.assertIsNone(job.finish_reason)
+            self.assertFalse(panel.continue_button.isHidden())
+            with patch("screenshot._windows_target_for_scroll", return_value=123), \
+                 patch.object(job, "_advance") as advance:
+                job.resume()
+            self.assertFalse(job._paused)
+            self.assertEqual(job._idle_retries, 0)
+            advance.assert_called_once()
+        finally:
+            panel.close_silently()
+
+    def test_alignment_pause_retries_frame_before_scrolling_again(self):
+        job, frame = self._job_with_first_frame()
+        with patch("screenshot.grab_region_highdpi", return_value=frame.copy()), \
+             patch("screenshot._scroll_body_unchanged", return_value=False), \
+             patch("screenshot._scroll_overlap", return_value=0), \
+             patch("screenshot.QTimer.singleShot") as timer:
+            for _ in range(3):
+                job._take_next_frame()
+            self.assertTrue(job._paused)
+            self.assertIsNone(job.finish_reason)
+            self.assertEqual(timer.call_count, 2)
+            job.resume()
+            timer.assert_any_call(550, job._capture_next)
+            self.assertFalse(job._paused)
+
+    def test_output_pixel_limit_prevents_oversized_image(self):
+        job, frame = self._job_with_first_frame()
+        job.max_output_pixels = 200 * 210
+        changed = frame.copy()
+        changed.fill(QColor("#334455"))
+        with patch("screenshot.grab_region_highdpi", return_value=changed), \
+             patch("screenshot._scroll_body_unchanged", return_value=False), \
+             patch("screenshot._scroll_overlap", return_value=60), \
+             patch("screenshot._windows_scroll_state", return_value=None):
+            job._take_next_frame()
+        self.assertEqual(job.finish_reason, "limit")
+        self.assertEqual(job.steps, [])
+
+    def test_review_offers_native_resolution_seam(self):
+        first = QImage(120, 170, QImage.Format_RGB32)
+        second = QImage(120, 170, QImage.Format_RGB32)
+        first.fill(Qt.white)
+        second.fill(Qt.black)
+        dialog = ScrollingReviewDialog([first, second], [62], [0])
+        try:
+            dialog.zoom_combo.setCurrentIndex(1)
+            self.assertEqual(dialog.zoom_combo.currentData(), "seam")
+            self.assertEqual(dialog.preview.pixmap().width(), 120)
+        finally:
+            dialog.close()
 
 if __name__ == "__main__":
     unittest.main()
