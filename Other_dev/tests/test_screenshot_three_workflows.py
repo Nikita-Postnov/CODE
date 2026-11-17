@@ -617,6 +617,47 @@ class ScreenshotThreeWorkflowsTests(unittest.TestCase):
         finally:
             window.close()
 
+    def test_compact_launcher_shows_all_actions_without_scrolling_at_820px(self):
+        """При стандартной ширине 720 основные команды умещаются в окне."""
+        with patch.object(Launcher, "_init_tray"), \
+             patch.object(Launcher, "_install_global_hotkey"):
+            window = Launcher()
+        try:
+            window.resize(720, 820)
+            window.show()
+            self.application.processEvents()
+            scroll = window.centralWidget()
+            self.assertEqual(scroll.verticalScrollBar().maximum(), 0)
+            self.assertFalse(window.help_toggle.isChecked())
+            self.assertTrue(window.shortcut_details.isHidden())
+            self.assertEqual(window.help_toggle.objectName(),
+                             "launcher_help_toggle")
+            self.assertGreaterEqual(
+                scroll.viewport().height(),
+                scroll.widget().sizeHint().height())
+            self.assertIsNotNone(window.findChild(
+                QGroupBox, "np_quick_capture_group"))
+            self.assertTrue(window.edit_after_capture_check.isVisible())
+            self.assertTrue(window.npcore_status_label.isVisible())
+        finally:
+            window.close()
+
+    def test_launcher_keyboard_help_can_expand_and_collapse(self):
+        with patch.object(Launcher, "_init_tray"), \
+             patch.object(Launcher, "_install_global_hotkey"):
+            window = Launcher()
+        try:
+            self.assertFalse(window.help_toggle.isChecked())
+            self.assertTrue(window.shortcut_details.isHidden())
+            window.help_toggle.click()
+            self.assertTrue(window.help_toggle.isChecked())
+            self.assertFalse(window.shortcut_details.isHidden())
+            self.assertIn("PrintScreen", window.shortcut_details.text())
+            window.help_toggle.click()
+            self.assertTrue(window.shortcut_details.isHidden())
+        finally:
+            window.close()
+
     def test_launcher_buttons_highlight_on_hover_not_at_start(self):
         """Обычный вид кнопок нейтральный; рамка появляется при наведении."""
         with patch.object(Launcher, "_init_tray"), \
@@ -739,12 +780,12 @@ class ScreenshotThreeWorkflowsTests(unittest.TestCase):
                 self.assertIsNotNone(title, name)
                 self.assertTrue(title.font().bold(), name)
                 self.assertGreaterEqual(title.font().pointSize(), 11)
-                self.assertGreaterEqual(title.minimumHeight(), 36)
+                self.assertGreaterEqual(title.minimumHeight(), 28)
                 self.assertEqual(title.alignment(), Qt.AlignCenter)
             # Qt учитывает и явный отступ, и padding из stylesheet.
             self.assertGreaterEqual(
                 group.findChild(QLabel, "np_quick_editor_header")
-                .contentsMargins().top(), 7)
+                .contentsMargins().top(), 3)
             self.assertIn("QGroupBox QPushButton:hover {", stylesheet)
             self.assertIn("border: 1px solid transparent;", stylesheet)
             self.assertNotIn(
