@@ -312,9 +312,9 @@ class QuickCaptureTests(unittest.TestCase):
              patch.object(shot.QMessageBox, "information") as inform, \
              patch.object(shot, "grab_region_highdpi") as capture:
             self.launcher.quick_repeat("copy")
+            self.assertIsNone(self.launcher._last_valid_quick_region())
         inform.assert_called_once()
         capture.assert_not_called()
-        self.assertIsNone(self.launcher._last_valid_quick_region())
 
     def test_invalid_preferences_cannot_force_offscreen_capture(self):
         region_path = shot.SCREENSHOT_QUICK_REGION_SETTINGS
