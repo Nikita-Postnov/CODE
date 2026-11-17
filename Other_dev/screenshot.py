@@ -4631,7 +4631,7 @@ class EditorWindow(QMainWindow):
         tool_menus["Обработка"].addAction(privacy_action)
         upload_action = add_action(
             t1, "☁ В NPCore", self.upload_current_npcore)
-        tool_menus["Файл"].addAction(upload_action)
+        t3.addAction(upload_action)
         t1.addSeparator()
         self.line_caption = QLabel(" Линия")
         self.line_caption.setStyleSheet("color: #c8c8c8;")
@@ -5825,6 +5825,12 @@ class NPCoreScreenshotsDialog(QDialog):
             item = QListWidgetItem(str(entry.get("name") or path))
             item.setData(Qt.UserRole, path)
             self.items.addItem(item)
+
+    def reject(self):
+        if self._worker.isRunning():
+            self.status.setText("Запрашиваем список снимков…")
+            return
+        super().reject()
 
     def copy_path(self):
         item = self.items.currentItem()
