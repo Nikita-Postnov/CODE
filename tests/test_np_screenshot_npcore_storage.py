@@ -95,7 +95,7 @@ class ScreenshotNPCoreUploadTests(unittest.TestCase):
             with patch.object(shot.QMessageBox, "exec", autospec=True) as run:
                 def click_last(dialog):
                     choice = next(b for b in dialog.buttons()
-                                  if b.text() == "Последний снимок")
+                                  if b.text() == "Последний исходный снимок")
                     choice.click()
                     return 0
                 run.side_effect = click_last
@@ -235,6 +235,10 @@ class ScreenshotNPCoreUploadTests(unittest.TestCase):
             self.assertTrue(dialog.send_button.isEnabled())
             self.assertFalse(dialog.copy_button.isEnabled())
             self.assertIsNone(dialog._worker)
+            self.assertEqual(dialog.preview_label.objectName(),
+                             "np_npcore_upload_preview")
+            self.assertFalse(dialog.preview_label.pixmap().isNull())
+            self.assertLessEqual(dialog.preview_label.pixmap().width(), 420)
             dialog._complete({"ok": True, "result": {"entry": {
                 "rel": "Скриншоты/NP Screenshot/NP_test.png"}}})
             self.assertTrue(dialog.copy_button.isEnabled())
