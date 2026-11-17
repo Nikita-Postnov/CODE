@@ -133,7 +133,9 @@ class ScreenshotNPCoreUploadTests(unittest.TestCase):
             launcher = shot.Launcher()
         try:
             QApplication.clipboard().setText("Скопирован текст")
-            with patch.object(launcher, "_choose_npcore_source",
+            with patch.object(shot, "_npcore_load_link",
+                              return_value=("https://npcore.example", "x" * 43)), \
+                 patch.object(launcher, "_choose_npcore_source",
                               return_value=self.sample) as choose, \
                  patch.object(launcher, "_show_npcore_upload") as upload, \
                  patch.object(shot, "_npcore_upload_image") as network:
