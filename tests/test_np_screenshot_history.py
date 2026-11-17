@@ -316,6 +316,40 @@ class CaptureRoutingTests(unittest.TestCase):
         editor.assert_called_once()
         self.assertEqual(len(shot.screenshot_history_files()), 1)
 
+    def test_history_toggle_is_visible_in_launcher_and_controls_autosave(self):
+        self.assertFalse(self.launcher.history_enabled_check.isChecked())
+        self.assertEqual(
+            self.launcher.history_enabled_check.objectName(),
+            "np_history_enabled_toggle")
+        self.launcher.history_enabled_check.setChecked(True)
+        self.assertTrue(shot.load_capture_preferences()["history_enabled"])
+        self.assertTrue(self.launcher._capture_preferences["history_enabled"])
+        if hasattr(self.launcher, "act_tray_history_enabled"):
+            self.assertTrue(self.launcher.act_tray_history_enabled.isChecked())
+        with patch.object(shot, "run_capture_flow", return_value=sample_image()), \
+             patch.object(self.launcher, "_open_editor_image"):
+            self.launcher._capture(shot.SelectionOverlay.MODE_SHOT)
+        self.assertEqual(len(shot.screenshot_history_files()), 1)
+        self.launcher.history_enabled_check.setChecked(False)
+        self.assertFalse(shot.load_capture_preferences()["history_enabled"])
+
+    def test_history_refreshes_after_normal_and_quick_captures(self):
+        self.launcher.history_enabled_check.setChecked(True)
+        history = shot.ScreenshotHistoryDialog(self.launcher)
+        self.addCleanup(history.close)
+        self.launcher._history_dialog = history
+        with patch.object(history, "isVisible", return_value=True), \
+             patch.object(history, "refresh", wraps=history.refresh) as refresh, \
+             patch.object(self.launcher, "_open_editor_image"):
+            self.launcher._handle_captured_image(sample_image())
+            self.assertEqual(refresh.call_count, 1)
+            self.launcher._quick_finish_image(sample_image("#11ccbb"), "copy")
+            self.assertEqual(refresh.call_count, 2)
+        paths = [history.items.item(i).data(shot.Qt.UserRole)
+                 for i in range(history.items.count())
+                 if history.items.item(i).data(shot.Qt.UserRole)]
+        self.assertEqual(len(paths), 2)
+
     def test_quick_actions_opt_in_does_not_open_editor_automatically(self):
         self.launcher._capture_preferences["quick_actions"] = True
         with patch.object(shot, "run_capture_flow", return_value=sample_image()), \
