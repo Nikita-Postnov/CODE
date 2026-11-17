@@ -94,6 +94,121 @@ class ScreenshotReliabilityTests(unittest.TestCase):
         self.assertEqual(permanent_video.read_bytes(), b"recording")
 
 
+class OCRTableLayoutTests(unittest.TestCase):
+    """Проверяем скриншот веб-таблицы с двумя отдельно распознанными колонками."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QApplication.instance() or QApplication([])
+
+    @staticmethod
+    def _ocr_line(text, x, y, width=130, height=14):
+        return {"text": text, "x": x, "y": y,
+                "width": width, "height": height, "words": [
+                    {"text": text, "x": x, "y": y,
+                     "width": width, "height": height}]}
+
+    def _portfolio_payload(self):
+        headers = ("Возможность", "Как теперь работает")
+        left = [
+            "Многострочный текст", "Выбор шрифта", "Размер текста",
+            "Начертание", "Выравнивание", "Автоматический размер",
+            "Ручное изменение размера", "Редактирование",
+            "Отмена изменений", "Сохранение проектов",
+        ]
+        right = [
+            "Можно вводить абзацы и переносить строки клавишей Enter",
+            "В окне редактирования доступен список установленных шрифтов",
+            "Настраивается от 5 до 300 pt", "Полужирный и курсив",
+            "Слева, по центру или справа",
+            "Рамка текста подстраивается под содержимое",
+            "Можно изменять рамку маркерами",
+            "Двойной щелчок по тексту открывает окно редактирования",
+            "Работают Ctrl+Z и Ctrl+Y",
+            "Все параметры текста сохраняются в .npshot",
+        ]
+        lines = [self._ocr_line(headers[0], 627, 248),
+                 self._ocr_line(headers[1], 805, 248)]
+        for index, (label, explanation) in enumerate(zip(left, right)):
+            y = 278 + 35 * index
+            lines.append(self._ocr_line(label, 627, y))
+            lines.append(self._ocr_line(explanation, 805, y + (index % 2)))
+            if index in (0, 6):
+                lines.append(self._ocr_line(
+                    "Дополнительная часть описания", 805, y + 16))
+        # OCR часто возвращает сперва всю левую колонку, затем правую;
+        # постороннее меню и заголовок страницы не должны создавать столбцы.
+        lines.extend(self._ocr_line("Пункт меню " + str(i), 17, 170 + i * 22)
+                     for i in range(6))
+        lines.extend((
+            self._ocr_line("Готово!", 627, 108),
+            self._ocr_line("Проверки", 627, 706),
+            self._ocr_line("Выполнено", 627, 730),
+        ))
+        lines.sort(key=lambda row: (row["x"], row["y"]))
+        return {"lines": lines}
+
+    def test_detects_two_column_table_from_separate_ocr_lines(self):
+        rows = shot.ocr_layout_to_table_cells(self._portfolio_payload())
+        self.assertEqual(len(rows), 11)
+        self.assertEqual(rows[0], ["Возможность", "Как теперь работает"])
+        self.assertEqual(rows[1][0], "Многострочный текст")
+        self.assertIn("Дополнительная часть описания", rows[1][1])
+        self.assertEqual(rows[-1][0], "Сохранение проектов")
+        self.assertNotIn("Пункт меню", str(rows))
+        markdown = shot.ocr_layout_to_markdown_table(self._portfolio_payload())
+        self.assertIn("| Возможность | Как теперь работает |", markdown)
+        self.assertIn("| --- | --- |", markdown)
+
+    def test_multi_column_line_split_into_separate_cells(self):
+        lines = []
+        for index, (left, right) in enumerate((
+                ("Название", "Описание"), ("Этап 1", "Подготовка"),
+                ("Этап 2", "Выполнение"), ("Этап 3", "Проверка"))):
+            y = 100 + 30 * index
+            lines.append({"text": left + " " + right,
+                          "x": 40, "y": y, "height": 14,
+                          "words": [
+                              {"text": left, "x": 40, "y": y,
+                               "width": 60, "height": 14},
+                              {"text": right, "x": 250, "y": y,
+                               "width": 110, "height": 14},
+                          ]})
+        rows = shot.ocr_layout_to_table_cells({"lines": lines})
+        self.assertEqual(rows[0], ["Название", "Описание"])
+        self.assertEqual(rows[-1], ["Этап 3", "Проверка"])
+
+    def test_random_prose_is_not_fabricated_as_table(self):
+        payload = {"lines": [
+            self._ocr_line("Заголовок", 100, 35),
+            self._ocr_line("Обычный текст абзаца", 100, 64),
+            self._ocr_line("Продолжение текста", 100, 93),
+            self._ocr_line("Окончание", 100, 122),
+        ]}
+        self.assertEqual(shot.ocr_layout_to_table_cells(payload), [])
+        self.assertEqual(shot.ocr_layout_to_markdown_table(payload), "")
+
+    def test_table_dialog_previews_columns_and_copies_excel(self):
+        rows = shot.ocr_layout_to_table_cells(self._portfolio_payload())
+        dialog = shot.OCRTableDialog(rows)
+        try:
+            self.assertEqual(dialog.table.columnCount(), 2)
+            self.assertEqual(dialog.table.rowCount(), 10)
+            self.assertEqual(dialog.table.horizontalHeaderItem(0).text(),
+                             "Возможность")
+            dialog.table.item(0, 1).setText("Текст изменён")
+            dialog.copy_tsv()
+            copied = QApplication.clipboard().text()
+            self.assertIn("Возможность\tКак теперь работает", copied)
+            self.assertIn("Многострочный текст\tТекст изменён", copied)
+            dialog.copy_markdown()
+            markdown = QApplication.clipboard().text()
+            self.assertIn("| Многострочный текст | Текст изменён |",
+                          markdown)
+        finally:
+            dialog.close()
+
+
 class DelayedCaptureTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
