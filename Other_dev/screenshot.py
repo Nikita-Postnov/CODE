@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ctypes
+import hashlib
 import json
 import logging
 import math
@@ -422,6 +423,18 @@ def save_history_metadata(path: Path, metadata: dict) -> bool:
 
 def update_history_metadata(path: Path, **updates) -> bool:
     return save_history_metadata(path, updates)
+
+
+def _screenshot_image_digest(image: QImage) -> str:
+    """Стабильный отпечаток изображения для защиты от повторного импорта."""
+    if image.isNull():
+        return ""
+    buffer = QBuffer()
+    if not buffer.open(QIODevice.WriteOnly) or not image.save(buffer, "PNG"):
+        return ""
+    payload = bytes(buffer.data())
+    buffer.close()
+    return hashlib.sha256(payload).hexdigest()
 
 
 def archive_screenshot(image: QImage, kind: str = "shot", project: str = "") -> Optional[Path]:
@@ -7900,7 +7913,11 @@ class ScreenshotQuickActionsDialog(QDialog):
         layout.addLayout(buttons)
 
     def copy_image(self) -> None:
-        QApplication.clipboard().setImage(self.image, QClipboard.Clipboard)
+        if isinstance(self.launcher, Launcher):
+            self.launcher._set_clipboard_image(
+                self.image, suppress_history=self.history_path is not None)
+        else:
+            QApplication.clipboard().setImage(self.image, QClipboard.Clipboard)
         self.close()
 
     def save_image(self) -> None:
@@ -7985,6 +8002,7 @@ class ScreenshotHistoryDialog(QDialog):
         layout.addWidget(self.items, 1)
         actions = QHBoxLayout()
         for title, handler in (
+            ("Добавить из буфера", self.import_clipboard),
             ("Открыть в редакторе", self.open_selected),
             ("Копировать", self.copy_selected),
             ("Избранное", self.toggle_favorite),
@@ -8077,6 +8095,26 @@ class ScreenshotHistoryDialog(QDialog):
         if first_item is not None:
             self.items.setCurrentItem(first_item)
 
+    def import_clipboard(self) -> None:
+        """Добавить текущее изображение буфера; Win+V сначала выбирает его."""
+        image = _npcore_current_clipboard_image()
+        if image.isNull():
+            QMessageBox.information(
+                self, "История скриншотов",
+                "В текущем буфере обмена нет изображения. "
+                "Открой Win+V, выбери нужную миниатюру и повтори действие.")
+            return
+        saved = self.launcher._archive_capture(image, "shot")
+        if saved is None:
+            QMessageBox.warning(
+                self, "История скриншотов",
+                "Не удалось добавить изображение из буфера обмена.")
+            return
+        self.refresh()
+        QMessageBox.information(
+            self, "История скриншотов",
+            "Изображение добавлено в историю.")
+
     def _selected_path(self) -> Optional[Path]:
         item = self.items.currentItem()
         if item is None:
@@ -8112,7 +8150,10 @@ class ScreenshotHistoryDialog(QDialog):
         if image.isNull():
             QMessageBox.warning(self, "История", "Не удалось прочитать снимок.")
             return
-        QApplication.clipboard().setImage(image, QClipboard.Clipboard)
+        if isinstance(self.launcher, Launcher):
+            self.launcher._set_clipboard_image(image, suppress_history=True)
+        else:
+            QApplication.clipboard().setImage(image, QClipboard.Clipboard)
 
     def toggle_favorite(self) -> None:
         path = self._selected_path()
@@ -8384,13 +8425,15 @@ class Launcher(QMainWindow):
         v.addWidget(self.edit_after_capture_check)
 
         # Управление историей доступно и в главном окне, а не только в трее.
-        self.history_enabled_check = QCheckBox("Автоматически сохранять снимки в историю")
+        self.history_enabled_check = QCheckBox("Автоматически сохранять изображения в историю")
         self.history_enabled_check.setObjectName("np_history_enabled_toggle")
         self.history_enabled_check.setChecked(
             self._capture_preferences["history_enabled"])
         self.history_enabled_check.setToolTip(
-            "Новые снимки сохраняются в Data\\ScreenshotHistory. "
-            "Предыдущие снимки добавляются отдельно.")
+            "Сохраняет снимки NP Screenshot и изображения, скопированные "
+            "из других приложений (например, через Win+Shift+S). "
+            "Для уже сохранённого элемента Win+V выбери его и нажми "
+            "«Добавить из буфера» в истории.")
         self.history_enabled_check.toggled.connect(
             lambda enabled: self._set_capture_preference("history_enabled", enabled))
         v.addWidget(self.history_enabled_check)
@@ -8518,6 +8561,16 @@ class Launcher(QMainWindow):
         self._quick_panel: Optional[ScreenshotQuickActionsDialog] = None
         self._history_dialog: Optional[ScreenshotHistoryDialog] = None
         self._real_quit = False
+        self._skip_clipboard_history_digest = None
+        self._clipboard_history_last_digest = ""
+        self._clipboard_history_last_at = 0.0
+        self._clipboard_history_timer = QTimer(self)
+        self._clipboard_history_timer.setSingleShot(True)
+        self._clipboard_history_timer.setInterval(180)
+        self._clipboard_history_timer.timeout.connect(
+            self._archive_clipboard_image)
+        QApplication.clipboard().dataChanged.connect(
+            self._on_clipboard_data_changed)
         self._delayed_capture_timer = QTimer(self)
         self._delayed_capture_timer.setSingleShot(True)
         self._delayed_capture_timer.timeout.connect(self._finish_delayed_capture)
@@ -8784,6 +8837,9 @@ class Launcher(QMainWindow):
                 checkbox.setChecked(self._capture_preferences[name])
             finally:
                 checkbox.blockSignals(blocked)
+        if name == "history_enabled" and not self._capture_preferences[name]:
+            self._clipboard_history_timer.stop()
+            self._skip_clipboard_history_digest = None
         if not saved:
             QMessageBox.warning(self, "Настройки", "Не удалось сохранить настройки скриншотера.")
 
@@ -9019,6 +9075,42 @@ class Launcher(QMainWindow):
                              QSystemTrayIcon.Warning if error else
                              QSystemTrayIcon.Information, 3500)
 
+    def _on_clipboard_data_changed(self) -> None:
+        """Отложенно проверяем буфер после внешнего копирования изображения."""
+        if (self._real_quit or
+                not self._capture_preferences.get("history_enabled", False)):
+            return
+        self._clipboard_history_timer.start()
+
+    def _archive_clipboard_image(self) -> None:
+        """Сохраняет изображения из текущего буфера, включая внешние захваты Windows."""
+        skip_digest = self._skip_clipboard_history_digest
+        self._skip_clipboard_history_digest = None
+        if (self._real_quit or
+                not self._capture_preferences.get("history_enabled", False)):
+            return
+        image = _npcore_current_clipboard_image()
+        if image.isNull():
+            return
+        digest = _screenshot_image_digest(image)
+        if digest and digest == skip_digest:
+            return
+        now = time.monotonic()
+        if (digest and digest == self._clipboard_history_last_digest and
+                now - self._clipboard_history_last_at < 1.5):
+            return
+        saved = self._archive_capture(image, "shot")
+        if saved is not None:
+            self._clipboard_history_last_digest = digest
+            self._clipboard_history_last_at = now
+
+    def _set_clipboard_image(self, image: QImage, *,
+                             suppress_history: bool = False) -> None:
+        """Копирует изображение, не создавая повторную запись для снимка из истории."""
+        if suppress_history:
+            self._skip_clipboard_history_digest = _screenshot_image_digest(image)
+        QApplication.clipboard().setImage(image, QClipboard.Clipboard)
+
     def _archive_capture(self, image: QImage, kind: str) -> Optional[Path]:
         """Запись в историю с сообщением об ошибке и обновлением открытого списка."""
         saved = archive_screenshot(image, kind=kind)
@@ -9035,13 +9127,14 @@ class Launcher(QMainWindow):
                                error=True)
             return
         self._last_captured_image = image.copy()
-        if self._capture_preferences.get("history_enabled", False):
+        history_enabled = self._capture_preferences.get("history_enabled", False)
+        if history_enabled:
             self._archive_capture(image, "shot")
         if action == "copy":
-            QApplication.clipboard().setImage(image, QClipboard.Clipboard)
+            self._set_clipboard_image(image, suppress_history=history_enabled)
             self._quick_notify("Снимок скопирован в буфер обмена.")
         elif action == "edit":
-            QApplication.clipboard().setImage(image, QClipboard.Clipboard)
+            self._set_clipboard_image(image, suppress_history=history_enabled)
             self._open_editor_image(image)
         elif action == "save":
             directory = Path(
@@ -9143,10 +9236,11 @@ class Launcher(QMainWindow):
         if img.isNull():
             return
         self._last_captured_image = img.copy()
-        QApplication.clipboard().setImage(img, QClipboard.Clipboard)
+        history_enabled = self._capture_preferences.get("history_enabled", False)
         saved = None
-        if self._capture_preferences.get("history_enabled", False):
+        if history_enabled:
             saved = self._archive_capture(img, capture_kind)
+        self._set_clipboard_image(img, suppress_history=history_enabled)
         if self._capture_preferences.get("quick_actions", False):
             panel = ScreenshotQuickActionsDialog(img, self, history_path=saved)
             self._quick_panel = panel
