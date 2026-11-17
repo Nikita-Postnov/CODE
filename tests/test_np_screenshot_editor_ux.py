@@ -72,13 +72,13 @@ class ObjectEditingTests(unittest.TestCase):
         dlg = shot.TextEditorDialog(item, self.view)
         try:
             self.assertEqual(dlg.text_edit.toPlainText(), "Первая строка")
-            dlg.text_edit.setPlainText("Первая строка\\nВторая строка")
+            dlg.text_edit.setPlainText("Первая строка\nВторая строка")
             dlg.size_box.setValue(27)
             dlg.bold_check.setChecked(True)
             dlg.italic_check.setChecked(True)
             dlg.align_combo.setCurrentIndex(dlg.align_combo.findData("right"))
             values = dlg.values()
-            self.assertIn("\\n", values["text"])
+            self.assertIn("\n", values["text"])
             self.assertEqual(values["font_size"], 27)
             self.assertTrue(values["bold"])
             self.assertTrue(values["italic"])
@@ -91,7 +91,7 @@ class ObjectEditingTests(unittest.TestCase):
         item = self.add_text("Начало")
         original_height = item._rect.height()
         def edit(dialog):
-            dialog.text_edit.setPlainText("Заголовок\\nПодробный комментарий")
+            dialog.text_edit.setPlainText("Заголовок\nПодробный комментарий")
             dialog.size_box.setValue(25)
             dialog.bold_check.setChecked(True)
             dialog.align_combo.setCurrentIndex(
@@ -99,7 +99,7 @@ class ObjectEditingTests(unittest.TestCase):
             return shot.QDialog.Accepted
         with patch.object(shot.TextEditorDialog, "exec", new=edit):
             self.assertTrue(self.view.edit_selected_text(item))
-        self.assertIn("\\n", item.text)
+        self.assertIn("\n", item.text)
         self.assertTrue(item.bold)
         self.assertEqual(item.alignment, "center")
         self.assertGreater(item._rect.height(), original_height)
@@ -111,12 +111,12 @@ class ObjectEditingTests(unittest.TestCase):
         self.view.redo()
         redone = next(obj for obj in self.view._resizable_items()
                       if isinstance(obj, shot.EditableTextItem))
-        self.assertIn("\\n", redone.text)
+        self.assertIn("\n", redone.text)
         self.assertEqual(redone.alignment, "center")
 
     def test_multiline_raster_export_uses_alignment_and_keeps_two_lines(self):
         item = shot.EditableTextItem(
-            "Первая строка\\nВторая", 19, QColor("#112233"),
+            "Первая строка\nВторая", 19, QColor("#112233"),
             alignment="left", auto_fit=False)
         item._rect = QRectF(0, 0, 280, 105)
 
