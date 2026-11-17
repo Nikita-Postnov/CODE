@@ -5658,8 +5658,14 @@ def _npcore_upload_png_bytes(data: bytes) -> dict:
     request.add_header("Accept", "application/json")
     request.add_header("Content-Type", "multipart/form-data; boundary=" + boundary)
     request.add_header("User-Agent", "NP-Screenshot/1.0")
+    # Не передаём Bearer заголовок на другой домен через HTTP redirect.
+    class _RejectRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            return None
+
     try:
-        with urllib.request.urlopen(request, timeout=90) as response:
+        opener = urllib.request.build_opener(_RejectRedirect())
+        with opener.open(request, timeout=90) as response:
             result = json.loads(response.read().decode("utf-8") or "{}")
     except urllib.error.HTTPError as exc:
         try:
