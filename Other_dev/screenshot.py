@@ -6,6 +6,7 @@ import logging
 import math
 import base64
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -3720,6 +3721,51 @@ class CanvasView(QGraphicsView):
             }
         )
 
+    def apply_private_redactions(self, regions: list[QRect]) -> bool:
+        """Безвозвратно удаляет закрытые пиксели из текущего проекта.
+
+        Все видимые слои сначала сводятся в один, затем заменяются
+        непрозрачными прямоугольниками. Старые слои и undo-история очищаются,
+        чтобы они не попали в новый .npshot.
+        """
+        bounds = self.bg_img.rect()
+        regions = [QRect(rect).normalized().intersected(bounds)
+                   for rect in regions if isinstance(rect, QRect)]
+        regions = [rect for rect in regions if not rect.isEmpty()]
+        if not regions:
+            return False
+        rendered = self._flatten_on_white(
+            self.render_scene_to_image(hide_handles=True))
+        image = _normalized_image(rendered)
+        painter = QPainter(image)
+        painter.setCompositionMode(QPainter.CompositionMode_Source)
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor("#161616"))
+        for rect in regions:
+            painter.drawRect(rect)
+        painter.end()
+        self.cancel_preview()
+        for item in self._resizable_items():
+            self._scene.removeItem(item)
+        self.stickers.clear()
+        self._scene.clearSelection()
+        self.bg_img = image
+        self.ov_img = QImage(image.size(), QImage.Format_ARGB32)
+        self.ov_img.fill(Qt.transparent)
+        self.undo_stack.clear()
+        self.redo_stack.clear()
+        self._scene_edit_pre = None
+        self._scene_edit_items = []
+        self._refresh()
+        # Буфер обмена часто ещё содержит исходный снимок, полученный
+        # PrintScreen. Заменяем текущий буфер уже закрытой версией.
+        QApplication.clipboard().setImage(
+            self._flatten_on_white(
+                self.render_scene_to_image(hide_handles=True)),
+            QClipboard.Clipboard)
+        self._set_dirty(True)
+        return True
+
     def save_rendered_image(self, path: Path) -> bool:
         lower = str(path).lower()
         if lower.endswith((".jpg", ".jpeg")):
@@ -3907,6 +3953,9 @@ class EditorWindow(QMainWindow):
         self.resize(1100, 700)
         self.view = CanvasView(image, self)
         self.setCentralWidget(self.view)
+        self._private_ocr_process: Optional[QProcess] = None
+        self._private_ocr_file: Optional[Path] = None
+        self._private_ocr_image_size: Optional[QSize] = None
         self._build_toolbar()
         self._apply_shortcuts()
         self._add_apps_menu()
@@ -3920,6 +3969,127 @@ class EditorWindow(QMainWindow):
         self.setAcceptDrops(True)
         self.view.set_dirty_hook(self._on_dirty_changed)
         self._on_dirty_changed(self.view.is_dirty())
+
+    def scan_private_data(self) -> None:
+        """Windows OCR без отправки в NPCore и без копирования в буфер."""
+        if self._private_ocr_process is not None:
+            return
+        if not sys.platform.startswith("win"):
+            QMessageBox.information(
+                self, "Личные данные", "Локальное OCR доступно в Windows.")
+            return
+        source = self.view.render_scene_to_image(hide_handles=True)
+        if source.isNull():
+            return
+        prepared = _ocr_prepare_image(source)
+        try:
+            with tempfile.NamedTemporaryFile(
+                    prefix="np_private_ocr_", suffix=".png",
+                    dir=str(_rec_tmp_dir()), delete=False) as handle:
+                path = Path(handle.name)
+            if not prepared.save(str(path), "PNG"):
+                path.unlink(missing_ok=True)
+                raise OSError("Не удалось подготовить изображение")
+        except OSError:
+            QMessageBox.warning(
+                self, "Личные данные", "Не удалось подготовить изображение.")
+            return
+        self._private_ocr_file = path
+        self._private_ocr_image_size = QSize(prepared.size())
+        script = _OCR_PS.replace("__PATH__", str(path).replace("'", "''"))
+        command = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
+        process = QProcess(self)
+        try:
+            process.setCreateProcessArgumentsModifier(
+                lambda arg: setattr(arg, "flags", arg.flags | _CREATE_NO_WINDOW))
+        except Exception:
+            pass
+        self._private_ocr_process = process
+        process.setProgram("powershell.exe")
+        process.setArguments([
+            "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+            "-EncodedCommand", command])
+        self.view.setEnabled(False)
+        self.statusBar().showMessage(
+            "Проверка личных данных локально через Windows OCR…")
+        process.finished.connect(
+            lambda code, status: self._private_ocr_finished(
+                code, status))
+        process.errorOccurred.connect(
+            lambda error: self._private_ocr_error(error))
+        process.start()
+
+    def _private_ocr_cleanup(self) -> None:
+        path = self._private_ocr_file
+        self._private_ocr_file = None
+        if path is not None:
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                log.warning("Не удалось удалить временный файл OCR")
+        self.view.setEnabled(True)
+        process = self._private_ocr_process
+        self._private_ocr_process = None
+        if process is not None:
+            process.deleteLater()
+
+    def _private_ocr_error(self, error):
+        if error != QProcess.FailedToStart:
+            return
+        self._private_ocr_cleanup()
+        self.statusBar().showMessage(
+            "Не удалось запустить локальное распознавание", 6500)
+
+    def _private_ocr_finished(self, code, _status):
+        process = self._private_ocr_process
+        if process is None:
+            return
+        output = bytes(process.readAllStandardOutput()).decode(
+            "utf-8", "replace").lstrip("\ufeff").strip()
+        errors = bytes(process.readAllStandardError()).decode(
+            "utf-8", "replace")
+        source_size = self.view.bg_img.size()
+        prepared_size = self._private_ocr_image_size
+        self._private_ocr_cleanup()
+        if code != 0:
+            message = (_OCR_NO_LANGUAGE_HINT if
+                       "NO_OCR_LANGUAGE" in errors else
+                       "Распознавание завершилось с ошибкой.")
+            QMessageBox.warning(self, "Личные данные", message)
+            return
+        try:
+            payload = json.loads(output)
+        except (ValueError, TypeError):
+            QMessageBox.warning(
+                self, "Личные данные", "Windows OCR вернул некорректный результат.")
+            return
+        candidates = find_private_data_regions(
+            payload, source_size, prepared_size)
+        if not candidates:
+            QMessageBox.information(
+                self, "Личные данные",
+                "Подходящие фрагменты автоматически не найдены. "
+                "Проверь изображение вручную: OCR может пропускать данные. "
+                "Для ручного закрытия используй инструмент «Редация».")
+            return
+        preview = self.view.render_scene_to_image(hide_handles=True)
+        review = PrivateDataReviewDialog(preview, candidates, self)
+        if review.exec() != QDialog.Accepted:
+            return
+        selected = review.selected_rects()
+        if not selected:
+            return
+        answer = _question_ru(
+            self, "Применить скрытие",
+            f"Закрыть {len(selected)} областей сплошной заливкой? "
+            "Текущие слои будут сведены, история отмены очищена. "
+            "Исходные файлы на диске останутся без изменений.",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if answer != QMessageBox.Yes:
+            return
+        if self.view.apply_private_redactions(selected):
+            self.statusBar().showMessage(
+                f"Закрыто областей: {len(selected)}. Сохрани новый файл.", 8000)
 
     def pin_current_image(self) -> None:
         """Закрепить отрисованное изображение редактора поверх остальных окон."""
@@ -4438,6 +4608,9 @@ class EditorWindow(QMainWindow):
             button.setPopupMode(QToolButton.InstantPopup)
             button.setToolTip("Все команды и прежние сочетания клавиш доступны в меню")
             t1.addWidget(button)
+        privacy_action = add_action(
+            t1, "🔒 Найти личные данные", self.scan_private_data)
+        tool_menus["Обработка"].addAction(privacy_action)
         t1.addSeparator()
         self.line_caption = QLabel(" Линия")
         self.line_caption.setStyleSheet("color: #c8c8c8;")
@@ -4575,6 +4748,10 @@ class EditorWindow(QMainWindow):
 
 
     def closeEvent(self, e):
+        if self._private_ocr_process is not None:
+            self._private_ocr_process.kill()
+            self._private_ocr_process.waitForFinished(1500)
+            self._private_ocr_cleanup()
         if self.view.is_dirty():
             res = _question_ru(
                 self,
@@ -5696,6 +5873,213 @@ class OCRResultDialog(QDialog):
             Path(path).write_text(self.text_edit.toPlainText(), encoding="utf-8")
         except OSError as exc:
             QMessageBox.warning(self, "Сохранение", str(exc))
+
+
+_PRIVATE_EMAIL_RE = re.compile(
+    r"(?<![\w.+-])[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}(?![\w.-])", re.I)
+_PRIVATE_PHONE_RE = re.compile(
+    r"(?<![\w@])(?:\+\d{1,3}[\s.()-]*)?(?:\d[\s.()-]*){10,15}(?!\w)")
+_PRIVATE_SECRET_RE = re.compile(
+    r"(?i)(?<!\w)(?:sk-[A-Za-z0-9_-]{12,}|gh[pousr]_[A-Za-z0-9_]{18,}|"
+    r"xox[baprs]-[A-Za-z0-9_-]{16,}|AIza[A-Za-z0-9_-]{25,}|"
+    r"(?:api[\s_-]*key|access[\s_-]*token|secret|password|passwd|"
+    r"пароль|токен|ключ)[\s]*[:=][\s]*[A-Za-z0-9_./+=-]{8,})(?!\w)")
+_PRIVATE_LABELS = {
+    "email": "Электронный адрес",
+    "phone": "Телефон",
+    "secret": "Возможный ключ или пароль",
+}
+
+
+def find_private_data_regions(payload: dict, image_size: QSize,
+                              ocr_size: QSize) -> list[dict]:
+    """Находит предложенные для маскировки прямоугольники.
+
+    OCR-координаты масштабируются обратно к исходному снимку. Распознанный
+    текст не возвращается из функции и не попадает в журнал или настройки.
+    """
+    if (not isinstance(payload, dict) or image_size.isEmpty() or
+            ocr_size.isEmpty() or image_size.width() <= 0 or
+            image_size.height() <= 0):
+        return []
+    lines = payload.get("lines")
+    if not isinstance(lines, list):
+        return []
+    sx = image_size.width() / ocr_size.width()
+    sy = image_size.height() / ocr_size.height()
+    bounds = QRect(0, 0, image_size.width(), image_size.height())
+    candidates = []
+
+    def valid_rect(value) -> Optional[QRect]:
+        if not isinstance(value, dict):
+            return None
+        try:
+            values = [float(value.get(k, 0)) for k in
+                      ("x", "y", "width", "height")]
+        except (ValueError, TypeError, OverflowError):
+            return None
+        if (not all(math.isfinite(x) for x in values) or
+                values[2] <= 0 or values[3] <= 0):
+            return None
+        x, y, w, h = values
+        # Дополнительные поля OCR могут ошибаться; за пределами исходного
+        # изображения маска не создаётся.
+        padding = 3
+        rect = QRect(
+            math.floor(x * sx) - padding,
+            math.floor(y * sy) - padding,
+            math.ceil((x + w) * sx) - math.floor(x * sx) + 2 * padding,
+            math.ceil((y + h) * sy) - math.floor(y * sy) + 2 * padding)
+        return rect.intersected(bounds) if rect.intersects(bounds) else None
+
+    for line in lines[:4000]:
+        if not isinstance(line, dict):
+            continue
+        word_items = []
+        words = line.get("words")
+        if isinstance(words, list):
+            for word in words[:250]:
+                if (isinstance(word, dict) and
+                        isinstance(word.get("text"), str) and
+                        word["text"].strip()):
+                    word_items.append(word)
+        # WinRT OCR может выдать частичный текст строки: сопоставляем с
+        # координатами отдельных слов из того же OCR Lines.
+        if word_items:
+            text_parts = []
+            intervals = []
+            for word in word_items:
+                if text_parts:
+                    text_parts.append(" ")
+                start = sum(len(t) for t in text_parts)
+                value = word["text"].strip()
+                text_parts.append(value)
+                intervals.append((start, start + len(value), word))
+            content = "".join(text_parts)
+        else:
+            content = str(line.get("text") or "")
+            intervals = []
+
+        for kind, pattern in (
+                ("secret", _PRIVATE_SECRET_RE),
+                ("email", _PRIVATE_EMAIL_RE),
+                ("phone", _PRIVATE_PHONE_RE)):
+            for match in pattern.finditer(content):
+                value = match.group(0)
+                if kind == "phone":
+                    digits = re.sub(r"\D", "", value)
+                    if not 10 <= len(digits) <= 15:
+                        continue
+                    # Исключаем слишком однородные последовательности.
+                    if len(set(digits)) < 3:
+                        continue
+                rects = [valid_rect(word) for start, end, word in intervals
+                         if start < match.end() and end > match.start()]
+                rects = [rect for rect in rects if rect and not rect.isEmpty()]
+                if not rects:
+                    rect = valid_rect(line)
+                    rects = [rect] if rect else []
+                if not rects:
+                    continue
+                region = QRect(rects[0])
+                for rect in rects[1:]:
+                    region = region.united(rect)
+                if any(old["kind"] == kind and
+                       old["rect"].intersects(region) and
+                       old["rect"].intersected(region).width() *
+                       old["rect"].intersected(region).height() >=
+                       min(old["rect"].width() * old["rect"].height(),
+                           region.width() * region.height()) * .65
+                       for old in candidates):
+                    continue
+                candidates.append({"kind": kind, "rect": region})
+                if len(candidates) >= 200:
+                    return candidates
+    return candidates
+
+
+class PrivateDataReviewDialog(QDialog):
+    """Модальное подтверждение всех масок без вывода содержимого секретов."""
+
+    def __init__(self, image: QImage, proposals: list[dict], parent=None):
+        super().__init__(parent)
+        self.image = image.copy()
+        self.proposals = proposals
+        self.setWindowTitle("Проверка личных данных")
+        self.resize(970, 730)
+        layout = QVBoxLayout(self)
+        hint = QLabel(
+            "Локальное распознавание Windows предложило области. Проверь их: "
+            "OCR может пропустить данные или ошибочно пометить обычный текст. "
+            "Подтверди нужные области. Применение заменит пиксели сплошным "
+            "цветом и очистит историю отмены редактора; уже сохранённые "
+            "оригинальные файлы останутся без изменений.", self)
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+        self.scroll = QScrollArea(self)
+        self.scroll.setWidgetResizable(False)
+        self.preview = QLabel(self.scroll)
+        self.preview.setAlignment(Qt.AlignCenter)
+        self.scroll.setWidget(self.preview)
+        layout.addWidget(self.scroll, 3)
+        self.results = QListWidget(self)
+        self.results.setObjectName("private_data_candidates")
+        self.results.setMinimumHeight(140)
+        for index, proposal in enumerate(proposals, 1):
+            rect = proposal["rect"]
+            item = QListWidgetItem(
+                f"{index}. {_PRIVATE_LABELS.get(proposal['kind'], 'Фрагмент')} "
+                f"— область {rect.x()}, {rect.y()}", self.results)
+            item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+            item.setCheckState(Qt.Checked)
+        self.results.itemChanged.connect(lambda _item: self._refresh_preview())
+        self.results.currentRowChanged.connect(self._scroll_to_choice)
+        layout.addWidget(self.results, 1)
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.Ok | QDialogButtonBox.Cancel, self)
+        buttons.button(QDialogButtonBox.Ok).setText(
+            "Закрыть выбранные области")
+        buttons.button(QDialogButtonBox.Cancel).setText("Отмена")
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+        self._refresh_preview()
+
+    def selected_rects(self) -> list[QRect]:
+        return [QRect(self.proposals[i]["rect"])
+                for i in range(self.results.count())
+                if self.results.item(i).checkState() == Qt.Checked]
+
+    def _refresh_preview(self):
+        source = self.image
+        factor = min(1.0, 850 / max(1, source.width()))
+        self.preview_scale = factor
+        size = QSize(max(1, round(source.width() * factor)),
+                     max(1, round(source.height() * factor)))
+        scaled = source.scaled(size, Qt.IgnoreAspectRatio,
+                               Qt.SmoothTransformation)
+        pixmap = QPixmap.fromImage(scaled)
+        painter = QPainter(pixmap)
+        painter.setPen(QPen(QColor("#ffbb33"), 2))
+        painter.setBrush(Qt.NoBrush)
+        for rectangle in self.selected_rects():
+            painter.drawRect(QRect(
+                round(rectangle.x() * factor),
+                round(rectangle.y() * factor),
+                max(1, round(rectangle.width() * factor)),
+                max(1, round(rectangle.height() * factor))))
+        painter.end()
+        self.preview.setPixmap(pixmap)
+        self.preview.resize(pixmap.size())
+
+    def _scroll_to_choice(self, index: int):
+        if 0 <= index < len(self.proposals):
+            rect = self.proposals[index]["rect"]
+            self.scroll.verticalScrollBar().setValue(
+                max(0, round(rect.y() * self.preview_scale) - 70))
+            self.scroll.horizontalScrollBar().setValue(
+                max(0, round(rect.x() * self.preview_scale) - 100))
+
 
 def start_ocr(img: QImage, launcher=None, history_path: Optional[Path] = None) -> None:
     """Асинхронно распознаёт текст, сохраняет OCR-индекс истории и показывает результат."""
