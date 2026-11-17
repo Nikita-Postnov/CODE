@@ -67,6 +67,113 @@ class ObjectEditingTests(unittest.TestCase):
         self.view.redo()
         self.assertEqual(len(self.view._resizable_items()), 2)
 
+    def test_private_data_detector_maps_ocr_coordinates_and_ignores_prose(self):
+        payload = {"lines": [
+            {"text": "Контакты", "x": 100, "y": 10, "width": 120,
+             "height": 14, "words": []},
+            {"text": "person@example.com", "x": 100, "y": 42,
+             "width": 190, "height": 20,
+             "words": [{"text": "person@example.com", "x": 100, "y": 42,
+                        "width": 190, "height": 20}]},
+            {"text": "+7 (912) 345-67-89", "x": 100, "y": 80,
+             "width": 200, "height": 20,
+             "words": [
+                 {"text": "+7", "x": 100, "y": 80, "width": 24, "height": 20},
+                 {"text": "(912)", "x": 132, "y": 80, "width": 48, "height": 20},
+                 {"text": "345-67-89", "x": 186, "y": 80, "width": 110, "height": 20}]},
+            {"text": "api_key: abcdef0123456789", "x": 100, "y": 122,
+             "width": 260, "height": 20,
+             "words": [
+                 {"text": "api_key:", "x": 100, "y": 122,
+                  "width": 85, "height": 20},
+                 {"text": "abcdef0123456789", "x": 195, "y": 122,
+                  "width": 170, "height": 20}]},
+            {"text": "2026-11-17", "x": 100, "y": 160,
+             "width": 90, "height": 20,
+             "words": [{"text": "2026-11-17", "x": 100, "y": 160,
+                        "width": 90, "height": 20}]},
+        ]}
+        # WinRT OCR работает с увеличенной картинкой 480x340.
+        matches = shot.find_private_data_regions(
+            payload, shot.QSize(240, 170), shot.QSize(480, 340))
+        self.assertEqual({item["kind"] for item in matches},
+                         {"email", "phone", "secret"})
+        email_rect = next(item["rect"] for item in matches
+                          if item["kind"] == "email")
+        self.assertTrue(email_rect.contains(shot.QPoint(80, 25)))
+        self.assertTrue(all(isinstance(item["rect"], shot.QRect)
+                            for item in matches))
+        self.assertTrue(all("text" not in item for item in matches))
+
+    def test_private_data_reviewer_allows_selective_masking_without_values(self):
+        image = example_image()
+        matches = [
+            {"kind": "email", "rect": shot.QRect(5, 8, 95, 20)},
+            {"kind": "phone", "rect": shot.QRect(5, 40, 95, 20)},
+        ]
+        dialog = shot.PrivateDataReviewDialog(image, matches)
+        try:
+            self.assertEqual(len(dialog.selected_rects()), 2)
+            self.assertNotIn("person@", dialog.results.item(0).text())
+            dialog.results.item(1).setCheckState(Qt.Unchecked)
+            self.assertEqual(dialog.selected_rects(),
+                             [shot.QRect(5, 8, 95, 20)])
+        finally:
+            dialog.close()
+
+    def test_private_redaction_deletes_original_pixels_and_undo_history(self):
+        original = QColor("#ee0000")
+        first = shot.QRect(25, 30, 100, 24)
+        second = shot.QRect(150, 75, 50, 35)
+        painter = shot.QPainter(self.view.bg_img)
+        painter.fillRect(first, original)
+        painter.end()
+        text_item = self.add_text("SECRET_PRIVATE_TEXT", x=25, y=30)
+        self.view.push_undo()
+        painter = shot.QPainter(self.view.ov_img)
+        painter.fillRect(second, QColor("#aa0099"))
+        painter.end()
+        self.view._refresh()
+        self.assertTrue(self.view.apply_private_redactions([first, second]))
+        self.assertEqual(len(self.view.undo_stack), 0)
+        self.assertEqual(len(self.view.redo_stack), 0)
+        self.assertFalse(self.view._resizable_items())
+        self.assertFalse(self.view.ov_img.pixelColor(155, 80).alpha())
+        self.assertEqual(self.view.bg_img.pixelColor(28, 32).name(), "#161616")
+        self.assertEqual(self.view.bg_img.pixelColor(160, 80).name(), "#161616")
+        self.assertEqual(self.view.bg_img.pixelColor(5, 5).name(), "#a1b2c3")
+        self.assertTrue(self.view.is_dirty())
+        self.view.undo()
+        self.assertEqual(self.view.bg_img.pixelColor(28, 32).name(), "#161616")
+        self.assertFalse(any(isinstance(it, shot.EditableTextItem)
+                             for it in self.view._resizable_items()))
+
+    def test_private_redaction_writes_only_redacted_project_layers(self):
+        image = QImage(240, 170, QImage.Format_ARGB32)
+        image.fill(QColor("white"))
+        view = shot.CanvasView(image)
+        self.addCleanup(view.close)
+        item = shot.EditableTextItem(
+            "VISIBLE_SECRET_9900", 17, QColor("black"))
+        item.setPos(shot.QPointF(15, 15))
+        view._scene.addItem(item)
+        mask = shot.QRect(10, 10, 220, 45)
+        self.assertTrue(view.apply_private_redactions([mask]))
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "redacted.npshot"
+            self.assertTrue(shot.save_editable_project(target, view))
+            with __import__("zipfile").ZipFile(target) as archive:
+                self.assertNotIn(b"VISIBLE_SECRET_9900",
+                                 archive.read("project.json"))
+            bg, ov, shapes, _ = shot.load_editable_project(target)
+            self.assertFalse(shapes)
+            self.assertEqual(bg.pixelColor(32, 22).name(), "#161616")
+            self.assertEqual(ov.pixelColor(32, 22).alpha(), 0)
+            png = Path(tmp) / "public.png"
+            self.assertTrue(view.save_rendered_image(png))
+            self.assertEqual(QImage(str(png)).pixelColor(32, 22).name(),
+                             "#161616")
+
     def test_multiline_edit_dialog_has_fonts_styles_alignment_and_autofit(self):
         item = self.add_text("Первая строка")
         dlg = shot.TextEditorDialog(item, self.view)
