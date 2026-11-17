@@ -108,6 +108,7 @@ from PySide6.QtWidgets import (
     QSpinBox,
     QLineEdit,
     QPlainTextEdit,
+    QFontComboBox,
 )
 
 log = logging.getLogger(__name__)
@@ -456,12 +457,19 @@ def _validate_project_records(records: list) -> list:
                                or not isinstance(rec["width"], int)
                                or not 1 <= rec["width"] <= 200):
             raise ValueError("Неверная стрелка")
-        if typ == "text" and (not isinstance(rec["text"], str) or
-                              len(rec["text"]) > 100_000 or
-                              not isinstance(rec["font_size"], int) or
-                              not 5 <= rec["font_size"] <= 300 or
-                              not isinstance(rec["color"], int)):
-            raise ValueError("Неверный текст")
+        if typ == "text":
+            if (not isinstance(rec["text"], str) or
+                    len(rec["text"]) > 100_000 or
+                    not isinstance(rec["font_size"], int) or
+                    not 5 <= rec["font_size"] <= 300 or
+                    not isinstance(rec["color"], int) or
+                    not isinstance(rec.get("font_family", ""), str) or
+                    len(rec.get("font_family", "")) > 120 or
+                    not isinstance(rec.get("bold", False), bool) or
+                    not isinstance(rec.get("italic", False), bool) or
+                    rec.get("alignment", "left") not in ("left", "center", "right") or
+                    not isinstance(rec.get("auto_fit", True), bool)):
+                raise ValueError("Неверные параметры текста")
         if typ == "sticker":
             raw = rec["pix"]
             if not isinstance(raw, str) or len(raw) > 40_000_000:
@@ -1812,42 +1820,164 @@ class ResizableRectItem(QGraphicsItem, _HandleMixin):
 
 
 
-class EditableTextItem(ResizableRectItem):
-    """Редактируемый и масштабируемый текстовый объект."""
+class TextEditorDialog(QDialog):
+    """Многострочный ввод с типографикой; одинаков для создания и правки."""
 
-    def __init__(self, text: str, font_size: int, color: QColor):
+    def __init__(self, item: Optional["EditableTextItem"] = None, parent=None,
+                 default_size: int = 18):
+        super().__init__(parent)
+        self.setWindowTitle("Редактирование текста" if item else "Добавить текст")
+        self.resize(520, 430)
+        layout = QVBoxLayout(self)
+
+        self.text_edit = QPlainTextEdit(self)
+        self.text_edit.setObjectName("np_text_multiline")
+        self.text_edit.setPlaceholderText("Введите текст. Enter — новая строка.")
+        self.text_edit.setPlainText(item.text if item else "")
+        self.text_edit.setMinimumHeight(160)
+        layout.addWidget(self.text_edit, 1)
+
+        options = QFormLayout()
+        self.family_combo = QFontComboBox(self)
+        self.family_combo.setObjectName("np_text_font_family")
+        self.family_combo.setCurrentFont(QFont(item.font_family) if item
+                                         else QFont())
+        options.addRow("Шрифт:", self.family_combo)
+
+        self.size_box = QSpinBox(self)
+        self.size_box.setObjectName("np_text_font_size")
+        self.size_box.setRange(5, 300)
+        self.size_box.setValue(item.font_size if item else
+                               max(8, min(300, int(default_size))))
+        options.addRow("Размер, pt:", self.size_box)
+
+        style_row = QHBoxLayout()
+        self.bold_check = QCheckBox("Полужирный", self)
+        self.bold_check.setChecked(item.bold if item else False)
+        self.italic_check = QCheckBox("Курсив", self)
+        self.italic_check.setChecked(item.italic if item else False)
+        style_row.addWidget(self.bold_check)
+        style_row.addWidget(self.italic_check)
+        style_row.addStretch(1)
+        options.addRow("Начертание:", style_row)
+
+        self.align_combo = QComboBox(self)
+        for label, key in (("По левому краю", "left"),
+                           ("По центру", "center"),
+                           ("По правому краю", "right")):
+            self.align_combo.addItem(label, key)
+        if item is not None:
+            index = self.align_combo.findData(item.alignment)
+            self.align_combo.setCurrentIndex(max(0, index))
+        options.addRow("Выравнивание:", self.align_combo)
+
+        self.auto_fit_check = QCheckBox("Подгонять размеры блока под текст", self)
+        self.auto_fit_check.setChecked(item.auto_fit if item else True)
+        self.auto_fit_check.setToolTip(
+            "При включении рамка автоматически увеличивается под абзацы. "
+            "Перетаскивание маркеров размера переключает на ручной режим.")
+        options.addRow("Размер блока:", self.auto_fit_check)
+        layout.addLayout(options)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.Ok | QDialogButtonBox.Cancel, self)
+        buttons.button(QDialogButtonBox.Ok).setText(
+            "Применить" if item else "Добавить")
+        buttons.button(QDialogButtonBox.Cancel).setText("Отмена")
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def accept(self):
+        text = self.text_edit.toPlainText()
+        if not text.strip() or len(text) > 100_000:
+            QMessageBox.warning(
+                self, "Текст", "Введи текст длиной от 1 до 100 000 символов.")
+            return
+        super().accept()
+
+    def values(self) -> dict:
+        return {
+            "text": self.text_edit.toPlainText(),
+            "font_size": self.size_box.value(),
+            "font_family": self.family_combo.currentFont().family(),
+            "bold": self.bold_check.isChecked(),
+            "italic": self.italic_check.isChecked(),
+            "alignment": self.align_combo.currentData(),
+            "auto_fit": self.auto_fit_check.isChecked(),
+        }
+
+
+class EditableTextItem(ResizableRectItem):
+    """Редактируемый текст: абзацы, переносы, шрифт и ручная рамка."""
+
+    def __init__(self, text: str, font_size: int, color: QColor, *,
+                 font_family: str = "", bold: bool = False,
+                 italic: bool = False, alignment: str = "left",
+                 auto_fit: bool = True):
         self.text = text
-        self.font_size = font_size
+        self.font_size = int(font_size)
         self.text_color = QColor(color)
-        font = QFont()
-        font.setPointSize(font_size)
-        metrics = QFontMetrics(font)
-        width = max(30, metrics.horizontalAdvance(text) + 12)
-        height = max(28, metrics.height() + 12)
-        super().__init__(QRectF(0, 0, width, height), QPen(Qt.NoPen), Qt.NoBrush)
+        self.font_family = font_family or QFont().family()
+        self.bold = bool(bold)
+        self.italic = bool(italic)
+        self.alignment = alignment if alignment in ("left", "center", "right") else "left"
+        self.auto_fit = bool(auto_fit)
+        super().__init__(QRectF(0, 0, 80, 30), QPen(Qt.NoPen), Qt.NoBrush)
+        self.fit_content()
+
+    def _font(self) -> QFont:
+        font = QFont(self.font_family)
+        font.setPointSize(self.font_size)
+        font.setBold(self.bold)
+        font.setItalic(self.italic)
+        return font
+
+    def _text_flags(self):
+        alignment = {"left": Qt.AlignLeft, "center": Qt.AlignHCenter,
+                     "right": Qt.AlignRight}[self.alignment]
+        return alignment | Qt.AlignTop | Qt.TextWordWrap
+
+    def fit_content(self, max_width: Optional[int] = None) -> None:
+        """Подбор габаритов по реальному QFontMetrics без обрезанных абзацев."""
+        if not self.auto_fit:
+            return
+        metrics = QFontMetrics(self._font())
+        lines = self.text.split("\n") or [""]
+        longest = max(metrics.horizontalAdvance(line.expandtabs(4))
+                      for line in lines)
+        limit = max(80, min(700, int(max_width) if max_width else 700))
+        width = min(limit, max(80, longest + 18))
+        bounds = metrics.boundingRect(
+            QRect(0, 0, max(1, width - 12), 100000),
+            self._text_flags(), self.text or " ")
+        height = max(30, min(100000, bounds.height() + 14))
+        self.prepareGeometryChange()
+        self._rect = QRectF(self._rect.x(), self._rect.y(), width, height)
+        self.update()
+
+    def mouseReleaseEvent(self, e):
+        resizing = bool(self._resize_handle and e.button() == Qt.LeftButton)
+        super().mouseReleaseEvent(e)
+        if resizing:
+            self.auto_fit = False
+
+    def _draw_text(self, painter: QPainter, rect: QRectF):
+        painter.save()
+        painter.setRenderHint(QPainter.TextAntialiasing, True)
+        painter.setFont(self._font())
+        painter.setPen(self.text_color)
+        painter.drawText(rect.adjusted(6, 4, -6, -4),
+                         self._text_flags(), self.text)
+        painter.restore()
 
     def paint(self, painter: QPainter, option, widget=None):
-        painter.setRenderHint(QPainter.TextAntialiasing, True)
-        font = QFont()
-        font.setPointSize(self.font_size)
-        painter.setFont(font)
-        painter.setPen(self.text_color)
-        painter.drawText(self._rect.adjusted(6, 2, -3, -2),
-                         Qt.AlignLeft | Qt.AlignVCenter | Qt.TextWordWrap, self.text)
+        self._draw_text(painter, self._rect)
         if self._show_handles:
             super().paint(painter, option, widget)
 
     def rasterize_to(self, painter: QPainter):
-        painter.save()
-        painter.setRenderHint(QPainter.TextAntialiasing, True)
-        font = QFont()
-        font.setPointSize(self.font_size)
-        painter.setFont(font)
-        painter.setPen(self.text_color)
-        rect = self.mapRectToScene(self._rect.adjusted(6, 2, -3, -2))
-        painter.drawText(rect, Qt.AlignLeft | Qt.AlignVCenter | Qt.TextWordWrap, self.text)
-        painter.restore()
-
+        self._draw_text(painter, self.mapRectToScene(self._rect))
 
 
 class ResizableEllipseItem(ResizableRectItem):
@@ -2220,6 +2350,7 @@ class CanvasView(QGraphicsView):
 
         if isinstance(it, EditableTextItem):
             return ("text", it.text, it.font_size, int(it.text_color.rgba()),
+                    it.font_family, it.bold, it.italic, it.alignment, it.auto_fit,
                     float(it.pos().x()), float(it.pos().y()),
                     float(it._rect.width()), float(it._rect.height()), float(it.zValue()))
 
@@ -2349,6 +2480,9 @@ class CanvasView(QGraphicsView):
                     "type": "text",
                     "text": it.text, "font_size": int(it.font_size),
                     "color": int(it.text_color.rgba()),
+                    "font_family": it.font_family, "bold": it.bold,
+                    "italic": it.italic, "alignment": it.alignment,
+                    "auto_fit": it.auto_fit,
                     "pos": (float(it.pos().x()), float(it.pos().y())),
                     "rect": (float(it._rect.x()), float(it._rect.y()),
                              float(it._rect.width()), float(it._rect.height())),
@@ -2404,8 +2538,12 @@ class CanvasView(QGraphicsView):
         for d in snap:
             t = d.get("type")
             if t == "text":
-                item = EditableTextItem(d["text"], int(d["font_size"]),
-                                        QColor.fromRgba(int(d["color"])))
+                item = EditableTextItem(
+                    d["text"], int(d["font_size"]), QColor.fromRgba(int(d["color"])),
+                    font_family=d.get("font_family", ""),
+                    bold=d.get("bold", False), italic=d.get("italic", False),
+                    alignment=d.get("alignment", "left"),
+                    auto_fit=d.get("auto_fit", True))
                 x, y, w, h = d["rect"]
                 item._rect = QRectF(x, y, w, h)
                 px, py = d["pos"]
@@ -2679,6 +2817,7 @@ class CanvasView(QGraphicsView):
                 item.text_color = QColor(color)
             if font_size is not None:
                 item.font_size = font_size
+                item.fit_content()
         elif isinstance(item, ResizableArrowItem):
             if color is not None:
                 item._color = QColor(color)
@@ -3068,11 +3207,18 @@ class CanvasView(QGraphicsView):
                 e.accept()
                 return
             elif self.tool == Tool.TEXT:
-                text, ok = QInputDialog.getText(self, "Текст", "Введите текст:")
-                if ok and text:
+                dialog = TextEditorDialog(
+                    parent=self, default_size=max(8, int(self.thickness * 3)))
+                if dialog.exec() == QDialog.Accepted:
                     self.push_undo()
-                    item = EditableTextItem(text, max(8, int(self.thickness * 3)),
-                                            self.color)
+                    params = dialog.values()
+                    item = EditableTextItem(
+                        params["text"], params["font_size"], self.color,
+                        font_family=params["font_family"], bold=params["bold"],
+                        italic=params["italic"], alignment=params["alignment"],
+                        auto_fit=params["auto_fit"])
+                    if item.auto_fit:
+                        item.fit_content(max_width=max(80, self.bg_img.width() - img_pos.x() - 8))
                     item.setPos(QPointF(img_pos))
                     item.setZValue(2)
                     self._scene.addItem(item)
@@ -3581,12 +3727,18 @@ class CanvasView(QGraphicsView):
             if not items:
                 return False
             item = items[0]
-        text, ok = QInputDialog.getText(self, "Изменить текст", "Надпись:",
-                                        text=item.text)
-        if not ok or not text or text == item.text:
+        dialog = TextEditorDialog(item=item, parent=self)
+        if dialog.exec() != QDialog.Accepted:
+            return False
+        params = dialog.values()
+        changed = any(getattr(item, key) != value for key, value in params.items())
+        if not changed:
             return False
         self.push_undo()
-        item.text = text
+        for key, value in params.items():
+            setattr(item, key, value)
+        item.fit_content(max_width=max(80, self.bg_img.width() -
+                                            int(item.scenePos().x()) - 8))
         item.update()
         self.viewport().update()
         return True

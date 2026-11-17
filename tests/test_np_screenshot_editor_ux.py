@@ -67,6 +67,88 @@ class ObjectEditingTests(unittest.TestCase):
         self.view.redo()
         self.assertEqual(len(self.view._resizable_items()), 2)
 
+    def test_multiline_edit_dialog_has_fonts_styles_alignment_and_autofit(self):
+        item = self.add_text("Первая строка")
+        dlg = shot.TextEditorDialog(item, self.view)
+        try:
+            self.assertEqual(dlg.text_edit.toPlainText(), "Первая строка")
+            dlg.text_edit.setPlainText("Первая строка\nВторая строка")
+            dlg.size_box.setValue(27)
+            dlg.bold_check.setChecked(True)
+            dlg.italic_check.setChecked(True)
+            dlg.align_combo.setCurrentIndex(dlg.align_combo.findData("right"))
+            values = dlg.values()
+            self.assertIn("\n", values["text"])
+            self.assertEqual(values["font_size"], 27)
+            self.assertTrue(values["bold"])
+            self.assertTrue(values["italic"])
+            self.assertEqual(values["alignment"], "right")
+            self.assertTrue(values["auto_fit"])
+        finally:
+            dlg.close()
+
+    def test_apply_multiline_text_and_style_can_undo(self):
+        item = self.add_text("Начало")
+        original_height = item._rect.height()
+        def edit(dialog):
+            dialog.text_edit.setPlainText("Заголовок\nПодробный комментарий")
+            dialog.size_box.setValue(25)
+            dialog.bold_check.setChecked(True)
+            dialog.align_combo.setCurrentIndex(
+                dialog.align_combo.findData("center"))
+            return shot.QDialog.Accepted
+        with patch.object(shot.TextEditorDialog, "exec", new=edit):
+            self.assertTrue(self.view.edit_selected_text(item))
+        self.assertIn("\n", item.text)
+        self.assertTrue(item.bold)
+        self.assertEqual(item.alignment, "center")
+        self.assertGreater(item._rect.height(), original_height)
+        self.view.undo()
+        reverted = next(obj for obj in self.view._resizable_items()
+                        if isinstance(obj, shot.EditableTextItem))
+        self.assertEqual(reverted.text, "Начало")
+        self.assertFalse(reverted.bold)
+        self.view.redo()
+        redone = next(obj for obj in self.view._resizable_items()
+                      if isinstance(obj, shot.EditableTextItem))
+        self.assertIn("\n", redone.text)
+        self.assertEqual(redone.alignment, "center")
+
+    def test_multiline_raster_export_uses_alignment_and_keeps_two_lines(self):
+        item = shot.EditableTextItem(
+            "Первая строка\nВторая", 19, QColor("#112233"),
+            alignment="left", auto_fit=False)
+        item._rect = QRectF(0, 0, 280, 105)
+
+        def painted():
+            canvas = QImage(300, 125, QImage.Format_ARGB32)
+            canvas.fill(QColor("white"))
+            painter = shot.QPainter(canvas)
+            item.rasterize_to(painter)
+            painter.end()
+            pixels = [(x, y) for y in range(125) for x in range(300)
+                      if canvas.pixelColor(x, y) != QColor("white")]
+            self.assertTrue(pixels)
+            return pixels
+
+        left_pixels = painted()
+        item.alignment = "right"
+        right_pixels = painted()
+        self.assertGreater(min(x for x, y in right_pixels),
+                           min(x for x, y in left_pixels) + 40)
+        self.assertGreater(max(y for x, y in right_pixels) -
+                           min(y for x, y in right_pixels), 25)
+
+    def test_dialog_cancel_does_not_dirty_clean_editor(self):
+        item = self.add_text("Без изменений")
+        self.view.mark_clean()
+        previous = len(self.view.undo_stack)
+        with patch.object(shot.TextEditorDialog, "exec",
+                          return_value=shot.QDialog.Rejected):
+            self.assertFalse(self.view.edit_selected_text(item))
+        self.assertEqual(len(self.view.undo_stack), previous)
+        self.assertFalse(self.view.is_dirty())
+
     def test_copy_sticker_remains_editable(self):
         sticker = shot.StickerItem(QPixmap.fromImage(example_image()), self.view.bg_img.size())
         self.view._scene.addItem(sticker)
@@ -169,7 +251,11 @@ class ObjectEditingTests(unittest.TestCase):
         self.view.show()
         QTest.qWait(20)
         point = self.view.mapFromScene(item.sceneBoundingRect().center())
-        with patch.object(shot.QInputDialog, "getText", return_value=("После", True)):
+        def edit(dialog):
+            dialog.text_edit.setPlainText("После")
+            return shot.QDialog.Accepted
+
+        with patch.object(shot.TextEditorDialog, "exec", new=edit):
             QTest.mouseDClick(self.view.viewport(), Qt.LeftButton, pos=point)
         self.assertEqual(item.text, "После")
 

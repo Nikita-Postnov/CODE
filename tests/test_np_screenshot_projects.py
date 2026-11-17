@@ -92,7 +92,11 @@ class ProjectTests(unittest.TestCase):
         self.view._scene.addItem(item)
         self.view.set_tool(shot.Tool.PAN)
         item.setSelected(True)
-        with patch.object(shot.QInputDialog, "getText", return_value=("Новый текст", True)):
+        def edit(dialog):
+            dialog.text_edit.setPlainText("Новый текст")
+            return shot.QDialog.Accepted
+
+        with patch.object(shot.TextEditorDialog, "exec", new=edit):
             self.assertTrue(self.view.edit_selected_text())
         self.assertEqual(item.text, "Новый текст")
         self.assertEqual(len(self.view.undo_stack), 1)
@@ -104,6 +108,64 @@ class ProjectTests(unittest.TestCase):
         self.assertEqual(
             next(it.text for it in self.view._scene.items()
                  if isinstance(it, shot.EditableTextItem)), "Новый текст")
+
+    def test_multiline_typography_and_autofit_survive_project_roundtrip(self):
+        item = shot.EditableTextItem(
+            "Первая строка\nВторая строка с длинной подписью",
+            22, QColor("#114488"), font_family="Arial",
+            bold=True, italic=True, alignment="center", auto_fit=True)
+        item.setPos(QPointF(17, 27))
+        self.view._scene.addItem(item)
+        self.assertGreater(item._rect.height(), 65)
+        self.assertTrue(shot.save_editable_project(
+            self.folder / "rich_text.npshot", self.view))
+        bg, ov, objects, count = shot.load_editable_project(
+            self.folder / "rich_text.npshot")
+        record = next(o for o in objects if o["type"] == "text")
+        self.assertIn("\n", record["text"])
+        self.assertEqual(record["font_family"], "Arial")
+        self.assertTrue(record["bold"])
+        self.assertTrue(record["italic"])
+        self.assertEqual(record["alignment"], "center")
+        self.assertTrue(record["auto_fit"])
+        restored = shot.CanvasView(bg)
+        self.addCleanup(restored.close)
+        restored._restore_scene(objects)
+        text_item = next(o for o in restored._resizable_items()
+                         if isinstance(o, shot.EditableTextItem))
+        self.assertEqual(text_item.text, item.text)
+        self.assertEqual(text_item.alignment, "center")
+        self.assertEqual(text_item._rect.height(), item._rect.height())
+        self.assertEqual(text_item._font().family(), "Arial")
+
+    def test_old_project_text_without_new_fields_still_opens(self):
+        legacy = shot.EditableTextItem("Наследуемый текст", 16, QColor("#114488"))
+        self.view._scene.addItem(legacy)
+        output = self.folder / "legacy.npshot"
+        self.assertTrue(shot.save_editable_project(output, self.view))
+        import json
+        import zipfile
+        with zipfile.ZipFile(output, "r") as archive:
+            data = {name: archive.read(name) for name in archive.namelist()}
+        manifest = json.loads(data["project.json"])
+        rec = next(item for item in manifest["items"]
+                   if item["type"] == "text")
+        for key in ("font_family", "bold", "italic", "alignment", "auto_fit"):
+            rec.pop(key, None)
+        data["project.json"] = json.dumps(manifest).encode("utf-8")
+        with zipfile.ZipFile(output, "w") as archive:
+            for name, content in data.items():
+                archive.writestr(name, content)
+        bg, ov, objects, count = shot.load_editable_project(output)
+        restored = shot.CanvasView(bg)
+        self.addCleanup(restored.close)
+        restored._restore_scene(objects)
+        text_item = next(it for it in restored._resizable_items()
+                         if isinstance(it, shot.EditableTextItem))
+        self.assertEqual(text_item.text, "Наследуемый текст")
+        self.assertEqual(text_item.alignment, "left")
+        self.assertFalse(text_item.bold)
+        self.assertTrue(text_item.auto_fit)
 
     def test_atomic_save_failure_keeps_original_archive(self):
         target = self.folder / "existing.npshot"
