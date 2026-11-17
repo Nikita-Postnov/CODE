@@ -7969,6 +7969,31 @@ class ScreenshotHistoryListWidget(QListWidget):
 class ScreenshotHistoryCardWidget(QWidget):
     """Карточка истории с миниатюрой, временем и компактной меткой типа."""
 
+    KIND_LABELS = {
+        "shot": "Снимок",
+        "quick": "Быстрый захват",
+        "scroll": "Длинный скриншот",
+        "window": "Окно",
+    }
+    KIND_STYLES = {
+        "shot": (
+            "QLabel { background: #3b3b3b; color: #e5e7eb; "
+            "border: 1px solid #555555; border-radius: 8px; "
+            "padding: 2px 8px; font-size: 10px; font-weight: 600; }"),
+        "quick": (
+            "QLabel { background: #45246b; color: #e9d5ff; "
+            "border: 1px solid #8b5cf6; border-radius: 8px; "
+            "padding: 2px 8px; font-size: 10px; font-weight: 600; }"),
+        "scroll": (
+            "QLabel { background: #173b59; color: #bfdbfe; "
+            "border: 1px solid #3b82f6; border-radius: 8px; "
+            "padding: 2px 8px; font-size: 10px; font-weight: 600; }"),
+        "window": (
+            "QLabel { background: #174a3a; color: #bbf7d0; "
+            "border: 1px solid #22c55e; border-radius: 8px; "
+            "padding: 2px 8px; font-size: 10px; font-weight: 600; }"),
+    }
+
     def __init__(self, preview: QImage, capture_time: str,
                  kind_label: str, kind_style: str, parent=None):
         super().__init__(parent)
@@ -8148,32 +8173,9 @@ class ScreenshotHistoryDialog(QDialog):
                 else:
                     capture_time = time.strftime(
                         "%H:%M:%S", time.localtime(_modified))
-                kind_labels = {
-                    "shot": "Снимок",
-                    "quick": "Быстрый захват",
-                    "scroll": "Длинный скриншот",
-                    "window": "Окно",
-                }
-                kind_styles = {
-                    "shot": (
-                        "QLabel { background: #3b3b3b; color: #e5e7eb; "
-                        "border: 1px solid #555555; border-radius: 8px; "
-                        "padding: 2px 8px; font-size: 10px; font-weight: 600; }"),
-                    "quick": (
-                        "QLabel { background: #45246b; color: #e9d5ff; "
-                        "border: 1px solid #8b5cf6; border-radius: 8px; "
-                        "padding: 2px 8px; font-size: 10px; font-weight: 600; }"),
-                    "scroll": (
-                        "QLabel { background: #173b59; color: #bfdbfe; "
-                        "border: 1px solid #3b82f6; border-radius: 8px; "
-                        "padding: 2px 8px; font-size: 10px; font-weight: 600; }"),
-                    "window": (
-                        "QLabel { background: #174a3a; color: #bbf7d0; "
-                        "border: 1px solid #22c55e; border-radius: 8px; "
-                        "padding: 2px 8px; font-size: 10px; font-weight: 600; }"),
-                }
                 kind = metadata["kind"]
-                kind_label = kind_labels.get(kind, kind_labels["shot"])
+                kind_label = ScreenshotHistoryCardWidget.KIND_LABELS.get(
+                    kind, ScreenshotHistoryCardWidget.KIND_LABELS["shot"])
                 entry = QListWidgetItem(prefix + capture_time)
                 entry.setSizeHint(QSize(190, 154))
                 entry.setToolTip(
@@ -8188,7 +8190,8 @@ class ScreenshotHistoryDialog(QDialog):
                 self.items.addItem(entry)
                 card = ScreenshotHistoryCardWidget(
                     preview, capture_time, kind_label,
-                    kind_styles.get(kind, kind_styles["shot"]))
+                    ScreenshotHistoryCardWidget.KIND_STYLES.get(
+                        kind, ScreenshotHistoryCardWidget.KIND_STYLES["shot"]))
                 self.items.setItemWidget(entry, card)
                 if first_item is None or (selected is not None and path == selected):
                     first_item = entry
