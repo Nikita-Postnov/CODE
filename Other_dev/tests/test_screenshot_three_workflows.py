@@ -728,23 +728,25 @@ class ScreenshotThreeWorkflowsTests(unittest.TestCase):
             layout = group.layout()
             self.assertIsInstance(layout, QGridLayout)
             self.assertEqual(layout.itemAtPosition(0, 0).widget().text(),
+                             "Без редактора")
+            self.assertEqual(layout.itemAtPosition(1, 0).widget().text(),
                              "В буфер обмена")
-            self.assertEqual(layout.itemAtPosition(0, 1).widget().text(),
+            self.assertEqual(layout.itemAtPosition(1, 1).widget().text(),
                              "В файл PNG")
             expected = (
-                (1, 0, "np_quick_new_copy", "Выбрать область"),
-                (1, 1, "np_quick_new_save", "Выбрать область"),
-                (2, 0, "np_quick_repeat_copy", "Повторить область"),
-                (2, 1, "np_quick_repeat_save", "Повторить область"),
-                (4, 0, "np_quick_new_edit", "Выбрать область"),
-                (4, 1, "np_quick_repeat_edit", "Повторить область"),
+                (2, 0, "np_quick_new_copy", "Выбрать область"),
+                (2, 1, "np_quick_new_save", "Выбрать область"),
+                (3, 0, "np_quick_repeat_copy", "Повторить область"),
+                (3, 1, "np_quick_repeat_save", "Повторить область"),
+                (5, 0, "np_quick_new_edit", "Выбрать область"),
+                (5, 1, "np_quick_repeat_edit", "Повторить область"),
             )
             for row, column, name, label in expected:
                 button = layout.itemAtPosition(row, column).widget()
                 self.assertIsInstance(button, QPushButton)
                 self.assertEqual(button.objectName(), name)
                 self.assertEqual(button.text(), label)
-            self.assertEqual(layout.itemAtPosition(3, 0).widget().text(),
+            self.assertEqual(layout.itemAtPosition(4, 0).widget().text(),
                              "В редактор")
             with patch.object(window, "quick_new_area") as select, \
                  patch.object(window, "quick_repeat") as repeat:
@@ -760,12 +762,13 @@ class ScreenshotThreeWorkflowsTests(unittest.TestCase):
             window.close()
 
     def test_quick_capture_headers_are_visually_distinct_from_buttons(self):
-        """Три заголовка имеют повышенный шрифт и цветной стиль, кнопки — нет."""
+        """Все четыре внутренних заголовка выделены, кнопки — нет."""
         with patch.object(Launcher, "_init_tray"), \
              patch.object(Launcher, "_install_global_hotkey"):
             window = Launcher()
         try:
             stylesheet = window.styleSheet()
+            self.assertIn("QLabel#np_quick_no_editor_header,", stylesheet)
             self.assertIn("QLabel#np_quick_clipboard_header,", stylesheet)
             self.assertIn("QLabel#np_quick_file_header,", stylesheet)
             self.assertIn("QLabel#np_quick_editor_header {", stylesheet)
@@ -774,13 +777,13 @@ class ScreenshotThreeWorkflowsTests(unittest.TestCase):
                           stylesheet)
             group = window.findChild(QGroupBox, "np_quick_capture_group")
             self.assertIsNotNone(group)
-            for name in ("np_quick_clipboard_header",
+            for name in ("np_quick_no_editor_header", "np_quick_clipboard_header",
                          "np_quick_file_header", "np_quick_editor_header"):
                 title = group.findChild(QLabel, name)
                 self.assertIsNotNone(title, name)
                 self.assertTrue(title.font().bold(), name)
                 self.assertGreaterEqual(title.font().pointSize(), 11)
-                self.assertGreaterEqual(title.minimumHeight(), 28)
+                self.assertGreaterEqual(title.minimumHeight(), 24)
                 self.assertEqual(title.alignment(), Qt.AlignCenter)
             # Qt учитывает и явный отступ, и padding из stylesheet.
             self.assertGreaterEqual(
@@ -790,6 +793,35 @@ class ScreenshotThreeWorkflowsTests(unittest.TestCase):
             self.assertIn("border: 1px solid transparent;", stylesheet)
             self.assertNotIn(
                 "border: 1px solid #397bd2;", stylesheet)
+        finally:
+            window.close()
+
+    def test_main_group_titles_use_subtle_accent_compared_to_quick_headers(self):
+        with patch.object(Launcher, "_init_tray"), \
+             patch.object(Launcher, "_install_global_hotkey"):
+            window = Launcher()
+        try:
+            style = window.styleSheet()
+            self.assertIn("QGroupBox::title {", style)
+            self.assertIn("color: #a9b9ce;", style)
+            self.assertIn("background-color: rgba(57, 123, 210, 20);", style)
+            self.assertIn("border-left: 2px solid #6384b2;", style)
+            self.assertIn("QLabel#np_quick_no_editor_header,", style)
+            for title in ("Захват", "Быстрый захват", "Запись экрана",
+                          "Изображения и проекты", "Библиотека и подключение"):
+                groups = [g for g in window.findChildren(QGroupBox)
+                          if g.title() == title]
+                self.assertEqual(len(groups), 1, title)
+            quick = window.findChild(QGroupBox, "np_quick_capture_group")
+            layout = quick.layout()
+            no_editor = quick.findChild(QLabel, "np_quick_no_editor_header")
+            self.assertIs(layout.itemAtPosition(0, 0).widget(), no_editor)
+            self.assertEqual(layout.getItemPosition(
+                layout.indexOf(no_editor)), (0, 0, 1, 2))
+            self.assertEqual(layout.getItemPosition(
+                layout.indexOf(quick.findChild(
+                    QLabel, "np_quick_editor_header"))), (4, 0, 1, 2))
+            self.assertIn("QGroupBox QPushButton:hover {", style)
         finally:
             window.close()
 

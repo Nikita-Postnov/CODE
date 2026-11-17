@@ -7972,7 +7972,7 @@ class Launcher(QMainWindow):
         quick_grid = QGridLayout(quick_group)
         quick_grid.setContentsMargins(8, 8, 8, 6)
         quick_grid.setHorizontalSpacing(6)
-        quick_grid.setVerticalSpacing(3)
+        quick_grid.setVerticalSpacing(2)
         quick_grid.setColumnStretch(0, 1)
         quick_grid.setColumnStretch(1, 1)
 
@@ -7982,20 +7982,25 @@ class Launcher(QMainWindow):
             font.setWeight(QFont.DemiBold)
             font.setPointSize(max(11, font.pointSize() + 1))
             label.setFont(font)
-            label.setMinimumHeight(28)
+            label.setMinimumHeight(24)
             label.setAlignment(Qt.AlignCenter)
             if separate_section:
                 label.setContentsMargins(0, 3, 0, 0)
 
+        no_editor_title = QLabel("Без редактора", quick_group)
+        no_editor_title.setObjectName("np_quick_no_editor_header")
+        quick_heading(no_editor_title)
+        quick_grid.addWidget(no_editor_title, 0, 0, 1, 2)
+
         clipboard_title = QLabel("В буфер обмена", quick_group)
         clipboard_title.setObjectName("np_quick_clipboard_header")
         quick_heading(clipboard_title)
-        quick_grid.addWidget(clipboard_title, 0, 0)
+        quick_grid.addWidget(clipboard_title, 1, 0)
 
         file_title = QLabel("В файл PNG", quick_group)
         file_title.setObjectName("np_quick_file_header")
         quick_heading(file_title)
-        quick_grid.addWidget(file_title, 0, 1)
+        quick_grid.addWidget(file_title, 1, 1)
 
         for row, (label, actions) in enumerate((
             ("Выбрать область", (
@@ -8006,11 +8011,11 @@ class Launcher(QMainWindow):
                 ("copy", lambda: self.quick_repeat("copy")),
                 ("save", lambda: self.quick_repeat("save")),
             )),
-        ), start=1):
+        ), start=2):
             for column, (destination, callback) in enumerate(actions):
                 button = action_button(label, callback)
                 button.setObjectName(
-                    f"np_quick_{'new' if row == 1 else 'repeat'}_{destination}")
+                    f"np_quick_{'new' if row == 2 else 'repeat'}_{destination}")
                 button.setToolTip(
                     f"{label} и " +
                     ("скопировать снимок" if destination == "copy"
@@ -8020,7 +8025,7 @@ class Launcher(QMainWindow):
         editor_title = QLabel("В редактор", quick_group)
         editor_title.setObjectName("np_quick_editor_header")
         quick_heading(editor_title, separate_section=True)
-        quick_grid.addWidget(editor_title, 3, 0, 1, 2)
+        quick_grid.addWidget(editor_title, 4, 0, 1, 2)
         for column, (label, callback, name) in enumerate((
             ("Выбрать область", lambda: self.quick_new_area("edit"),
              "np_quick_new_edit"),
@@ -8030,7 +8035,7 @@ class Launcher(QMainWindow):
             button = action_button(label, callback)
             button.setObjectName(name)
             button.setToolTip("Открыть снимок в редакторе")
-            quick_grid.addWidget(button, 4, column)
+            quick_grid.addWidget(button, 5, column)
         v.addWidget(quick_group)
         self.quick_region_label = QLabel(self)
         self.quick_region_label.setObjectName("np_quick_region_status")
@@ -8107,13 +8112,21 @@ class Launcher(QMainWindow):
                 padding-top: 3px;
                 font-weight: 600;
             }
+            /* Названия основных разделов: тонкий акцент, заметно слабее
+               плашек операций. Не увеличиваем занимаемую высоту. */
             QGroupBox::title {
                 subcontrol-origin: margin;
                 left: 12px;
-                padding: 0 5px;
+                color: #a9b9ce;
+                background-color: rgba(57, 123, 210, 20);
+                border-left: 2px solid #6384b2;
+                border-radius: 3px;
+                padding: 0 6px;
+                font-weight: 600;
             }
             /* Заголовки назначения в быстром захвате — не кнопки.
                Цвет, плотность и вертикальный акцент отделяют их от действий. */
+            QLabel#np_quick_no_editor_header,
             QLabel#np_quick_clipboard_header,
             QLabel#np_quick_file_header,
             QLabel#np_quick_editor_header {
