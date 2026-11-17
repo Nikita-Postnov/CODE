@@ -213,6 +213,106 @@ class WindowRecordGuiTests(unittest.TestCase):
         finally:
             hud.close()
 
+    def test_recording_quality_and_fps_control_ffmpeg_for_area_and_window(self):
+        with patch.object(shot, "ffmpeg_path", return_value="ffmpeg.exe"), \
+             patch.object(shot, "_physical_rect",
+                          return_value=(0, 0, 640, 480)), \
+             patch.object(shot.sys, "platform", "win32"):
+            for key, expected in (("high", "17"), ("standard", "20"),
+                                  ("compact", "25")):
+                for cmd in (
+                    shot.build_record_cmd(
+                        "clip.mp4", QRect(0, 0, 640, 480), 60,
+                        "none", None, draw_mouse=False, quality=key),
+                    shot.build_window_record_cmd(
+                        "clip.mp4", 38120, 60,
+                        "none", None, draw_mouse=False, quality=key),
+                ):
+                    self.assertEqual(cmd[cmd.index("-crf") + 1], expected)
+                    self.assertEqual(cmd[cmd.index("-framerate") + 1], "60")
+                    self.assertEqual(cmd[cmd.index("-draw_mouse") + 1], "0")
+            with self.assertRaises(ValueError):
+                shot.build_record_cmd(
+                    "clip.mp4", QRect(0, 0, 640, 480), 30,
+                    "none", None, quality="invalid")
+
+    def test_recording_settings_persist_and_reject_invalid_values(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as folder, \
+             patch.object(shot, "_recording_settings_file",
+                          return_value=Path(folder) / "recording.json"):
+            self.assertEqual(shot.load_recording_settings()["fps"], 30)
+            self.assertTrue(shot.save_recording_settings({
+                "fps": 60, "quality": "high", "show_actions": True,
+                "show_mouse": False}))
+            self.assertEqual(shot.load_recording_settings(), {
+                "fps": 60, "quality": "high", "show_actions": True,
+                "show_mouse": False})
+            self.assertFalse(shot.save_recording_settings({
+                "fps": 10000, "quality": "high",
+                "show_actions": True, "show_mouse": False}))
+            (Path(folder) / "recording.json").write_text(
+                '{"fps": 120, "quality": "bogus", "show_actions":"yes"}',
+                encoding="utf-8")
+            self.assertEqual(shot.load_recording_settings()["fps"], 30)
+            self.assertEqual(shot.load_recording_settings()["quality"],
+                             "standard")
+            self.assertFalse(shot.load_recording_settings()["show_actions"])
+
+    def test_record_hud_uses_current_video_settings_for_both_capture_types(self):
+        with patch.object(shot, "list_dshow_audio", return_value=[]), \
+             patch.object(shot, "load_recording_settings",
+                          return_value={"fps": 30, "quality": "standard",
+                                        "show_actions": False, "show_mouse": True}), \
+             patch.object(shot, "save_recording_settings",
+                          return_value=True), \
+             patch.object(shot, "ffmpeg_path", return_value="ffmpeg.exe"), \
+             patch.object(shot, "_physical_rect",
+                          return_value=(0, 0, 640, 480)):
+            hud = shot.RecordHUD(QRect(100, 100, 640, 480))
+            try:
+                hud.fps_combo.setCurrentIndex(hud.fps_combo.findData(60))
+                hud.quality_combo.setCurrentIndex(
+                    hud.quality_combo.findData("compact"))
+                hud.mouse_check.setChecked(False)
+                hud.input_overlay_check.setChecked(True)
+                args = hud._build_segment_command("out.mp4")
+                self.assertEqual(args[args.index("-framerate") + 1], "60")
+                self.assertEqual(args[args.index("-crf") + 1], "25")
+                self.assertEqual(args[args.index("-draw_mouse") + 1], "0")
+                self.assertTrue(hud._video_settings()["show_actions"])
+            finally:
+                hud.close()
+
+            with patch.object(shot.sys, "platform", "win32"):
+                win = shot.RecordHUD(QRect(100, 100, 640, 480),
+                                     window_hwnd=123, window_title="App")
+                try:
+                    self.assertFalse(win.input_overlay_check.isEnabled())
+                    win.fps_combo.setCurrentIndex(win.fps_combo.findData(24))
+                    win.quality_combo.setCurrentIndex(
+                        win.quality_combo.findData("high"))
+                    cmd = win._build_segment_command("win.mp4")
+                    self.assertEqual(cmd[cmd.index("-framerate") + 1], "24")
+                    self.assertEqual(cmd[cmd.index("-crf") + 1], "17")
+                finally:
+                    win.close()
+
+    def test_overlay_ignores_plain_letters_but_shows_shortcuts(self):
+        with patch.object(shot.sys, "platform", "win32"):
+            overlay = shot.RecordingInputOverlay(QRect(0, 0, 100, 100))
+            try:
+                with patch.object(overlay, "_down", side_effect=lambda k: k == 0x41):
+                    overlay._poll()
+                self.assertEqual(overlay._key_label, "")
+                overlay._keys_down.clear()
+                with patch.object(overlay, "_down",
+                                  side_effect=lambda k: k in (0x41, 0xA2)):
+                    overlay._poll()
+                self.assertEqual(overlay._key_label, "Ctrl+A")
+            finally:
+                overlay.stop()
+
     def test_window_is_closed_before_start_prevents_recording(self):
         with patch.object(shot, "list_dshow_audio", return_value=[]), \
              patch.object(shot, "recordable_window_is_ready", return_value=False), \
