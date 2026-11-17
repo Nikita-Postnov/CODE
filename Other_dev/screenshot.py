@@ -7974,14 +7974,25 @@ class Launcher(QMainWindow):
         quick_grid.setColumnStretch(0, 1)
         quick_grid.setColumnStretch(1, 1)
 
+        def quick_heading(label: QLabel, *, separate_section=False) -> None:
+            """Заголовок группы действий: явно отличается от кнопки."""
+            font = label.font()
+            font.setWeight(QFont.DemiBold)
+            font.setPointSize(max(11, font.pointSize() + 1))
+            label.setFont(font)
+            label.setMinimumHeight(36)
+            label.setAlignment(Qt.AlignCenter)
+            if separate_section:
+                label.setContentsMargins(0, 7, 0, 0)
+
         clipboard_title = QLabel("В буфер обмена", quick_group)
         clipboard_title.setObjectName("np_quick_clipboard_header")
-        clipboard_title.setAlignment(Qt.AlignCenter)
+        quick_heading(clipboard_title)
         quick_grid.addWidget(clipboard_title, 0, 0)
 
         file_title = QLabel("В файл PNG", quick_group)
         file_title.setObjectName("np_quick_file_header")
-        file_title.setAlignment(Qt.AlignCenter)
+        quick_heading(file_title)
         quick_grid.addWidget(file_title, 0, 1)
 
         for row, (label, actions) in enumerate((
@@ -8006,7 +8017,7 @@ class Launcher(QMainWindow):
 
         editor_title = QLabel("В редактор", quick_group)
         editor_title.setObjectName("np_quick_editor_header")
-        editor_title.setAlignment(Qt.AlignCenter)
+        quick_heading(editor_title, separate_section=True)
         quick_grid.addWidget(editor_title, 3, 0, 1, 2)
         for column, (label, callback, name) in enumerate((
             ("Выбрать область", lambda: self.quick_new_area("edit"),
@@ -8081,6 +8092,19 @@ class Launcher(QMainWindow):
                 subcontrol-origin: margin;
                 left: 12px;
                 padding: 0 5px;
+            }
+            /* Заголовки назначения в быстром захвате — не кнопки.
+               Цвет, плотность и вертикальный акцент отделяют их от действий. */
+            QLabel#np_quick_clipboard_header,
+            QLabel#np_quick_file_header,
+            QLabel#np_quick_editor_header {
+                color: palette(highlight);
+                background-color: rgba(57, 123, 210, 34);
+                border: 1px solid rgba(57, 123, 210, 90);
+                border-left: 3px solid #397bd2;
+                border-radius: 6px;
+                padding: 6px 10px;
+                font-weight: 700;
             }
             /* Команды в лаунчере нейтральны до наведения указателя. */
             QGroupBox QPushButton {
