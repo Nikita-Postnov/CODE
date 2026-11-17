@@ -141,6 +141,8 @@ class ObjectEditingTests(unittest.TestCase):
         self.assertFalse(self.view.ov_img.pixelColor(155, 80).alpha())
         self.assertEqual(self.view.bg_img.pixelColor(28, 32).name(), "#161616")
         self.assertEqual(self.view.bg_img.pixelColor(160, 80).name(), "#161616")
+        self.assertEqual(QApplication.clipboard().image()
+                         .pixelColor(28, 32).name(), "#161616")
         self.assertEqual(self.view.bg_img.pixelColor(5, 5).name(), "#a1b2c3")
         self.assertTrue(self.view.is_dirty())
         self.view.undo()
