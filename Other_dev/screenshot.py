@@ -7805,6 +7805,8 @@ class Launcher(QMainWindow):
 
     def hotkey_capture(self, mode: str = SelectionOverlay.MODE_SHOT):
         """PrintScreen: сразу выделение области (режим можно сменить на запись/текст)."""
+        if self._quick_capture_pending:
+            return
         # Из обработчика нативного события запускать вложенный цикл нельзя —
         # уходим через таймер. Если лаунчер на экране, сначала прячем его.
         delay = 200 if self.isVisible() else 0
@@ -7996,9 +7998,9 @@ class Launcher(QMainWindow):
     def _quick_repeat_now(self, region: QRect, action: str) -> None:
         try:
             # Повторная проверка важна, если монитор отключили за время таймера.
-            if not _quick_region_is_visible(region):
-                self._quick_notify("Область больше не видна на экране.",
-                                   error=True)
+            if self._last_valid_quick_region() != region:
+                self._quick_notify("Конфигурация мониторов изменилась. "
+                                   "Выбери область заново.", error=True)
                 return
             image = grab_region_highdpi(region)
             self._quick_finish_image(image, action)
@@ -8037,6 +8039,8 @@ class Launcher(QMainWindow):
             self._open_editor_image(img)
 
     def _capture(self, initial_mode: str) -> None:
+        if self._quick_capture_pending:
+            return
         log.info("capture: _capture start mode=%s", initial_mode)
         img = run_capture_flow(initial_mode, self)
         log.info("capture: result %s", None if img is None else f"{img.width()}x{img.height()}")
