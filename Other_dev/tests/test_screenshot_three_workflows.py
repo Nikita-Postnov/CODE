@@ -617,6 +617,30 @@ class ScreenshotThreeWorkflowsTests(unittest.TestCase):
         finally:
             window.close()
 
+    def test_launcher_buttons_highlight_on_hover_not_at_start(self):
+        """Обычный вид кнопок нейтральный; рамка появляется при наведении."""
+        with patch.object(Launcher, "_init_tray"), \
+             patch.object(Launcher, "_install_global_hotkey"):
+            window = Launcher()
+        try:
+            stylesheet = window.styleSheet()
+            self.assertIn("QGroupBox QPushButton:hover {", stylesheet)
+            self.assertIn("background-color: rgba(57, 123, 210, 48);", stylesheet)
+            self.assertIn("border: 1px solid transparent;", stylesheet)
+            self.assertIn("QGroupBox QPushButton:pressed {", stylesheet)
+            self.assertNotIn("border: 1px solid #397bd2;", stylesheet)
+            buttons = window.centralWidget().widget().findChildren(QPushButton)
+            self.assertGreaterEqual(len(buttons), 11)
+            self.assertTrue(all(button.cursor().shape() == Qt.PointingHandCursor
+                                for button in buttons))
+            # Раньше две первые кнопки были выделены синим статически.
+            primaries = [button for button in buttons
+                         if button.objectName() == "screenshot_primary_action"]
+            self.assertEqual(len(primaries), 2)
+            self.assertTrue(all(button.isEnabled() for button in primaries))
+        finally:
+            window.close()
+
     def test_npcore_pair_config_requires_https_and_valid_code(self):
         code = "A" * 24
         self.assertEqual(_npcore_pair_config('{"server":"https://npcore.example","code":"' + code + '"}'),
