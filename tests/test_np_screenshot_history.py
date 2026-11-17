@@ -193,6 +193,52 @@ class HistoryGuiTests(unittest.TestCase):
         self.assertFalse(path.exists())
         self.assertEqual(dialog.items.count(), 0)
 
+    def test_history_group_headers_span_full_width_above_thumbnail_grid(self):
+        first = shot.archive_screenshot(sample_image(), project="NPCore")
+        second = shot.archive_screenshot(sample_image("#11ccbb"), project="NPCore")
+        dialog = shot.ScreenshotHistoryDialog(Mock())
+        self.addCleanup(dialog.close)
+        dialog.resize(1100, 720)
+        dialog.show()
+        self.app.processEvents()
+        headers = [
+            dialog.items.item(i)
+            for i in range(dialog.items.count())
+            if dialog.items.item(i).data(
+                shot.ScreenshotHistoryListWidget.HEADER_ROLE) is True
+        ]
+        thumbnails = [
+            dialog.items.item(i)
+            for i in range(dialog.items.count())
+            if dialog.items.item(i).data(shot.Qt.UserRole)
+        ]
+        self.assertEqual(len(headers), 1)
+        self.assertEqual(headers[0].text(), "Без проекта")
+        self.assertGreaterEqual(
+            headers[0].sizeHint().width(),
+            dialog.items.viewport().width() - 20)
+        self.assertEqual(len(thumbnails), 2)
+        self.assertEqual(thumbnails[0].sizeHint().width(), 190)
+        self.assertFalse(dialog.items.gridSize().isValid())
+        self.assertIsNotNone(first)
+        self.assertIsNotNone(second)
+
+    def test_history_group_header_resizes_with_dialog(self):
+        shot.archive_screenshot(sample_image(), project="NPCore")
+        dialog = shot.ScreenshotHistoryDialog(Mock())
+        self.addCleanup(dialog.close)
+        dialog.show()
+        dialog.resize(1200, 760)
+        self.app.processEvents()
+        header = next(
+            dialog.items.item(i)
+            for i in range(dialog.items.count())
+            if dialog.items.item(i).data(
+                shot.ScreenshotHistoryListWidget.HEADER_ROLE) is True)
+        self.assertGreaterEqual(
+            header.sizeHint().width(),
+            dialog.items.viewport().width() - 20)
+
     def test_history_dialog_filters_by_type_favorite_and_ocr_text(self):
         path = shot.archive_screenshot(sample_image(), kind="scroll", project="NPCore")
         shot.update_history_metadata(path, favorite=True, ocr_text="Счёт-фактура")
