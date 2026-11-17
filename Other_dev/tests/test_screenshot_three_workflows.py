@@ -593,6 +593,24 @@ class ScreenshotThreeWorkflowsTests(unittest.TestCase):
         second.fill(QColor("#fafafa"))
         self.assertEqual(_scroll_overlap(first, second), 0)
 
+    def test_repeated_text_rows_do_not_force_ambiguous_stitch(self):
+        """Повторяющиеся одинаковые строки не определяют единственный сдвиг."""
+        width, height, offset = 430, 620, 144
+        source = QImage(width, height + offset + 50, QImage.Format_RGB32)
+        source.fill(Qt.white)
+        painter = QPainter(source)
+        painter.setPen(Qt.black)
+        painter.setFont(QFont("Arial", 14))
+        for y in range(36, source.height(), 24):
+            painter.drawText(32, y, "Повторяемая строка таблицы")
+        painter.end()
+        before = source.copy(0, 0, width, height)
+        after = source.copy(0, offset, width, height)
+        painter = QPainter(after)
+        painter.fillRect(after.rect(), QColor(50, 35, 65, 38))
+        painter.end()
+        self.assertEqual(_scroll_overlap(before, after), 0)
+
     def test_no_movement_pauses_and_can_continue_from_user_pointer(self):
         job, frame = self._job_with_first_frame()
         panel = ScrollingCapturePanel(12)
