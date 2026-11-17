@@ -34,5 +34,5 @@ jobs:
       - name: Compile
         run: python -m py_compile Other_dev/screenshot.py tests/test_np_screenshot_npcore_storage.py
       - name: Run focused NPCore clipboard tests
-        timeout-minutes: 2
-        run: python -m unittest discover -s tests -p "test_np_screenshot_npcore_storage.py" -v
+        timeout-minutes: 5
+        run: python tests/run_np_screenshot_npcore_isolated.py
