@@ -350,6 +350,48 @@ class CaptureRoutingTests(unittest.TestCase):
                  if history.items.item(i).data(shot.Qt.UserRole)]
         self.assertEqual(len(paths), 2)
 
+    def test_external_clipboard_image_is_archived_when_enabled(self):
+        self.launcher.history_enabled_check.setChecked(True)
+        image = sample_image("#1177aa")
+        QApplication.clipboard().setImage(image)
+        self.launcher._clipboard_history_timer.stop()
+        self.launcher._archive_clipboard_image()
+        paths = shot.screenshot_history_files()
+        self.assertEqual(len(paths), 1)
+        self.assertEqual(
+            QImage(str(paths[0])).pixelColor(3, 4).name(), "#1177aa")
+
+    def test_external_clipboard_text_is_not_archived(self):
+        self.launcher.history_enabled_check.setChecked(True)
+        QApplication.clipboard().setText("Обычный текст")
+        self.launcher._clipboard_history_timer.stop()
+        self.launcher._archive_clipboard_image()
+        self.assertEqual(shot.screenshot_history_files(), [])
+
+    def test_internal_capture_is_not_archived_twice_by_clipboard_watcher(self):
+        self.launcher.history_enabled_check.setChecked(True)
+        image = sample_image("#11ccbb")
+        with patch.object(self.launcher, "_open_editor_image"):
+            self.launcher._handle_captured_image(image)
+        self.launcher._clipboard_history_timer.stop()
+        self.launcher._archive_clipboard_image()
+        self.assertEqual(len(shot.screenshot_history_files()), 1)
+
+    def test_manual_history_import_uses_current_clipboard_image(self):
+        image = sample_image("#aa2277")
+        QApplication.clipboard().setImage(image)
+        launcher = Mock()
+        launcher._archive_capture.return_value = (
+            Path(self.tmp.name) / "imported.png")
+        dialog = shot.ScreenshotHistoryDialog(launcher)
+        self.addCleanup(dialog.close)
+        with patch.object(shot.QMessageBox, "information"):
+            dialog.import_clipboard()
+        launcher._archive_capture.assert_called_once()
+        imported, kind = launcher._archive_capture.call_args.args
+        self.assertEqual(imported.pixelColor(2, 3).name(), "#aa2277")
+        self.assertEqual(kind, "shot")
+
     def test_quick_actions_opt_in_does_not_open_editor_automatically(self):
         self.launcher._capture_preferences["quick_actions"] = True
         with patch.object(shot, "run_capture_flow", return_value=sample_image()), \
