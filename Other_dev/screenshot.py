@@ -5585,6 +5585,7 @@ def _scroll_overlap_tolerant(previous: QImage, current: QImage) -> int:
         return 0
 
     matches = []
+    candidate_scores = []
     for shift in range(min_shift, max_shift + 1):
         eligible = [y for y in anchors if top <= y - shift < bottom]
         if len(eligible) < 10:
@@ -5603,11 +5604,15 @@ def _scroll_overlap_tolerant(previous: QImage, current: QImage) -> int:
             if (raw_error <= 14 * len(x_positions) or
                     mask_error <= max(1, len(x_positions) // 32)):
                 matched += 1
-        if matched >= 8:
+        if matched >= 6:
             ratio = matched / len(eligible)
-            if ratio >= .72:
+            candidate_scores.append((ratio, matched, shift))
+            if matched >= 8 and ratio >= .72:
                 matches.append((ratio, matched, shift))
 
+    log.warning("scroll tolerant debug: anchors=%d, valid=%d, best=%s",
+                len(anchors), len(matches),
+                sorted(candidate_scores, reverse=True)[:12])
     if not matches:
         return 0
     matches.sort(reverse=True)
