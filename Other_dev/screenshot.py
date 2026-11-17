@@ -8299,8 +8299,8 @@ class Launcher(QMainWindow):
         npc_status_row = QHBoxLayout()
         npc_status_row.setSpacing(5)
         npc_status_row.addWidget(self.npcore_status_label, 1)
-        self.npcore_upload_clipboard_btn = QPushButton(
-            "Из буфера → NPCore", self)
+        self.npcore_upload_clipboard_btn = QToolButton(self)
+        self.npcore_upload_clipboard_btn.setText("Из буфера → NPCore")
         self.npcore_upload_clipboard_btn.setObjectName(
             "np_upload_clipboard_npcore")
         self.npcore_upload_clipboard_btn.setMinimumHeight(28)
@@ -8308,7 +8308,8 @@ class Launcher(QMainWindow):
         self.npcore_upload_clipboard_btn.clicked.connect(
             self.upload_clipboard_npcore)
         npc_status_row.addWidget(self.npcore_upload_clipboard_btn)
-        self.npcore_screenshots_btn = QPushButton("Мои снимки", self)
+        self.npcore_screenshots_btn = QToolButton(self)
+        self.npcore_screenshots_btn.setText("Мои снимки")
         self.npcore_screenshots_btn.setObjectName("np_npcore_screenshots")
         self.npcore_screenshots_btn.setMinimumHeight(28)
         self.npcore_screenshots_btn.setCursor(Qt.PointingHandCursor)
@@ -8398,6 +8399,19 @@ class Launcher(QMainWindow):
             }
             QToolButton#launcher_help_toggle:hover {
                 color: palette(window-text);
+            }
+            QToolButton#np_upload_clipboard_npcore,
+            QToolButton#np_npcore_screenshots {
+                color: palette(window-text);
+                border: 1px solid palette(mid);
+                border-radius: 5px;
+                padding: 3px 6px;
+                background-color: transparent;
+            }
+            QToolButton#np_upload_clipboard_npcore:hover,
+            QToolButton#np_npcore_screenshots:hover {
+                background-color: rgba(57, 123, 210, 48);
+                border-color: #397bd2;
             }
             /* Команды в лаунчере нейтральны до наведения указателя. */
             QGroupBox QPushButton {
