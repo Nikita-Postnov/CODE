@@ -3956,6 +3956,7 @@ class EditorWindow(QMainWindow):
         self._private_ocr_process: Optional[QProcess] = None
         self._private_ocr_file: Optional[Path] = None
         self._private_ocr_image_size: Optional[QSize] = None
+        self._npcore_upload_dialog: Optional[NPCoreUploadDialog] = None
         self._build_toolbar()
         self._apply_shortcuts()
         self._add_apps_menu()
@@ -3969,6 +3970,23 @@ class EditorWindow(QMainWindow):
         self.setAcceptDrops(True)
         self.view.set_dirty_hook(self._on_dirty_changed)
         self._on_dirty_changed(self.view.is_dirty())
+
+    def upload_current_npcore(self) -> None:
+        """Явная передача итогового изображения после редактирования."""
+        image = self.view._flatten_on_white(
+            self.view.render_scene_to_image(hide_handles=True))
+        if image.isNull():
+            QMessageBox.warning(self, "NPCore", "Изображение пустое.")
+            return
+        if _npcore_load_link() is None:
+            QMessageBox.information(
+                self, "NPCore",
+                "Сначала подключи NP Screenshot к NPCore в главном окне.")
+            return
+        dialog = NPCoreUploadDialog(image, self)
+        self._npcore_upload_dialog = dialog
+        dialog.exec()
+        self._npcore_upload_dialog = None
 
     def scan_private_data(self) -> None:
         """Windows OCR без отправки в NPCore и без копирования в буфер."""
@@ -4611,6 +4629,9 @@ class EditorWindow(QMainWindow):
         privacy_action = add_action(
             t1, "🔒 Найти личные данные", self.scan_private_data)
         tool_menus["Обработка"].addAction(privacy_action)
+        upload_action = add_action(
+            t1, "☁ В NPCore", self.upload_current_npcore)
+        tool_menus["Файл"].addAction(upload_action)
         t1.addSeparator()
         self.line_caption = QLabel(" Линия")
         self.line_caption.setStyleSheet("color: #c8c8c8;")
@@ -5604,6 +5625,212 @@ def _npcore_translate(text: str, target: str) -> dict:
         raise RuntimeError(str(result.get("error") or "NPCore не вернул перевод"))
     return result
 
+
+
+_NPCORE_UPLOAD_LIMIT = 15 * 1024 * 1024
+
+
+def _npcore_upload_png_bytes(data: bytes) -> dict:
+    """Пользователь инициировал отправку PNG в личный Диск NPCore.
+
+    Запрос отправляется только на проверенный HTTPS URL ранее привязанного
+    устройства, Bearer токен хранится в Windows DPAPI. Содержимое не логируется.
+    """
+    link = _npcore_load_link()
+    if link is None:
+        raise RuntimeError("Сначала подключи NP Screenshot к NPCore")
+    if not isinstance(data, bytes) or not data.startswith(b"\x89PNG\r\n\x1a\n"):
+        raise ValueError("Для загрузки требуется корректный PNG")
+    if len(data) > _NPCORE_UPLOAD_LIMIT:
+        raise ValueError("Изображение превышает лимит NPCore 15 МБ")
+    server, token = link
+    boundary = "NPCore" + uuid.uuid4().hex
+    header = (
+        "--" + boundary + "\r\n"
+        'Content-Disposition: form-data; name="file"; filename="screenshot.png"\r\n'
+        "Content-Type: image/png\r\n\r\n"
+    ).encode("ascii")
+    payload = header + data + ("\r\n--" + boundary + "--\r\n").encode("ascii")
+    request = urllib.request.Request(
+        server + "/api/desk/screenshots/upload",
+        data=payload, method="POST")
+    request.add_header("Authorization", "Bearer " + token)
+    request.add_header("Accept", "application/json")
+    request.add_header("Content-Type", "multipart/form-data; boundary=" + boundary)
+    request.add_header("User-Agent", "NP-Screenshot/1.0")
+    try:
+        with urllib.request.urlopen(request, timeout=90) as response:
+            result = json.loads(response.read().decode("utf-8") or "{}")
+    except urllib.error.HTTPError as exc:
+        try:
+            details = json.loads(exc.read().decode("utf-8"))
+            message = str(details.get("detail") or details.get("error") or "")
+        except (ValueError, TypeError, UnicodeError):
+            message = ""
+        if exc.code in (401, 403):
+            raise RuntimeError(
+                "Нет доступа к личному Диску NPCore. Проверь подключение "
+                "и права устройства.") from None
+        raise RuntimeError(message or f"Ошибка загрузки NPCore: HTTP {exc.code}") from None
+    except urllib.error.URLError:
+        raise RuntimeError("Нет связи с NPCore. Проверь интернет и сервер.") from None
+    if (not isinstance(result, dict) or result.get("ok") is not True or
+            not isinstance(result.get("entry"), dict) or
+            not isinstance(result["entry"].get("rel"), str)):
+        raise RuntimeError("NPCore не подтвердил сохранение скриншота")
+    return result
+
+
+def _npcore_upload_image(image: QImage) -> dict:
+    if image.isNull():
+        raise ValueError("Нет изображения для отправки")
+    buffer = QBuffer()
+    if not buffer.open(QIODevice.WriteOnly) or not image.save(buffer, "PNG"):
+        raise RuntimeError("Не удалось сформировать PNG")
+    content = bytes(buffer.data())
+    buffer.close()
+    return _npcore_upload_png_bytes(content)
+
+
+def _npcore_recent_screenshots() -> dict:
+    link = _npcore_load_link()
+    if link is None:
+        raise RuntimeError("Сначала подключи NP Screenshot к NPCore")
+    server, token = link
+    result = _npcore_http_json(
+        "GET", server + "/api/desk/screenshots/list", token, timeout=30)
+    if not result.get("ok") or not isinstance(result.get("files"), list):
+        raise RuntimeError("NPCore не вернул список снимков")
+    return result
+
+
+class NPCoreUploadDialog(QDialog):
+    """Явное согласие перед передачей изображения, без блокировки интерфейса."""
+
+    def __init__(self, image: QImage, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Отправить снимок в NPCore")
+        self.setMinimumWidth(460)
+        self._image = image.copy()
+        self._worker: Optional[_NPCoreWorker] = None
+        self.uploaded_path = ""
+        self._busy = False
+        layout = QVBoxLayout(self)
+        self.status = QLabel(
+            "Изображение будет отправлено по HTTPS в личное хранилище "
+            "NPCore: Диск → Скриншоты → NP Screenshot.\n"
+            "Перед отправкой проверь, что на снимке скрыты личные данные.", self)
+        self.status.setWordWrap(True)
+        layout.addWidget(self.status)
+        self.path_label = QLabel("", self)
+        self.path_label.setWordWrap(True)
+        layout.addWidget(self.path_label)
+        buttons = QHBoxLayout()
+        self.send_button = QPushButton("Отправить", self)
+        self.send_button.clicked.connect(self._send)
+        self.copy_button = QPushButton("Копировать путь", self)
+        self.copy_button.setEnabled(False)
+        self.copy_button.clicked.connect(
+            lambda: QApplication.clipboard().setText(self.uploaded_path))
+        close_button = QPushButton("Закрыть", self)
+        close_button.clicked.connect(self.reject)
+        buttons.addWidget(self.send_button)
+        buttons.addWidget(self.copy_button)
+        buttons.addStretch(1)
+        buttons.addWidget(close_button)
+        layout.addLayout(buttons)
+
+    def _send(self):
+        if self._busy:
+            return
+        if _npcore_load_link() is None:
+            self.status.setText(
+                "NP Screenshot не подключён. Подключи NPCore в главном окне.")
+            return
+        self._busy = True
+        self.send_button.setEnabled(False)
+        self.status.setText("Передача изображения в личный Диск NPCore…")
+        self._worker = _NPCoreWorker(
+            lambda: _npcore_upload_image(self._image), self)
+        self._worker.completed.connect(self._complete)
+        self._worker.finished.connect(self._worker.deleteLater)
+        self._worker.start()
+
+    def _complete(self, answer: dict):
+        self._busy = False
+        if not answer.get("ok"):
+            self.status.setText(
+                "Не удалось отправить: " +
+                str(answer.get("error") or "Неизвестная ошибка"))
+            self.send_button.setEnabled(True)
+            return
+        entry = answer.get("result", {}).get("entry") or {}
+        path = str(entry.get("rel") or "")
+        self.uploaded_path = path
+        self.path_label.setText("Путь: " + path)
+        self.status.setText(
+            "Снимок загружен. Открой NPCore MiniApp → Диск → "
+            "Скриншоты → NP Screenshot.")
+        self.copy_button.setEnabled(bool(path))
+
+    def reject(self):
+        if self._busy:
+            self.status.setText("Передача выполняется. Завершение запроса…")
+            return
+        super().reject()
+
+
+class NPCoreScreenshotsDialog(QDialog):
+    """Список личных снимков NPCore; публичные ссылки не создаются."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Снимки в NPCore")
+        self.resize(620, 440)
+        layout = QVBoxLayout(self)
+        self.status = QLabel("Загрузка личных снимков…", self)
+        self.status.setWordWrap(True)
+        layout.addWidget(self.status)
+        self.items = QListWidget(self)
+        layout.addWidget(self.items, 1)
+        actions = QHBoxLayout()
+        self.copy_btn = QPushButton("Копировать путь", self)
+        self.copy_btn.clicked.connect(self.copy_path)
+        actions.addWidget(self.copy_btn)
+        close = QPushButton("Закрыть", self)
+        close.clicked.connect(self.accept)
+        actions.addStretch(1)
+        actions.addWidget(close)
+        layout.addLayout(actions)
+        self._worker = _NPCoreWorker(_npcore_recent_screenshots, self)
+        self._worker.completed.connect(self._received)
+        self._worker.finished.connect(self._worker.deleteLater)
+        self._worker.start()
+
+    def _received(self, response):
+        if not response.get("ok"):
+            self.status.setText(str(response.get("error") or "Ошибка загрузки"))
+            return
+        result = response.get("result") or {}
+        files = result.get("files") or []
+        self.status.setText(
+            "Последние снимки в личном NPCore. Для просмотра открой MiniApp → "
+            "Диск → Скриншоты → NP Screenshot.")
+        for entry in files:
+            if not isinstance(entry, dict):
+                continue
+            path = str(entry.get("rel") or "")
+            if not path:
+                continue
+            item = QListWidgetItem(str(entry.get("name") or path))
+            item.setData(Qt.UserRole, path)
+            self.items.addItem(item)
+
+    def copy_path(self):
+        item = self.items.currentItem()
+        if item is not None:
+            QApplication.clipboard().setText(
+                str(item.data(Qt.UserRole) or ""))
 
 class _NPCoreWorker(QThread):
     completed = Signal(object)
@@ -8063,7 +8290,25 @@ class Launcher(QMainWindow):
         self.npcore_status_label.setWordWrap(True)
         self.npcore_status_label.setStyleSheet("color: palette(placeholder-text); padding: 2px 4px;")
         self._refresh_npcore_status()
-        v.addWidget(self.npcore_status_label)
+        npc_status_row = QHBoxLayout()
+        npc_status_row.setSpacing(5)
+        npc_status_row.addWidget(self.npcore_status_label, 1)
+        self.npcore_upload_clipboard_btn = QPushButton(
+            "Из буфера → NPCore", self)
+        self.npcore_upload_clipboard_btn.setObjectName(
+            "np_upload_clipboard_npcore")
+        self.npcore_upload_clipboard_btn.setMinimumHeight(28)
+        self.npcore_upload_clipboard_btn.setCursor(Qt.PointingHandCursor)
+        self.npcore_upload_clipboard_btn.clicked.connect(
+            self.upload_clipboard_npcore)
+        npc_status_row.addWidget(self.npcore_upload_clipboard_btn)
+        self.npcore_screenshots_btn = QPushButton("Мои снимки", self)
+        self.npcore_screenshots_btn.setObjectName("np_npcore_screenshots")
+        self.npcore_screenshots_btn.setMinimumHeight(28)
+        self.npcore_screenshots_btn.setCursor(Qt.PointingHandCursor)
+        self.npcore_screenshots_btn.clicked.connect(self.open_npcore_screenshots)
+        npc_status_row.addWidget(self.npcore_screenshots_btn)
+        v.addLayout(npc_status_row)
 
         self.edit_after_capture_check = QCheckBox("Открывать редактор после снимка")
         self.edit_after_capture_check.setChecked(
@@ -8198,6 +8443,29 @@ class Launcher(QMainWindow):
             self.npcore_status_label.setText(
                 "NPCore подключён · " + link[0] if link else
                 "NPCore не подключён · ИИ-перевод доступен после подключения")
+
+    def upload_clipboard_npcore(self) -> None:
+        """Явная отправка, автоматической фоновой синхронизации нет."""
+        if _npcore_load_link() is None:
+            self.open_npcore_connection()
+            if _npcore_load_link() is None:
+                return
+        image = QApplication.clipboard().image(QClipboard.Clipboard)
+        if image.isNull():
+            QMessageBox.information(
+                self, "NPCore",
+                "В буфере обмена нет изображения. Сделай снимок экрана.")
+            return
+        dialog = NPCoreUploadDialog(image, self)
+        dialog.exec()
+
+    def open_npcore_screenshots(self) -> None:
+        if _npcore_load_link() is None:
+            self.open_npcore_connection()
+            if _npcore_load_link() is None:
+                return
+        dialog = NPCoreScreenshotsDialog(self)
+        dialog.exec()
 
     def open_npcore_connection(self) -> None:
         dialog = NPCoreConnectionDialog(self)
