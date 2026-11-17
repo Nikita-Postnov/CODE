@@ -8383,6 +8383,18 @@ class Launcher(QMainWindow):
             lambda enabled: self._set_capture_preference("edit_after_capture", enabled))
         v.addWidget(self.edit_after_capture_check)
 
+        # Управление историей доступно и в главном окне, а не только в трее.
+        self.history_enabled_check = QCheckBox("Автоматически сохранять снимки в историю")
+        self.history_enabled_check.setObjectName("np_history_enabled_toggle")
+        self.history_enabled_check.setChecked(
+            self._capture_preferences["history_enabled"])
+        self.history_enabled_check.setToolTip(
+            "Новые снимки сохраняются в Data\\ScreenshotHistory. "
+            "Предыдущие снимки добавляются отдельно.")
+        self.history_enabled_check.toggled.connect(
+            lambda enabled: self._set_capture_preference("history_enabled", enabled))
+        v.addWidget(self.history_enabled_check)
+
         info = QLabel(
             "Горячие клавиши: PrintScreen — выбор действия и объекта; "
             "Shift+PrintScreen — OCR в буфер обмена. "
@@ -8763,8 +8775,10 @@ class Launcher(QMainWindow):
                 action.setChecked(self._capture_preferences[name])
             finally:
                 action.blockSignals(blocked)
-        if name == "edit_after_capture":
-            checkbox = self.edit_after_capture_check
+        if name in ("edit_after_capture", "history_enabled"):
+            checkbox = (self.edit_after_capture_check
+                        if name == "edit_after_capture"
+                        else self.history_enabled_check)
             blocked = checkbox.blockSignals(True)
             try:
                 checkbox.setChecked(self._capture_preferences[name])
@@ -9005,6 +9019,16 @@ class Launcher(QMainWindow):
                              QSystemTrayIcon.Warning if error else
                              QSystemTrayIcon.Information, 3500)
 
+    def _archive_capture(self, image: QImage, kind: str) -> Optional[Path]:
+        """Запись в историю с сообщением об ошибке и обновлением открытого списка."""
+        saved = archive_screenshot(image, kind=kind)
+        if saved is None:
+            log.error("Снимок создан, но не удалось сохранить его в историю")
+            self._quick_notify("Снимок не удалось сохранить в историю.", error=True)
+        elif self._history_dialog is not None and self._history_dialog.isVisible():
+            self._history_dialog.refresh()
+        return saved
+
     def _quick_finish_image(self, image: QImage, action: str) -> None:
         if image.isNull():
             self._quick_notify("Не удалось получить снимок выбранной области.",
@@ -9012,7 +9036,7 @@ class Launcher(QMainWindow):
             return
         self._last_captured_image = image.copy()
         if self._capture_preferences.get("history_enabled", False):
-            archive_screenshot(image, kind="shot")
+            self._archive_capture(image, "shot")
         if action == "copy":
             QApplication.clipboard().setImage(image, QClipboard.Clipboard)
             self._quick_notify("Снимок скопирован в буфер обмена.")
@@ -9122,9 +9146,7 @@ class Launcher(QMainWindow):
         QApplication.clipboard().setImage(img, QClipboard.Clipboard)
         saved = None
         if self._capture_preferences.get("history_enabled", False):
-            saved = archive_screenshot(img, kind=capture_kind)
-            if saved is None:
-                log.error("Снимок создан, но не удалось сохранить его в историю")
+            saved = self._archive_capture(img, capture_kind)
         if self._capture_preferences.get("quick_actions", False):
             panel = ScreenshotQuickActionsDialog(img, self, history_path=saved)
             self._quick_panel = panel
