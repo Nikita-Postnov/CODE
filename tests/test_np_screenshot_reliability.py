@@ -224,6 +224,11 @@ class QuickCaptureTests(unittest.TestCase):
         self.path_patch = patch.object(shot, "SCREENSHOT_HISTORY_SETTINGS", settings)
         self.path_patch.start()
         self.addCleanup(self.path_patch.stop)
+        self.region_patch = patch.object(
+            shot, "SCREENSHOT_QUICK_REGION_SETTINGS",
+            self.folder / "quick_region.json")
+        self.region_patch.start()
+        self.addCleanup(self.region_patch.stop)
         with patch.object(shot.Launcher, "_init_tray"), \
              patch.object(shot.Launcher, "_install_global_hotkey"):
             self.launcher = shot.Launcher()
@@ -245,13 +250,13 @@ class QuickCaptureTests(unittest.TestCase):
     def test_region_settings_survive_restart_and_manual_checkboxes(self):
         rect = self._rect()
         self.assertTrue(self.launcher.remember_last_region(rect))
-        preferences = shot.load_capture_preferences()
-        self.assertEqual(preferences["last_region"], list(rect.getRect()))
-        self.assertEqual(preferences["last_screens"], shot._quick_screen_layout())
+        stored = shot.load_quick_region()
+        self.assertEqual(stored["last_region"], list(rect.getRect()))
+        self.assertEqual(stored["last_screens"], shot._quick_screen_layout())
         self.launcher._set_capture_preference("edit_after_capture", False)
-        preferences = shot.load_capture_preferences()
-        self.assertEqual(preferences["last_region"], list(rect.getRect()))
-        self.assertFalse(preferences["edit_after_capture"])
+        self.assertEqual(shot.load_quick_region()["last_region"],
+                         list(rect.getRect()))
+        self.assertFalse(shot.load_capture_preferences()["edit_after_capture"])
         self.assertEqual(self.launcher._last_valid_quick_region(), rect)
 
     def test_quick_repeat_copies_without_area_selection_or_editor(self):
@@ -302,8 +307,9 @@ class QuickCaptureTests(unittest.TestCase):
 
     def test_changing_monitors_disables_stale_region_safely(self):
         self.assertTrue(self.launcher.remember_last_region(self._rect()))
-        self.launcher._capture_preferences["last_screens"] = []
-        with patch.object(shot.QMessageBox, "information") as inform, \
+        with patch.object(shot, "_quick_screen_layout",
+                          return_value=[[50_000, 50_000, 120, 100]]), \
+             patch.object(shot.QMessageBox, "information") as inform, \
              patch.object(shot, "grab_region_highdpi") as capture:
             self.launcher.quick_repeat("copy")
         inform.assert_called_once()
@@ -311,11 +317,11 @@ class QuickCaptureTests(unittest.TestCase):
         self.assertIsNone(self.launcher._last_valid_quick_region())
 
     def test_invalid_preferences_cannot_force_offscreen_capture(self):
-        preferences = shot.load_capture_preferences()
-        preferences["last_region"] = [1, 2, -99999, 20]
-        preferences["last_screens"] = [[0, 0, 1280, 800]]
-        self.assertTrue(shot.save_capture_preferences(preferences))
-        self.assertIsNone(shot.load_capture_preferences()["last_region"])
+        region_path = shot.SCREENSHOT_QUICK_REGION_SETTINGS
+        region_path.write_text(
+            '{"last_region":[1,2,-99999,20],"last_screens":[[0,0,1280,800]]}',
+            encoding="utf-8")
+        self.assertIsNone(shot.load_quick_region()["last_region"])
         self.assertIsNone(shot._quick_region_data([1, True, 60, 70]))
         self.assertFalse(shot._quick_region_is_visible(
             shot.QRect(50000, 50000, 30, 30)))
