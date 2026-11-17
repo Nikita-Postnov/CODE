@@ -114,6 +114,31 @@ class ObjectEditingTests(unittest.TestCase):
         self.assertIn("\\n", redone.text)
         self.assertEqual(redone.alignment, "center")
 
+    def test_multiline_raster_export_uses_alignment_and_keeps_two_lines(self):
+        item = shot.EditableTextItem(
+            "Первая строка\\nВторая", 19, QColor("#112233"),
+            alignment="left", auto_fit=False)
+        item._rect = QRectF(0, 0, 280, 105)
+
+        def painted():
+            canvas = QImage(300, 125, QImage.Format_ARGB32)
+            canvas.fill(QColor("white"))
+            painter = shot.QPainter(canvas)
+            item.rasterize_to(painter)
+            painter.end()
+            pixels = [(x, y) for y in range(125) for x in range(300)
+                      if canvas.pixelColor(x, y) != QColor("white")]
+            self.assertTrue(pixels)
+            return pixels
+
+        left_pixels = painted()
+        item.alignment = "right"
+        right_pixels = painted()
+        self.assertGreater(min(x for x, y in right_pixels),
+                           min(x for x, y in left_pixels) + 40)
+        self.assertGreater(max(y for x, y in right_pixels) -
+                           min(y for x, y in right_pixels), 25)
+
     def test_dialog_cancel_does_not_dirty_clean_editor(self):
         item = self.add_text("Без изменений")
         self.view.mark_clean()
