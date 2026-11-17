@@ -86,19 +86,39 @@ class ScreenshotNPCoreUploadTests(unittest.TestCase):
              patch.object(shot, "_npcore_load_link", return_value=None):
             launcher = shot.Launcher()
         try:
-            launcher._handle_captured_image(self.sample)
+            with patch.object(launcher, "_open_editor_image"):
+                launcher._handle_captured_image(self.sample)
             QApplication.clipboard().setText("OCR теперь в буфере")
             self.assertTrue(shot._npcore_current_clipboard_image().isNull())
             self.assertEqual(
                 launcher._last_captured_image.pixelColor(2, 3).name(),
                 "#1177aa")
-            with patch.object(shot.QMessageBox, "exec", autospec=True) as run:
-                def click_last(dialog):
-                    choice = next(b for b in dialog.buttons()
-                                  if b.text() == "Последний исходный снимок")
-                    choice.click()
-                    return 0
-                run.side_effect = click_last
+
+            class SourceChoice:
+                Information = 1
+                ActionRole = 2
+                RejectRole = 3
+
+                def __init__(self, _parent):
+                    self.buttons = {}
+
+                def setWindowTitle(self, _value): pass
+                def setIcon(self, _value): pass
+                def setText(self, _value): pass
+                def setInformativeText(self, _value): pass
+
+                def addButton(self, title, _role):
+                    button = object()
+                    self.buttons[title] = button
+                    return button
+
+                def exec(self):
+                    self.chosen = self.buttons["Последний исходный снимок"]
+
+                def clickedButton(self):
+                    return self.chosen
+
+            with patch.object(shot, "QMessageBox", SourceChoice):
                 selected = launcher._choose_npcore_source()
             self.assertEqual(selected.size(), self.sample.size())
         finally:
