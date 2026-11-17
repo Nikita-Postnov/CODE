@@ -7947,6 +7947,23 @@ class ScreenshotQuickActionsDialog(QDialog):
         self.close()
 
 
+class ScreenshotHistoryListWidget(QListWidget):
+    """Сетка снимков с заголовками групп на всю ширину области просмотра."""
+
+    HEADER_ROLE = Qt.UserRole + 1
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self.update_header_sizes()
+
+    def update_header_sizes(self) -> None:
+        width = max(200, self.viewport().width() - 16)
+        for index in range(self.count()):
+            item = self.item(index)
+            if item.data(self.HEADER_ROLE) is True:
+                item.setSizeHint(QSize(width, 34))
+
+
 class ScreenshotHistoryDialog(QDialog):
     """Поиск и управление историей снимков, тегами, избранным и OCR-индексом."""
 
@@ -7990,13 +8007,15 @@ class ScreenshotHistoryDialog(QDialog):
         self.refresh_btn.clicked.connect(self.refresh)
         filters.addWidget(self.refresh_btn)
         layout.addLayout(filters)
-        self.items = QListWidget(self)
+        self.items = ScreenshotHistoryListWidget(self)
         self.items.setViewMode(QListWidget.IconMode)
         self.items.setResizeMode(QListWidget.Adjust)
         self.items.setMovement(QListWidget.Static)
         self.items.setSelectionMode(QAbstractItemView.SingleSelection)
         self.items.setIconSize(QSize(152, 100))
-        self.items.setGridSize(QSize(190, 148))
+        # Размер каждой карточки задаётся отдельно: заголовки занимают
+        # всю ширину, а миниатюры располагаются компактной сеткой.
+        self.items.setGridSize(QSize())
         self.items.setSpacing(8)
         self.items.itemDoubleClicked.connect(lambda _item: self.open_selected())
         layout.addWidget(self.items, 1)
@@ -8065,8 +8084,17 @@ class ScreenshotHistoryDialog(QDialog):
                         reverse=True)
         first_item = None
         for group in groups:
-            header = QListWidgetItem(f"— {group} —")
+            header = QListWidgetItem(group)
+            header.setData(ScreenshotHistoryListWidget.HEADER_ROLE, True)
             header.setFlags(Qt.NoItemFlags)
+            header.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+            header_font = header.font()
+            header_font.setBold(True)
+            header.setFont(header_font)
+            header.setForeground(self.palette().highlight().color())
+            header.setBackground(self.palette().alternateBase())
+            header.setSizeHint(QSize(
+                max(200, self.items.viewport().width() - 16), 34))
             self.items.addItem(header)
             for path, metadata, _modified, _group in sorted(
                     grouped[group], key=lambda x: (x[2], x[0].name), reverse=True):
@@ -8082,6 +8110,7 @@ class ScreenshotHistoryDialog(QDialog):
                 prefix = "★ " if metadata["favorite"] else ""
                 title = prefix + path.stem.replace("Screenshot_", "")
                 entry = QListWidgetItem(icon, title)
+                entry.setSizeHint(QSize(190, 148))
                 entry.setToolTip(
                     f"{path.name}\nТип: {metadata['kind']}\n"
                     f"Категория: {metadata['category'] or '—'}\n"
@@ -8092,6 +8121,7 @@ class ScreenshotHistoryDialog(QDialog):
                 self.items.addItem(entry)
                 if first_item is None or (selected is not None and path == selected):
                     first_item = entry
+        self.items.update_header_sizes()
         if first_item is not None:
             self.items.setCurrentItem(first_item)
 
