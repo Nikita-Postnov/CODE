@@ -30,6 +30,8 @@ from screenshot import (
     ScrollingReviewDialog,
     _scroll_fixed_bands,
     _scroll_body_unchanged,
+    _scroll_stationary_content,
+    _scrollbar_progressed,
     _windows_scroll_state,
     _scroll_overlap,
     _stitch_scroll_frames,
@@ -232,6 +234,109 @@ class ScreenshotThreeWorkflowsTests(unittest.TestCase):
         painter.fillRect(45, 140, 300, 310, QColor("#293d66"))
         painter.end()
         self.assertFalse(_scroll_body_unchanged(before, after))
+
+    @staticmethod
+    def _animated_footer_frames():
+        """Последняя страница с неподвижным текстом и анимированной карточкой."""
+        width, height = 620, 720
+        before = QImage(width, height, QImage.Format_RGB32)
+        before.fill(Qt.white)
+        painter = QPainter(before)
+        painter.setPen(QColor("#162a3b"))
+        painter.setFont(QFont("Arial", 15))
+        for line, y in enumerate(range(35, height - 12, 25)):
+            painter.drawText(38, y, f"Блок {line:03d}: длинный скриншот, проверка текста")
+            painter.fillRect(290, y - 20, 18 + (line * 17) % 62, 4,
+                             QColor("#5678a1"))
+        painter.end()
+        animated = before.copy()
+        painter = QPainter(animated)
+        painter.fillRect(30, 140, 165, 340, QColor("#bd4a2d"))
+        for y in range(145, 475, 22):
+            painter.fillRect(45, y, 126, 9, QColor("#467fae"))
+        painter.end()
+        return before, animated
+
+    def test_dynamic_card_with_static_text_is_no_page_motion(self):
+        before, animated = self._animated_footer_frames()
+        self.assertFalse(_scroll_body_unchanged(before, animated))
+        self.assertTrue(_scroll_stationary_content(before, animated))
+
+    def test_visible_text_scroll_is_not_mistaken_for_stationary_page(self):
+        width, height, offset = 620, 720, 88
+        source = QImage(width, height + offset, QImage.Format_RGB32)
+        source.fill(Qt.white)
+        painter = QPainter(source)
+        painter.setPen(QColor("#243447"))
+        painter.setFont(QFont("Arial", 15))
+        for index, y in enumerate(range(25, source.height(), 27)):
+            painter.drawText(48, y,
+                             f"Уникальная строка {index:03d} и её текстовый блок")
+            painter.fillRect(185, y - 19, 10 + index * 3, 3,
+                             QColor("#467fae"))
+        painter.end()
+        before = source.copy(0, 0, width, height)
+        after = source.copy(0, offset, width, height)
+        self.assertFalse(_scroll_stationary_content(before, after))
+        self.assertTrue(_scrollbar_progressed((12, 100), (40, 100)))
+        self.assertFalse(_scrollbar_progressed((40, 100), (40, 100)))
+
+    def test_dynamic_footer_finishes_after_verified_still_frames(self):
+        before, animated = self._animated_footer_frames()
+        job = ScrollingScreenshotJob(QRect(0, 0, before.width(), before.height()))
+        job.frames = [before.copy(), before.copy()]
+        job.steps = [84]
+        job.fixed_bottoms = [0]
+        job._ever_scrolled = True
+        outputs = []
+        job.completed.connect(lambda image, message: outputs.append((image, message)))
+        with patch("screenshot.grab_region_highdpi", return_value=animated), \
+             patch("screenshot._scroll_overlap", return_value=0), \
+             patch("screenshot._windows_scroll_state", return_value=None), \
+             patch.object(job, "_advance") as advance:
+            for _ in range(job.max_idle_retries - 1):
+                job._take_next_frame()
+                self.assertIsNone(job.finish_reason)
+                self.assertFalse(job._paused)
+            job._take_next_frame()
+        self.assertEqual(job.finish_reason, "end")
+        self.assertEqual(job.steps, [84])
+        self.assertEqual(len(job.frames), 2)
+        self.assertEqual(outputs[0][0].height(), before.height() + 84)
+        self.assertIn("конец", outputs[0][1])
+        self.assertEqual(advance.call_count, job.max_idle_retries - 1)
+
+    def test_dynamic_footer_before_first_scroll_does_not_fake_completion(self):
+        before, animated = self._animated_footer_frames()
+        job = ScrollingScreenshotJob(QRect(0, 0, before.width(), before.height()))
+        job.frames = [before.copy()]
+        with patch("screenshot.grab_region_highdpi", return_value=animated), \
+             patch("screenshot._scroll_overlap", return_value=0), \
+             patch("screenshot._windows_scroll_state", return_value=None), \
+             patch.object(job, "_advance"):
+            for _ in range(job.max_idle_retries):
+                job._take_next_frame()
+        self.assertIsNone(job.finish_reason)
+        self.assertTrue(job._paused)
+        self.assertEqual(job._pause_reason, "no_movement")
+
+    def test_real_native_scroll_motion_prevents_false_end(self):
+        before, animated = self._animated_footer_frames()
+        job = ScrollingScreenshotJob(QRect(0, 0, before.width(), before.height()))
+        job.frames = [before.copy(), before.copy()]
+        job.steps = [84]
+        job.fixed_bottoms = [0]
+        job._ever_scrolled = True
+        job._last_scroll_state = (10, 100)
+        with patch("screenshot.grab_region_highdpi", return_value=animated), \
+             patch("screenshot._scroll_overlap", return_value=0), \
+             patch("screenshot._windows_scroll_state", return_value=(24, 100)), \
+             patch("screenshot.QTimer.singleShot") as timer:
+            job._take_next_frame()
+        self.assertIsNone(job.finish_reason)
+        self.assertEqual(job._idle_retries, 0)
+        self.assertEqual(job._alignment_retries, 1)
+        self.assertEqual(timer.call_count, 1)
 
     def test_scrollbar_probe_returns_none_on_unsupported_platform(self):
         with patch("screenshot.sys.platform", "linux"):
