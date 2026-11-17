@@ -5770,6 +5770,15 @@ class NPCoreUploadDialog(QDialog):
             "Перед отправкой проверь, что на снимке скрыты личные данные.", self)
         self.status.setWordWrap(True)
         layout.addWidget(self.status)
+        # Показываем, какое именно изображение уйдёт на сервер.
+        # Это особенно важно после OCR и работы с историей буфера Win+V.
+        self.preview_label = QLabel(self)
+        self.preview_label.setObjectName("np_npcore_upload_preview")
+        self.preview_label.setAlignment(Qt.AlignCenter)
+        self.preview_label.setPixmap(QPixmap.fromImage(
+            self._image.scaled(QSize(420, 220), Qt.KeepAspectRatio,
+                               Qt.SmoothTransformation)))
+        layout.addWidget(self.preview_label)
         self.path_label = QLabel("", self)
         self.path_label.setWordWrap(True)
         layout.addWidget(self.path_label)
@@ -8524,11 +8533,14 @@ class Launcher(QMainWindow):
         prompt.setInformativeText(
             "Win+V показывает историю, а не обязательно текущий буфер. "
             "Выбери нужную миниатюру в Win+V и повтори отправку "
-            "либо воспользуйся одним из вариантов ниже.")
+            "либо воспользуйся одним из вариантов ниже. "
+            "Последний снимок хранится до редактирования и может "
+            "содержать личные данные. Для отправки изменённого снимка "
+            "используй кнопку «В NPCore» в редакторе.")
         last_button = None
         if not self._last_captured_image.isNull():
             last_button = prompt.addButton(
-                "Последний снимок", QMessageBox.ActionRole)
+                "Последний исходный снимок", QMessageBox.ActionRole)
         file_button = prompt.addButton(
             "Выбрать изображение…", QMessageBox.ActionRole)
         prompt.addButton("Отмена", QMessageBox.RejectRole)
