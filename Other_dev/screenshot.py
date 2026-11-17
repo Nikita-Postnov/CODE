@@ -394,7 +394,7 @@ def save_history_metadata(path: Path, metadata: dict) -> bool:
         current["tags"] = []
     current["tags"] = [str(x)[:48] for x in current["tags"] if str(x).strip()][:30]
     current["favorite"] = current.get("favorite") is True
-    if current.get("kind") not in ("shot", "scroll", "window"):
+    if current.get("kind") not in ("shot", "quick", "scroll", "window"):
         current["kind"] = "shot"
     for key, limit in (("category", 120), ("project", 120), ("ocr_text", 200_000)):
         current[key] = str(current.get(key, ""))[:limit]
@@ -448,7 +448,7 @@ def archive_screenshot(image: QImage, kind: str = "shot", project: str = "") -> 
         destination = SCREENSHOT_HISTORY_DIR / filename
         if save_image_atomically(image, destination, "PNG"):
             save_history_metadata(destination, {
-                "kind": kind if kind in ("shot", "scroll", "window") else "shot",
+                "kind": kind if kind in ("shot", "quick", "scroll", "window") else "shot",
                 "project": str(project or "")[:120],
             })
             return destination
@@ -8139,7 +8139,6 @@ class ScreenshotHistoryDialog(QDialog):
                 preview = reader.read()
                 if preview.isNull():
                     continue
-                icon = QIcon(QPixmap.fromImage(preview))
                 prefix = "★ " if metadata["favorite"] else ""
                 timestamp = re.search(
                     r"_(\d{8})_(\d{6})(?:_|$)", path.stem)
