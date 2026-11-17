@@ -109,6 +109,9 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QPlainTextEdit,
     QFontComboBox,
+    QTableWidget,
+    QTableWidgetItem,
+    QHeaderView,
 )
 
 log = logging.getLogger(__name__)
@@ -4905,70 +4908,289 @@ def format_ocr_paragraphs(payload: dict) -> str:
     return "".join(result).strip()
 
 
-def ocr_layout_to_markdown_table(payload: dict) -> str:
-    """Пробует восстановить столбцы таблицы по координатам и промежуткам между словами."""
+def ocr_layout_to_table_cells(payload: dict) -> list[list[str]]:
+    """Восстановить таблицу по геометрии Windows OCR, включая раздельные линии.
+
+    WinRT OCR группирует текст самостоятельно: соседние ячейки одной строки
+    часто оказываются разными OCR Lines, а многострочная ячейка — несколькими
+    Lines. Поэтому ищем устойчивые начала колонок и совпадающие уровни строк,
+    независимо от исходного порядка распознавания.
+    """
     lines = payload.get("lines", []) if isinstance(payload, dict) else []
-    raw_rows = []
-    all_heights = []
-    for line in lines if isinstance(lines, list) else []:
-        words = line.get("words", []) if isinstance(line, dict) else []
-        valid = [w for w in words if isinstance(w, dict) and str(w.get("text", "")).strip()]
-        valid.sort(key=lambda w: int(w.get("x", 0)))
-        if not valid:
+    if not isinstance(lines, list):
+        return []
+
+    def coordinate(rec, name: str, default=0.0) -> float:
+        try:
+            value = float(rec.get(name, default))
+            return value if math.isfinite(value) and abs(value) < 1_000_000 else default
+        except (TypeError, ValueError, OverflowError, AttributeError):
+            return default
+
+    spans = []
+    heights = []
+    for line in lines[:4000]:
+        if not isinstance(line, dict):
             continue
-        row_cells = []
-        cell_words = []
+        words = line.get("words", [])
+        valid = []
+        if isinstance(words, list):
+            for word in words[:250]:
+                if not isinstance(word, dict):
+                    continue
+                value = str(word.get("text") or "").strip()
+                if not value:
+                    continue
+                x = coordinate(word, "x")
+                y = coordinate(word, "y", coordinate(line, "y"))
+                width = max(1.0, coordinate(word, "width", 1))
+                height = max(1.0, coordinate(word, "height", 14))
+                valid.append((x, y, width, height, value))
+        if not valid:
+            value = str(line.get("text") or "").strip()
+            if value:
+                spans.append({
+                    "x": coordinate(line, "x"), "y": coordinate(line, "y"),
+                    "h": max(1.0, coordinate(line, "height", 14)), "text": value})
+                heights.append(max(1.0, coordinate(line, "height", 14)))
+            continue
+
+        valid.sort(key=lambda word: word[0])
+        line_height = sorted(word[3] for word in valid)[len(valid) // 2]
+        heights.append(line_height)
+        # Даже если движок смешал две ячейки в одну OCR Line,
+        # промежуток между колонками существенно больше обычного пробела.
+        gap_limit = max(22.0, line_height * 1.75)
+        batches = []
+        current = []
         previous_right = None
         for word in valid:
-            x = int(word.get("x", 0))
-            width = max(1, int(word.get("width", 1)))
-            height = max(1, int(word.get("height", 14)))
-            all_heights.append(height)
-            gap_limit = max(18, round(height * 1.35))
-            if previous_right is not None and x - previous_right > gap_limit:
-                row_cells.append((cell_words[0][0], " ".join(item[1] for item in cell_words)))
-                cell_words = []
-            cell_words.append((x, str(word.get("text", "")).strip()))
-            previous_right = x + width
-        if cell_words:
-            row_cells.append((cell_words[0][0], " ".join(item[1] for item in cell_words)))
-        if len(row_cells) >= 2:
-            raw_rows.append(row_cells)
-    if len(raw_rows) < 2:
-        return ""
-    median_height = sorted(all_heights)[len(all_heights) // 2] if all_heights else 14
-    cluster_gap = max(28, round(median_height * 2.6))
-    centers = []
-    counts = []
-    for row in raw_rows:
-        for x, _text in row:
-            if centers and min(abs(x - center) for center in centers) <= cluster_gap:
-                index = min(range(len(centers)), key=lambda i: abs(x - centers[i]))
-                n = counts[index] + 1
-                centers[index] = (centers[index] * counts[index] + x) / n
-                counts[index] = n
-            else:
-                centers.append(float(x))
-                counts.append(1)
-    centers.sort()
-    if len(centers) < 2 or len(centers) > 12:
-        return ""
+            if current and word[0] - previous_right > gap_limit:
+                batches.append(current)
+                current = []
+            current.append(word)
+            previous_right = word[0] + word[2]
+        if current:
+            batches.append(current)
+        for batch in batches:
+            value = " ".join(item[4] for item in batch)
+            spans.append({
+                "x": batch[0][0],
+                "y": min(item[1] for item in batch),
+                "h": max(item[1] + item[3] for item in batch) -
+                     min(item[1] for item in batch),
+                "text": value,
+            })
+
+    if len(spans) < 6:
+        return []
+    median_height = sorted(heights)[len(heights) // 2] if heights else 14
+    x_tolerance = max(15.0, min(38.0, median_height * 1.55))
+    y_tolerance = max(6.0, min(19.0, median_height * .80))
+
+    # Кластеры устойчивых x-координат без предположения о порядке OCR Lines.
+    clusters = []
+    for span in sorted(spans, key=lambda item: item["x"]):
+        matched = next((group for group in clusters
+                        if abs(group["x"] - span["x"]) <= x_tolerance), None)
+        if matched is None:
+            matched = {"x": span["x"], "members": []}
+            clusters.append(matched)
+        matched["members"].append(span)
+        matched["x"] = sum(value["x"] for value in matched["members"]) / len(
+            matched["members"])
+    frequent = sorted(
+        (group for group in clusters if len(group["members"]) >= 3),
+        key=lambda group: len(group["members"]), reverse=True)[:22]
+    frequent.sort(key=lambda group: group["x"])
+    if len(frequent) < 2:
+        return []
+
+    def aligned_pairs(left, right):
+        a = sorted(left["members"], key=lambda item: item["y"])
+        b = sorted(right["members"], key=lambda item: item["y"])
+        used = set()
+        result = []
+        for first in a:
+            candidates = [
+                (abs(second["y"] - first["y"]), j, second)
+                for j, second in enumerate(b)
+                if j not in used and
+                abs(second["y"] - first["y"]) <= y_tolerance]
+            if not candidates:
+                continue
+            _distance, index, second = min(candidates, key=lambda value: value[0])
+            used.add(index)
+            result.append((min(first["y"], second["y"]), first, second))
+        return sorted(result, key=lambda item: item[0])
+
+    # Берём наиболее протяжённую группу строк с повторяющимися колонками,
+    # а не все надписи страницы (например, меню браузера и боковую панель).
+    max_row_gap = max(68.0, min(135.0, median_height * 6.2))
+    best = None
+    for i, left in enumerate(frequent):
+        for right in frequent[i + 1:]:
+            if right["x"] - left["x"] < max(45.0, median_height * 3.2):
+                continue
+            matches = aligned_pairs(left, right)
+            if len(matches) < 3:
+                continue
+            runs = []
+            segment = []
+            for item in matches:
+                if segment and item[0] - segment[-1][0] > max_row_gap:
+                    runs.append(segment)
+                    segment = []
+                segment.append(item)
+            if segment:
+                runs.append(segment)
+            for run in runs:
+                if len(run) < 3:
+                    continue
+                # Одинаковая высота нескольких строк — признак таблицы.
+                # Учитываем размер группы и количество подтверждений,
+                # чтобы две совпавшие строки из разных областей не победили.
+                score = (len(run), min(30, len(run)) *
+                         (run[-1][0] - run[0][0] + median_height))
+                if best is None or score > best[0]:
+                    best = (score, left, right, run)
+    if best is None:
+        return []
+
+    _score, left, right, pairs = best
+    anchors = [item[0] for item in pairs]
+    selected = [left, right]
+    # Поддержка таблиц с тремя и более колонками при наличии повторяющихся
+    # вертикально выровненных ячеек. Нерегулярный текст сбоку исключаем.
+    for group in frequent:
+        if group in selected:
+            continue
+        if min(abs(group["x"] - current["x"]) for current in selected) < (
+                max(45.0, median_height * 3.2)):
+            continue
+        support = sum(any(abs(value["y"] - anchor) <= y_tolerance
+                          for value in group["members"]) for anchor in anchors)
+        if support >= max(3, math.ceil(len(anchors) * .70)):
+            selected.append(group)
+    selected.sort(key=lambda group: group["x"])
+    if len(selected) > 8:
+        selected = [left, right]
+        selected.sort(key=lambda group: group["x"])
+
     rows = []
-    for raw_row in raw_rows:
-        cells = [""] * len(centers)
-        for x, text in raw_row:
-            index = min(range(len(centers)), key=lambda i: abs(centers[i] - x))
-            cells[index] = (cells[index] + " " + text).strip()
+    for index, start_y in enumerate(anchors):
+        end_y = anchors[index + 1] - y_tolerance if index + 1 < len(anchors) else (
+            anchors[-1] + max_row_gap)
+        cells = []
+        for column in selected:
+            fragments = sorted(
+                (member for member in column["members"]
+                 if start_y - y_tolerance <= member["y"] < end_y),
+                key=lambda member: (member["y"], member["x"]))
+            parts = []
+            for fragment in fragments:
+                piece = fragment["text"]
+                if piece and (not parts or piece != parts[-1]):
+                    parts.append(piece)
+            cells.append(" ".join(parts).strip())
         if sum(bool(cell) for cell in cells) >= 2:
             rows.append(cells)
-    if len(rows) < 2 or max(sum(bool(c) for c in row) for row in rows) < 2:
+    if len(rows) < 3:
+        return []
+    return rows
+
+
+def ocr_table_cells_to_markdown(rows: list[list[str]]) -> str:
+    if not rows or len(rows) < 2:
         return ""
-    width = len(centers)
-    output = ["| " + " | ".join(cell.replace("|", "\\|") for cell in rows[0]) + " |",
-              "| " + " | ".join("---" for _ in range(width)) + " |"]
-    output.extend("| " + " | ".join(cell.replace("|", "\\|") for cell in row) + " |"
-                  for row in rows[1:])
+    width = max(len(row) for row in rows)
+    if width < 2:
+        return ""
+
+    def cell(value: str) -> str:
+        return str(value).replace("\\", "\\\\").replace("|", "\\|").replace("\n", "<br>")
+
+    normalized = [list(row) + [""] * (width - len(row)) for row in rows]
+    output = [
+        "| " + " | ".join(cell(value) for value in normalized[0]) + " |",
+        "| " + " | ".join("---" for _ in range(width)) + " |",
+    ]
+    output.extend(
+        "| " + " | ".join(cell(value) for value in row) + " |"
+        for row in normalized[1:])
     return "\n".join(output)
+
+
+def ocr_layout_to_markdown_table(payload: dict) -> str:
+    """Совместимый интерфейс для экспорта OCR-таблицы в Markdown."""
+    return ocr_table_cells_to_markdown(ocr_layout_to_table_cells(payload))
+
+
+class OCRTableDialog(QDialog):
+    """Просмотр восстановленной таблицы и копирование в Excel/Markdown."""
+
+    def __init__(self, rows: list[list[str]], parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Таблица из распознанного текста")
+        self.resize(840, 530)
+        layout = QVBoxLayout(self)
+        description = QLabel(
+            "Проверь ячейки перед копированием. Двойной щелчок позволяет "
+            "исправить текст прямо в таблице.", self)
+        description.setWordWrap(True)
+        layout.addWidget(description)
+        self.table = QTableWidget(max(0, len(rows) - 1), len(rows[0]), self)
+        self.table.setObjectName("ocr_table_preview")
+        self.table.setHorizontalHeaderLabels(rows[0])
+        self.table.verticalHeader().hide()
+        self.table.setWordWrap(True)
+        self.table.setEditTriggers(
+            QAbstractItemView.DoubleClicked | QAbstractItemView.EditKeyPressed)
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        for i, row in enumerate(rows[1:]):
+            for j, value in enumerate(row):
+                self.table.setItem(i, j, QTableWidgetItem(value))
+        self.table.resizeRowsToContents()
+        layout.addWidget(self.table, 1)
+        actions = QHBoxLayout()
+        self.excel_button = QPushButton("Копировать для Excel", self)
+        self.excel_button.clicked.connect(self.copy_tsv)
+        actions.addWidget(self.excel_button)
+        self.markdown_button = QPushButton("Копировать Markdown", self)
+        self.markdown_button.clicked.connect(self.copy_markdown)
+        actions.addWidget(self.markdown_button)
+        close = QPushButton("Закрыть", self)
+        close.clicked.connect(self.accept)
+        actions.addStretch(1)
+        actions.addWidget(close)
+        layout.addLayout(actions)
+
+    def values(self) -> list[list[str]]:
+        headers = [
+            self.table.horizontalHeaderItem(j).text()
+            if self.table.horizontalHeaderItem(j) is not None else ""
+            for j in range(self.table.columnCount())]
+        values = [headers]
+        for i in range(self.table.rowCount()):
+            values.append([
+                self.table.item(i, j).text()
+                if self.table.item(i, j) is not None else ""
+                for j in range(self.table.columnCount())])
+        return values
+
+    def copy_tsv(self) -> None:
+        # TSV сохраняет два столбца для Excel и Google Sheets.
+        import csv
+        import io
+        stream = io.StringIO(newline="")
+        writer = csv.writer(stream, delimiter="\t", lineterminator="\r\n")
+        writer.writerows(self.values())
+        QApplication.clipboard().setText(stream.getvalue(), QClipboard.Clipboard)
+
+    def copy_markdown(self) -> None:
+        QApplication.clipboard().setText(
+            ocr_table_cells_to_markdown(self.values()), QClipboard.Clipboard)
+
 
 _ocr_dialogs: list[QDialog] = []
 
@@ -5312,12 +5534,15 @@ class OCRResultDialog(QDialog):
             self.translation_status.setText("Перевод скопирован в буфер обмена.")
 
     def convert_table(self) -> None:
-        table = ocr_layout_to_markdown_table(self.payload)
-        if not table:
-            QMessageBox.information(self, "Таблица",
-                                    "Не удалось уверенно определить столбцы. Оставлен исходный текст.")
+        rows = ocr_layout_to_table_cells(self.payload)
+        if not rows:
+            QMessageBox.information(
+                self, "Таблица",
+                "В выделенной области не найдены несколько выровненных строк "
+                "и столбцов. Выдели область таблицы плотнее и повтори OCR.")
             return
-        self.text_edit.setPlainText(table)
+        dialog = OCRTableDialog(rows, self)
+        dialog.exec()
 
     def translate_text(self) -> None:
         if self._translation_worker is not None and self._translation_worker.isRunning():
