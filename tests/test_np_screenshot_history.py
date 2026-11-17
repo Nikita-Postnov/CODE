@@ -201,6 +201,8 @@ class HistoryGuiTests(unittest.TestCase):
         dialog.resize(1100, 720)
         dialog.show()
         self.app.processEvents()
+        dialog.group_filter.setCurrentIndex(
+            dialog.group_filter.findData("project"))
         headers = [
             dialog.items.item(i)
             for i in range(dialog.items.count())
@@ -213,7 +215,7 @@ class HistoryGuiTests(unittest.TestCase):
             if dialog.items.item(i).data(shot.Qt.UserRole)
         ]
         self.assertEqual(len(headers), 1)
-        self.assertEqual(headers[0].text(), "Без проекта")
+        self.assertEqual(headers[0].text(), "NPCore")
         self.assertGreaterEqual(
             headers[0].sizeHint().width(),
             dialog.items.viewport().width() - 20)
