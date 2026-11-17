@@ -8016,7 +8016,7 @@ class ScreenshotHistoryDialog(QDialog):
         # Размер каждой карточки задаётся отдельно: заголовки занимают
         # всю ширину, а миниатюры располагаются компактной сеткой.
         self.items.setGridSize(QSize())
-        self.items.setSpacing(8)
+        self.items.setSpacing(14)
         self.items.itemDoubleClicked.connect(lambda _item: self.open_selected())
         layout.addWidget(self.items, 1)
         actions = QHBoxLayout()
@@ -8108,8 +8108,15 @@ class ScreenshotHistoryDialog(QDialog):
                     continue
                 icon = QIcon(QPixmap.fromImage(preview))
                 prefix = "★ " if metadata["favorite"] else ""
-                title = prefix + path.stem.replace("Screenshot_", "")
-                entry = QListWidgetItem(icon, title)
+                timestamp = re.search(
+                    r"_(\d{8})_(\d{6})(?:_|$)", path.stem)
+                if timestamp:
+                    stamp = timestamp.group(2)
+                    capture_time = f"{stamp[:2]}:{stamp[2:4]}:{stamp[4:6]}"
+                else:
+                    capture_time = time.strftime(
+                        "%H:%M:%S", time.localtime(_modified))
+                entry = QListWidgetItem(icon, prefix + capture_time)
                 entry.setSizeHint(QSize(190, 148))
                 entry.setToolTip(
                     f"{path.name}\nТип: {metadata['kind']}\n"
