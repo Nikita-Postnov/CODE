@@ -3757,6 +3757,12 @@ class CanvasView(QGraphicsView):
         self._scene_edit_pre = None
         self._scene_edit_items = []
         self._refresh()
+        # Буфер обмена часто ещё содержит исходный снимок, полученный
+        # PrintScreen. Заменяем текущий буфер уже закрытой версией.
+        QApplication.clipboard().setImage(
+            self._flatten_on_white(
+                self.render_scene_to_image(hide_handles=True)),
+            QClipboard.Clipboard)
         self._set_dirty(True)
         return True
 
@@ -4602,7 +4608,9 @@ class EditorWindow(QMainWindow):
             button.setPopupMode(QToolButton.InstantPopup)
             button.setToolTip("Все команды и прежние сочетания клавиш доступны в меню")
             t1.addWidget(button)
-        add_action(t1, "🔒 Найти личные данные", self.scan_private_data)
+        privacy_action = add_action(
+            t1, "🔒 Найти личные данные", self.scan_private_data)
+        tool_menus["Обработка"].addAction(privacy_action)
         t1.addSeparator()
         self.line_caption = QLabel(" Линия")
         self.line_caption.setStyleSheet("color: #c8c8c8;")
