@@ -5514,6 +5514,98 @@ def compare_screenshot_images(before: QImage, after: QImage,
     return canvas, pct
 
 
+
+def _scroll_overlap_tolerant(previous: QImage, current: QImage) -> int:
+    """Резервное совмещение по содержимому, устойчивое к сглаживанию и
+    небольшим визуальным изменениям между снимками.
+
+    Для сравнения используются уменьшенные КОПИИ. В конечное изображение
+    попадают исключительно исходные пиксели, поэтому текст не размывается.
+    Повторяющиеся участки с неоднозначным сдвигом отклоняются.
+    """
+    if (previous.isNull() or current.isNull() or
+            previous.size() != current.size()):
+        return 0
+    width, height = previous.width(), previous.height()
+    if width < 40 or height < 100:
+        return 0
+
+    margin = max(2, round(width * .07))
+    sample_width = min(224, width - 2 * margin)
+    x_stride = max(1, sample_width // 48)
+    x_positions = tuple(range(0, sample_width, x_stride))
+    top_fixed, bottom_fixed = _scroll_fixed_bands(previous, current)
+    top = max(top_fixed + 5, 8, round(height * .07))
+    bottom = min(height - bottom_fixed - 5, height - max(8, round(height * .06)))
+    if bottom - top < 90:
+        return 0
+
+    def signatures(image: QImage) -> list[bytes]:
+        cropped = image.copy(margin, 0, width - 2 * margin, height)
+        if cropped.width() != sample_width:
+            cropped = cropped.scaled(
+                sample_width, height, Qt.IgnoreAspectRatio, Qt.FastTransformation)
+        gray = cropped.convertToFormat(QImage.Format_Grayscale8)
+        raw = bytes(gray.constBits())
+        stride = gray.bytesPerLine()
+        return [bytes(raw[y * stride + x] for x in x_positions)
+                for y in range(height)]
+
+    a, b = signatures(previous), signatures(current)
+    # Только текстурные строки. Однотонные области не дают информации
+    # о смещении и часто вызывают ложное совпадение.
+    anchor_step = max(3, height // 145)
+    anchors = [
+        y for y in range(top, bottom, anchor_step)
+        if (max(a[y]) - min(a[y]) >= 28 and
+            sum(abs(a[y][i] - a[y][i-1])
+                for i in range(1, len(a[y]))) >= 65)
+    ]
+    if len(anchors) < 10:
+        return 0
+
+    min_shift = max(3, round(height * .018))
+    max_shift = min(round(height * .80), bottom - top - 45)
+    if max_shift < min_shift:
+        return 0
+
+    matches = []
+    for shift in range(min_shift, max_shift + 1):
+        eligible = [y for y in anchors if top <= y - shift < bottom]
+        if len(eligible) < 10:
+            continue
+        matched = 0
+        for y in eligible:
+            other = b[y - shift]
+            # Средняя яркостная ошибка: антиалиасинг, мягкая анимация,
+            # небольшие изменения цвета не должны ломать сопоставление.
+            if sum(abs(left - right) for left, right in zip(a[y], other)) <= (
+                    14 * len(x_positions)):
+                matched += 1
+        if matched >= 8:
+            ratio = matched / len(eligible)
+            if ratio >= .72:
+                matches.append((ratio, matched, shift))
+
+    if not matches:
+        return 0
+    matches.sort(reverse=True)
+    ratio, matched, shift = matches[0]
+    # При одинаковых повторяющихся строках нельзя угадывать смещение:
+    # это привело бы к потерянным или продублированным строкам.
+    for other_ratio, other_matched, other_shift in matches[1:]:
+        if other_ratio < ratio - .065:
+            break
+        if (abs(other_shift - shift) > 2 and
+                other_matched >= max(8, round(matched * .75))):
+            log.info("scroll: неоднозначный приблизительный сдвиг %d/%d",
+                     shift, other_shift)
+            return 0
+    log.info("scroll: приблизительное совмещение %d px, уверенность %.2f",
+             shift, ratio)
+    return shift
+
+
 def _scroll_overlap(previous: QImage, current: QImage) -> int:
     """Точный сдвиг для длинного снимка, в исходных вертикальных пикселях.
 
@@ -5574,20 +5666,20 @@ def _scroll_overlap(previous: QImage, current: QImage) -> int:
         if equal >= 5:
             scores.append((equal / len(eligible), equal, shift))
     if not scores:
-        return 0
+        return _scroll_overlap_tolerant(previous, current)
 
     scores.sort(reverse=True)
     best_ratio, _count, best_shift = scores[0]
     if best_ratio < .70:
         log.info("scroll: надёжное совпадение строк не найдено (%.2f)",
                  best_ratio)
-        return 0
+        return _scroll_overlap_tolerant(previous, current)
 
     # Реально проверяем пиксельные строки, чтобы исключить коллизии хешей.
     eligible = [y for y in informative if top <= y - best_shift < bottom]
     equal_real = sum(a[y] == b[y - best_shift] for y in eligible)
     if equal_real < 8 or equal_real / len(eligible) < .70:
-        return 0
+        return _scroll_overlap_tolerant(previous, current)
 
     # Слишком похожие периодические строки (например одинаковые элементы
     # таблицы) не позволяют достоверно определить, где заканчивается слово.
@@ -5792,6 +5884,7 @@ class ScrollingCapturePanel(QWidget):
     """Компактная немодальная панель; скрывается во время самого захвата."""
 
     finish_requested = Signal()
+    continue_requested = Signal()
     speed_changed = Signal(int)
 
     def __init__(self, max_steps: int):
@@ -5816,7 +5909,7 @@ class ScrollingCapturePanel(QWidget):
         self.speed_label = QLabel("Интервал прокрутки: 900 мс", self)
         speed_row.addWidget(self.speed_label)
         self.speed_slider = QSlider(Qt.Horizontal, self)
-        self.speed_slider.setRange(400, 1600)
+        self.speed_slider.setRange(400, 2500)
         self.speed_slider.setSingleStep(100)
         self.speed_slider.setPageStep(200)
         self.speed_slider.setValue(900)
@@ -5828,6 +5921,11 @@ class ScrollingCapturePanel(QWidget):
         button.setObjectName("scroll_capture_finish")
         button.clicked.connect(self.finish_requested.emit)
         layout.addWidget(button)
+        self.continue_button = QPushButton("Продолжить захват", self)
+        self.continue_button.setObjectName("scroll_capture_continue")
+        self.continue_button.clicked.connect(self.continue_requested.emit)
+        self.continue_button.hide()
+        layout.addWidget(self.continue_button)
         screen = QGuiApplication.screenAt(QCursor.pos()) or QGuiApplication.primaryScreen()
         if screen is not None:
             rect = screen.availableGeometry()
@@ -5863,6 +5961,14 @@ class ScrollingCapturePanel(QWidget):
     def set_status(self, status: str):
         self.status.setText(status)
 
+    def show_resume(self, status: str) -> None:
+        self.set_status(status)
+        self.continue_button.show()
+        self.show()
+
+    def hide_resume(self) -> None:
+        self.continue_button.hide()
+
     def close_silently(self):
         self._silent_close = True
         self.close()
@@ -5874,59 +5980,106 @@ class ScrollingCapturePanel(QWidget):
 
 
 class ScrollingScreenshotJob(QObject):
-    """Прокрутка с проверкой движения, достоверной склейкой и ручной остановкой."""
+    """Длинный захват с проверяемой склейкой и возможностью восстановления.
+
+    В сомнительных случаях захват приостанавливается, а подтверждённые
+    кадры сохраняются. Новые кадры не добавляются без достоверного сдвига.
+    """
 
     completed = Signal(QImage, str)
     progress = Signal(int, int)
     status_changed = Signal(str)
 
-    def __init__(self, area: QRect, parent=None, max_steps: int = 24):
+    def __init__(self, area: QRect, parent=None, max_steps: int = 48):
         super().__init__(parent)
         self.area = QRect(area)
-        self.max_steps = max(1, min(30, max_steps))
+        self.max_steps = max(1, min(80, max_steps))
+        self.max_output_pixels = 36_000_000
         self.frames: list[QImage] = []
         self.steps: list[int] = []
+        self.fixed_bottoms: list[int] = []
         self._cursor = QCursor.pos()
+        self._scroll_point = self.area.center()
+        self._target_hwnd: Optional[int] = None
         self._finished = False
+        self._paused = False
+        self._pause_reason = ""
         self.finish_reason: Optional[str] = None
         self._scroll_panel: Optional[ScrollingCapturePanel] = None
         self.scroll_delay_ms = 900
-        self.fixed_bottoms: list[int] = []
         self._last_scroll_state: Optional[tuple[int, int]] = None
         self._idle_retries = 0
         self._alignment_retries = 0
         self._ever_scrolled = False
-        self.max_idle_retries = 3
-        self._target_hwnd: Optional[int] = None
+        self.max_idle_retries = 5
+        self._wheel_units = 1
 
     def attach_panel(self, panel: ScrollingCapturePanel):
         self._scroll_panel = panel
 
     def set_scroll_delay(self, milliseconds: int) -> None:
-        self.scroll_delay_ms = max(400, min(1600, int(milliseconds)))
+        self.scroll_delay_ms = max(400, min(2500, int(milliseconds)))
 
     def start(self):
         if sys.platform != "win32":
             self._finish("unsupported", "Длинный снимок доступен в Windows.")
             return
-        QCursor.setPos(self.area.center())
+        if self._scroll_panel is not None:
+            self._scroll_panel.hide()
+        QCursor.setPos(self._scroll_point)
         QTimer.singleShot(250, self._capture_first)
 
     def stop(self):
-        """Ручное завершение сохраняет все уже подтверждённые кадры."""
+        """Завершить и сохранить только проверенную часть."""
         self._finish("manual", "Снимок завершён вручную. Сохранены подтверждённые кадры.")
 
-    def _capture_first(self):
+    def _pause(self, reason: str, message: str) -> None:
         if self._finished:
+            return
+        self._paused = True
+        self._pause_reason = reason
+        log.warning("scroll paused: %s; confirmed=%d", reason, len(self.steps))
+        self.status_changed.emit(message)
+        if self._scroll_panel is not None:
+            self._scroll_panel.show_resume(message)
+
+    def resume(self) -> None:
+        """Продолжить после смены области наведения или ожидания загрузки."""
+        if self._finished or not self._paused:
+            return
+        point = QCursor.pos()
+        if self.area.contains(point):
+            self._scroll_point = point
+        self._target_hwnd = _windows_target_for_scroll(self._scroll_point)
+        reason = self._pause_reason
+        self._pause_reason = ""
+        self._paused = False
+        self._idle_retries = 0
+        self._alignment_retries = 0
+        if self._scroll_panel is not None:
+            self._scroll_panel.hide_resume()
+        if reason == "alignment":
+            # Возможна поздняя загрузка контента: сперва повторим кадр
+            # без нового колеса, чтобы не пропустить участок страницы.
+            QTimer.singleShot(550, self._capture_next)
+        else:
+            self._advance()
+
+    def _capture_first(self):
+        if self._finished or self._paused:
             return
         try:
             first = grab_region_highdpi(self.area)
             if first.isNull() or first.height() < 70:
                 self._finish("error", "Не удалось снять область для прокрутки.")
                 return
+            if first.width() * first.height() > self.max_output_pixels:
+                self._finish("limit", "Выбранная область слишком велика для снимка.")
+                return
             self.frames.append(first)
-            self._target_hwnd = _windows_target_for_scroll(self.area.center())
-            log.info("scroll: selected window=%s", self._target_hwnd)
+            self._target_hwnd = _windows_target_for_scroll(self._scroll_point)
+            log.info("scroll: target=%s; area=%s", self._target_hwnd,
+                     self.area.getRect())
             self.progress.emit(0, self.max_steps)
             self._advance()
         except Exception:
@@ -5934,33 +6087,31 @@ class ScrollingScreenshotJob(QObject):
             self._finish("error", "Ошибка захвата первого кадра.")
 
     def _advance(self):
-        if self._finished:
+        if self._finished or self._paused:
             return
         if len(self.steps) >= self.max_steps:
             self._finish("limit", f"Достигнут предел {self.max_steps} прокруток.")
             return
-        QCursor.setPos(self.area.center())
-        self._last_scroll_state = _windows_scroll_state(self.area.center())
-        self.status_changed.emit("Прокрутка страницы и проверка изменений…")
+        QCursor.setPos(self._scroll_point)
+        self._last_scroll_state = _windows_scroll_state(self._scroll_point)
+        self.status_changed.emit("Прокрутка и проверка совмещения кадров…")
         if self._scroll_panel is not None:
             self._scroll_panel.hide()
-        # Даём Qt обновить рабочий стол: скрытая панель не должна
-        # перехватывать мышь и забирать фокус у страницы.
         QTimer.singleShot(110, self._send_scroll)
 
     def _send_scroll(self):
-        if self._finished:
+        if self._finished or self._paused:
             return
-        QCursor.setPos(self.area.center())
+        QCursor.setPos(self._scroll_point)
         if self._target_hwnd is None:
-            self._target_hwnd = _windows_target_for_scroll(self.area.center())
+            self._target_hwnd = _windows_target_for_scroll(self._scroll_point)
         focused = _windows_focus_scroll_target(self._target_hwnd)
-        log.info("scroll: wheel target=%s, foreground=%s",
-                 self._target_hwnd, focused)
+        log.info("scroll: wheel target=%s focused=%s notches=%d",
+                 self._target_hwnd, focused, self._wheel_units)
         try:
-            # Один шаг — меньше риска потерять перекрывающиеся строки.
-            # Панель появится после доставки события, а не одновременно.
-            ctypes.windll.user32.mouse_event(0x0800, 0, 0, (-120) & 0xFFFFFFFF, 0)
+            amount = -120 * self._wheel_units
+            ctypes.windll.user32.mouse_event(
+                0x0800, 0, 0, amount & 0xFFFFFFFF, 0)
         except (OSError, AttributeError):
             self._finish("error", "Windows не разрешила прокрутку окна.")
             return
@@ -5968,77 +6119,83 @@ class ScrollingScreenshotJob(QObject):
         QTimer.singleShot(self.scroll_delay_ms, self._capture_next)
 
     def _show_scroll_panel(self):
-        if not self._finished and self._scroll_panel is not None:
+        if not self._finished and not self._paused and self._scroll_panel is not None:
             self._scroll_panel.show()
 
     def _capture_next(self):
-        if self._finished:
+        if self._finished or self._paused:
             return
-        # Панель не должна попасть в изображение даже при захвате всего экрана.
         if self._scroll_panel is not None:
             self._scroll_panel.hide()
         QTimer.singleShot(90, self._take_next_frame)
 
     def _take_next_frame(self):
-        if self._finished:
+        if self._finished or self._paused:
             return
         try:
             frame = grab_region_highdpi(self.area)
-            if frame.isNull() or frame.size() != self.frames[0].size():
+            if frame.isNull() or not self.frames or frame.size() != self.frames[0].size():
                 self._finish("error", "Размер области изменился во время прокрутки.")
                 return
 
-            state_after = _windows_scroll_state(self.area.center())
             if _scroll_body_unchanged(self.frames[-1], frame):
                 self._idle_retries += 1
                 if self._idle_retries < self.max_idle_retries:
                     self.status_changed.emit(
-                        f"Содержимое пока не изменилось. Повторная проверка "
+                        f"Ожидаем движение страницы: попытка "
                         f"{self._idle_retries + 1} из {self.max_idle_retries}…")
                     self._advance()
                     return
-                # Нативный scrollbar служит подсказкой, но сам по себе
-                # не подтверждает конец страницы. Важна история движения.
                 if self._ever_scrolled:
-                    self._finish("end",
-                                 "Содержимое не меняется после нескольких прокруток. "
-                                 "Вероятно, достигнут конец страницы.")
+                    self._finish("end", "Содержимое не менялось после нескольких "
+                                 "попыток прокрутки. Вероятно, достигнут конец страницы.")
                 else:
-                    self._finish("no_movement",
-                                 "После нескольких попыток содержимое не прокрутилось. "
-                                 "Проверь выбранную область и положение курсора.")
+                    self._pause("no_movement",
+                                "Прокрутка не обнаружена. Наведи курсор на "
+                                "прокручиваемую часть страницы и нажми "
+                                "«Продолжить захват». Можно сохранить первый экран.")
                 return
 
-            # Видимые изменения есть, даже если сравнение кадров не удалось.
             self._idle_retries = 0
             offset = _scroll_overlap(self.frames[-1], frame)
             if offset <= 0:
                 self._alignment_retries += 1
                 if self._alignment_retries < 3:
                     self.status_changed.emit(
-                        "Содержимое изменилось, уточняем совмещение кадров…")
-                    # Повторяем снимок без прокрутки, иначе теряется перекрытие.
+                        "Страница изменилась. Ожидаем стабилизацию текста "
+                        "для точного совмещения кадров…")
                     QTimer.singleShot(550, self._capture_next)
                     return
-                self._finish("alignment",
-                             "Не удалось надёжно совместить кадры после "
-                             "повторной попытки. Сохранены подтверждённые кадры.")
+                self._pause("alignment",
+                            "Кадры не удаётся совместить без искажения текста. "
+                            "Дождись завершения загрузки и нажми «Продолжить захват» "
+                            "или «Завершить и сохранить».")
                 return
             self._alignment_retries = 0
-            if self.frames[0].height() + sum(self.steps) + offset > 16000:
-                self._finish("limit", "Достигнут предел высоты 16000 пикселей.")
+
+            next_height = self.frames[0].height() + sum(self.steps) + offset
+            safe_height = min(40000, self.max_output_pixels //
+                              max(1, self.frames[0].width()))
+            if next_height > safe_height:
+                self._finish("limit", "Достигнут безопасный предел высоты "
+                             "изображения. Сохранены подтверждённые кадры.")
                 return
+
             _fixed_top, fixed_bottom = _scroll_fixed_bands(self.frames[-1], frame)
             self.frames.append(frame)
             self.steps.append(offset)
             self.fixed_bottoms.append(fixed_bottom)
             self._ever_scrolled = True
             self.progress.emit(len(self.steps), self.max_steps)
-            log.info("scroll: accepted shift=%s, captured=%s",
-                     offset, len(self.frames))
-            # Нельзя завершать по одному состоянию полосы прокрутки:
-            # браузер может отображать её самостоятельно, а Win32 вернуть
-            # данные другого элемента окна.
+            log.info("scroll: shift=%d, frames=%d, height=%d",
+                     offset, len(self.frames), next_height)
+
+            # Подбираем размер шага. Маленькие прокрутки ускоряются,
+            # большие — замедляются, чтобы сохранить перекрытие кадров.
+            if len(self.steps) >= 2 and offset < frame.height() * .20:
+                self._wheel_units = min(3, self._wheel_units + 1)
+            elif offset > frame.height() * .55:
+                self._wheel_units = max(1, self._wheel_units - 1)
             self._advance()
         except Exception:
             log.exception("scroll: capture or stitching failed")
@@ -6048,12 +6205,14 @@ class ScrollingScreenshotJob(QObject):
         if self._finished:
             return
         self._finished = True
+        self._paused = False
         self.finish_reason = reason
         if self._scroll_panel is not None:
             self._scroll_panel.hide()
         QCursor.setPos(self._cursor)
         try:
-            combined = _stitch_scroll_frames(self.frames, self.steps, self.fixed_bottoms)
+            combined = _stitch_scroll_frames(self.frames, self.steps,
+                                             self.fixed_bottoms)
         except Exception:
             log.exception("scroll: frame assembly failed")
             combined = QImage()
@@ -6103,11 +6262,14 @@ class ScrollingReviewDialog(QDialog):
         if self.frame_strip.count():
             self.frame_strip.setCurrentRow(0)
         layout.addWidget(self.frame_strip)
-        self.preview = QLabel(self)
+        self.preview_scroll = QScrollArea(self)
+        self.preview_scroll.setMinimumSize(600, 400)
+        self.preview_scroll.setWidgetResizable(False)
+        self.preview_scroll.setStyleSheet("background:#202124;border:1px solid #555;border-radius:6px;")
+        self.preview = QLabel(self.preview_scroll)
         self.preview.setAlignment(Qt.AlignCenter)
-        self.preview.setMinimumSize(600, 430)
-        self.preview.setStyleSheet("background:#202124;border:1px solid #555;border-radius:6px;")
-        layout.addWidget(self.preview, 1)
+        self.preview_scroll.setWidget(self.preview)
+        layout.addWidget(self.preview_scroll, 1)
         controls = QHBoxLayout()
         controls.addWidget(QLabel("Шов:", self))
         self.seam_combo = QComboBox(self)
@@ -6124,6 +6286,18 @@ class ScrollingReviewDialog(QDialog):
         self.delta_spin.valueChanged.connect(self._change_delta)
         controls.addWidget(self.delta_spin)
         layout.addLayout(controls)
+        zoom_row = QHBoxLayout()
+        zoom_row.addWidget(QLabel("Просмотр:", self))
+        self.zoom_combo = QComboBox(self)
+        self.zoom_combo.addItem("Весь снимок", "fit")
+        self.zoom_combo.addItem("Текущий шов — 100%", "seam")
+        self.zoom_combo.setToolTip(
+            "Показывает исходные пиксели вокруг выбранного шва без уменьшения.")
+        self.zoom_combo.currentIndexChanged.connect(
+            lambda _value: self._render_preview())
+        zoom_row.addWidget(self.zoom_combo)
+        zoom_row.addStretch(1)
+        layout.addLayout(zoom_row)
         buttons = QHBoxLayout()
         buttons.addStretch(1)
         self.cancel_btn = QPushButton("Отмена", self)
@@ -6167,12 +6341,24 @@ class ScrollingReviewDialog(QDialog):
         if image.isNull():
             self.preview.setText("Предпросмотр недоступен")
             return
-        size = self.preview.size()
-        if size.width() < 100 or size.height() < 100:
-            size = QSize(800, 500)
-        preview = image.scaled(size - QSize(16, 16), Qt.KeepAspectRatio,
-                               Qt.SmoothTransformation)
-        self.preview.setPixmap(QPixmap.fromImage(preview))
+        if self.zoom_combo.currentData() == "seam" and self.steps:
+            index = self.seam_combo.currentData()
+            index = int(index) if index is not None else 0
+            first_height = self.frames[0].height() - max(
+                [0] + [max(0, int(value)) for value in self.fixed_bottoms])
+            seam_y = first_height + sum(self.steps[:index + 1])
+            start = max(0, seam_y - 240)
+            strip_height = min(480, image.height() - start)
+            preview = image.copy(0, start, image.width(), strip_height)
+        else:
+            size = self.preview_scroll.viewport().size()
+            if size.width() < 100 or size.height() < 100:
+                size = QSize(800, 500)
+            preview = image.scaled(size - QSize(16, 16), Qt.KeepAspectRatio,
+                                   Qt.SmoothTransformation)
+        pixmap = QPixmap.fromImage(preview)
+        self.preview.setPixmap(pixmap)
+        self.preview.resize(pixmap.size())
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
@@ -6526,7 +6712,6 @@ class Launcher(QMainWindow):
             window_width, window_height = 680, 760
         self.resize(window_width, window_height)
         self._capture_preferences = load_capture_preferences()
-        self._capture_preferences = load_capture_preferences()
         scroll_area = QScrollArea(self)
         scroll_area.setObjectName("launcher_scroll_area")
         scroll_area.setWidgetResizable(True)
@@ -6742,6 +6927,7 @@ class Launcher(QMainWindow):
             self._scroll_panel = panel
             job.attach_panel(panel)
             panel.finish_requested.connect(job.stop)
+            panel.continue_requested.connect(job.resume)
             job.progress.connect(panel.set_progress)
             job.status_changed.connect(panel.set_status)
             panel.speed_changed.connect(job.set_scroll_delay)
