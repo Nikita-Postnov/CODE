@@ -608,8 +608,12 @@ class ScreenshotThreeWorkflowsTests(unittest.TestCase):
             self.assertIsNone(job.finish_reason)
             self.assertFalse(panel.continue_button.isHidden())
             with patch("screenshot._windows_target_for_scroll", return_value=123), \
+                 patch("screenshot.QTimer.singleShot") as timer, \
                  patch.object(job, "_advance") as advance:
                 job.resume()
+                timer.assert_called_once_with(1700, job._resume_at_pointer)
+                self.assertTrue(job._paused)
+                job._resume_at_pointer()
             self.assertFalse(job._paused)
             self.assertEqual(job._idle_retries, 0)
             advance.assert_called_once()
