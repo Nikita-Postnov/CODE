@@ -718,6 +718,39 @@ class ScreenshotThreeWorkflowsTests(unittest.TestCase):
         finally:
             window.close()
 
+    def test_quick_capture_headers_are_visually_distinct_from_buttons(self):
+        """Три заголовка имеют повышенный шрифт и цветной стиль, кнопки — нет."""
+        with patch.object(Launcher, "_init_tray"), \
+             patch.object(Launcher, "_install_global_hotkey"):
+            window = Launcher()
+        try:
+            stylesheet = window.styleSheet()
+            self.assertIn("QLabel#np_quick_clipboard_header,", stylesheet)
+            self.assertIn("QLabel#np_quick_file_header,", stylesheet)
+            self.assertIn("QLabel#np_quick_editor_header {", stylesheet)
+            self.assertIn("border-left: 3px solid #397bd2;", stylesheet)
+            self.assertIn("background-color: rgba(57, 123, 210, 34);",
+                          stylesheet)
+            group = window.findChild(QGroupBox, "np_quick_capture_group")
+            self.assertIsNotNone(group)
+            for name in ("np_quick_clipboard_header",
+                         "np_quick_file_header", "np_quick_editor_header"):
+                title = group.findChild(QLabel, name)
+                self.assertIsNotNone(title, name)
+                self.assertTrue(title.font().bold(), name)
+                self.assertGreaterEqual(title.font().pointSize(), 11)
+                self.assertGreaterEqual(title.minimumHeight(), 36)
+                self.assertEqual(title.alignment(), Qt.AlignCenter)
+            self.assertEqual(
+                group.findChild(QLabel, "np_quick_editor_header")
+                .contentsMargins().top(), 7)
+            self.assertIn("QGroupBox QPushButton:hover {", stylesheet)
+            self.assertIn("border: 1px solid transparent;", stylesheet)
+            self.assertNotIn(
+                "border: 1px solid #397bd2;", stylesheet)
+        finally:
+            window.close()
+
     def test_default_capture_is_not_changed_by_new_features(self):
         preferences = load_capture_preferences()
         self.assertIn("quick_actions", preferences)
