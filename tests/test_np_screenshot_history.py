@@ -241,6 +241,23 @@ class HistoryGuiTests(unittest.TestCase):
             header.sizeHint().width(),
             dialog.items.viewport().width() - 20)
 
+    def test_history_card_shows_capture_time_and_keeps_full_filename_in_tooltip(self):
+        path = shot.archive_screenshot(sample_image())
+        dialog = shot.ScreenshotHistoryDialog(Mock())
+        self.addCleanup(dialog.close)
+        entry = next(
+            dialog.items.item(i)
+            for i in range(dialog.items.count())
+            if dialog.items.item(i).data(shot.Qt.UserRole))
+        match = shot.re.search(
+            r"_(\d{8})_(\d{6})(?:_|$)", path.stem)
+        self.assertIsNotNone(match)
+        stamp = match.group(2)
+        self.assertEqual(
+            entry.text(),
+            f"{stamp[:2]}:{stamp[2:4]}:{stamp[4:6]}")
+        self.assertIn(path.name, entry.toolTip())
+
     def test_history_dialog_filters_by_type_favorite_and_ocr_text(self):
         path = shot.archive_screenshot(sample_image(), kind="scroll", project="NPCore")
         shot.update_history_metadata(path, favorite=True, ocr_text="Счёт-фактура")
