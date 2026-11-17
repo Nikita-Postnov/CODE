@@ -6881,6 +6881,7 @@ class Launcher(QMainWindow):
             button = QPushButton(title, self)
             button.setMinimumHeight(42)
             button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            button.setCursor(Qt.PointingHandCursor)
             button.clicked.connect(callback)
             if primary:
                 button.setObjectName("screenshot_primary_action")
@@ -6956,13 +6957,29 @@ class Launcher(QMainWindow):
                 left: 12px;
                 padding: 0 5px;
             }
-            QPushButton {
+            /* Команды в лаунчере нейтральны до наведения указателя. */
+            QGroupBox QPushButton {
+                color: palette(window-text);
+                background-color: transparent;
+                border: 1px solid transparent;
                 border-radius: 7px;
                 padding: 7px 10px;
             }
+            QGroupBox QPushButton:hover {
+                background-color: rgba(57, 123, 210, 48);
+                border-color: #397bd2;
+            }
+            QGroupBox QPushButton:pressed {
+                background-color: rgba(57, 123, 210, 92);
+                border-color: #397bd2;
+            }
+            QGroupBox QPushButton:disabled {
+                color: palette(mid);
+                background-color: transparent;
+                border-color: transparent;
+            }
             QPushButton#screenshot_primary_action {
                 font-weight: 600;
-                border: 1px solid #397bd2;
             }
         """)
         _setup_logging()
