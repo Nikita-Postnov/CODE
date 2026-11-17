@@ -105,6 +105,83 @@ class ObjectEditingTests(unittest.TestCase):
                             for item in matches))
         self.assertTrue(all("text" not in item for item in matches))
 
+    def test_private_data_combines_separate_ocr_lines_into_five_targets(self):
+        """В Windows OCR отдельные части одного значения бывают разными Lines."""
+        def line(value, x, y, w=120, h=25):
+            return {"text": value, "x": x, "y": y,
+                    "width": w, "height": h,
+                    "words": [{"text": value, "x": x, "y": y,
+                               "width": w, "height": h}]}
+        lines = [
+            line("support.demo@example.com", 80, 50, 280),
+            line("+7", 80, 125, 36), line("(912)", 124, 127, 55),
+            line("345-67-89", 191, 124, 120),
+            line("api_key:", 80, 200, 105),
+            line("FAKEKEY1234567890", 193, 201, 230),
+            line("password:", 80, 275, 130),
+            line("DemoPass12345", 218, 276, 192),
+            line("ghp_FAKEDEMOABCDEF1234567890", 80, 350, 350),
+            # Вторая колонка содержит обычные сведения, которые не скрываем.
+            line("TASK ID", 700, 25, 95), line("58216", 700, 50, 75),
+            line("DATE", 700, 100, 70), line("2026-11-17", 700, 125, 135),
+            line("PRICE", 700, 200, 95), line("7 900 RUB", 700, 225, 140),
+        ]
+        matches = shot.find_private_data_regions(
+            {"lines": lines}, shot.QSize(1000, 500), shot.QSize(1000, 500))
+        self.assertEqual(len(matches), 5)
+        self.assertEqual(sorted(item["kind"] for item in matches),
+                         ["email", "phone", "secret", "secret", "secret"])
+        boxes = [item["rect"] for item in matches]
+        for y in (50, 125, 200, 275, 350):
+            self.assertTrue(any(box.contains(shot.QPoint(100, y + 10))
+                                for box in boxes), f"Пропущена строка {y}")
+        self.assertTrue(all(box.right() < 600 for box in boxes))
+
+    def test_private_data_labels_recover_punctuation_damaged_values(self):
+        """Подписи API KEY/PASSWORD/PHONE и текст на строке ниже."""
+        def item(value, x, y):
+            return {"text": value, "x": x, "y": y,
+                    "width": 280, "height": 23,
+                    "words": [{"text": value, "x": x, "y": y,
+                               "width": 280, "height": 23}]}
+        payload = {"lines": [
+            item("PHONE", 35, 40),
+            item("+7(912)345-67-8O", 35, 75),  # OCR спутал 0 с O
+            item("API KEY", 35, 150),
+            item("FAKEKEY1234567890", 35, 185),
+            item("PASSWORD", 35, 255),
+            item("DemoPass12345", 35, 290),
+            item("TASK ID", 650, 40),
+            item("58216", 650, 75),
+            item("DATE", 650, 150),
+            item("2026-11-17", 650, 185),
+        ]}
+        matches = shot.find_private_data_regions(
+            payload, shot.QSize(1000, 450), shot.QSize(1000, 450))
+        self.assertEqual(len(matches), 3)
+        self.assertCountEqual([m["kind"] for m in matches],
+                              ["phone", "secret", "secret"])
+        self.assertTrue(all(m["rect"].left() < 350 for m in matches))
+
+    def test_private_data_review_fit_and_native_zoom(self):
+        picture = QImage(1400, 1000, QImage.Format_ARGB32)
+        picture.fill(Qt.white)
+        proposals = [{"kind": "phone", "rect": shot.QRect(30, 180, 250, 30)}]
+        dialog = shot.PrivateDataReviewDialog(picture, proposals)
+        try:
+            dialog.resize(970, 730)
+            self.app.processEvents()
+            dialog._refresh_preview()
+            self.assertLess(dialog.preview_scale, 1.0)
+            fitted = dialog.preview.pixmap().size()
+            self.assertLess(fitted.width(), picture.width())
+            dialog.zoom_choice.setCurrentIndex(1)
+            self.assertEqual(dialog.zoom_choice.currentData(), "native")
+            self.assertEqual(dialog.preview_scale, 1.0)
+            self.assertEqual(dialog.preview.pixmap().size(), picture.size())
+        finally:
+            dialog.close()
+
     def test_private_data_reviewer_allows_selective_masking_without_values(self):
         image = example_image()
         matches = [
