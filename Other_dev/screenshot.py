@@ -176,10 +176,46 @@ SCREENSHOT_HISTORY_SETTINGS = DATA_DIR / "screenshot_history_settings.json"
 SCREENSHOT_HISTORY_DISPLAY_LIMIT = 150
 
 
+def _quick_region_data(rect) -> Optional[list[int]]:
+    """Возвращает безопасную область экрана для повторного захвата."""
+    if isinstance(rect, QRect):
+        rect = list(rect.getRect())
+    if (not isinstance(rect, (list, tuple)) or len(rect) != 4 or
+            any(type(value) is not int for value in rect)):
+        return None
+    x, y, width, height = rect
+    if (not -100_000 <= x <= 100_000 or not -100_000 <= y <= 100_000 or
+            not 4 <= width <= 50_000 or not 4 <= height <= 50_000):
+        return None
+    return [x, y, width, height]
+
+
+def _quick_screen_layout() -> list[list[int]]:
+    """Снимок геометрии мониторов для проверки сохранённой области."""
+    result = [list(screen.geometry().getRect())
+              for screen in QGuiApplication.screens()]
+    return sorted(result)
+
+
+def _quick_region_is_visible(rect, screens: Optional[list[list[int]]] = None) -> bool:
+    values = _quick_region_data(rect)
+    if values is None:
+        return False
+    geometries = screens if screens is not None else _quick_screen_layout()
+    if not geometries:
+        return False
+    visible = QRegion()
+    for geometry in geometries:
+        if _quick_region_data(geometry) is not None:
+            visible = visible.united(QRegion(QRect(*geometry)))
+    return QRegion(QRect(*values)).subtracted(visible).isEmpty()
+
+
 def load_capture_preferences() -> dict:
     defaults = {"quick_actions": False, "history_enabled": False,
                 "edit_after_capture": True, "capture_target": "area",
-                "capture_kind": "shot"}
+                "capture_kind": "shot", "last_region": None,
+                "last_screens": []}
     try:
         data = json.loads(SCREENSHOT_HISTORY_SETTINGS.read_text(encoding="utf-8"))
     except (OSError, ValueError, TypeError):
@@ -192,6 +228,13 @@ def load_capture_preferences() -> dict:
     result["capture_target"] = target if target in ("area", "window") else "area"
     kind = data.get("capture_kind", "shot")
     result["capture_kind"] = kind if kind in ("shot", "record", "ocr") else "shot"
+    region = _quick_region_data(data.get("last_region"))
+    screens = data.get("last_screens")
+    if not isinstance(screens, list) or len(screens) > 16 or any(
+            _quick_region_data(item) is None for item in screens):
+        screens = []
+    result["last_region"] = region
+    result["last_screens"] = [list(item) for item in screens]
     return result
 
 
@@ -202,6 +245,13 @@ def save_capture_preferences(preferences: dict) -> bool:
     payload["capture_target"] = target if target in ("area", "window") else "area"
     kind = preferences.get("capture_kind", "shot")
     payload["capture_kind"] = kind if kind in ("shot", "record", "ocr") else "shot"
+    payload["last_region"] = _quick_region_data(preferences.get("last_region"))
+    screens = preferences.get("last_screens")
+    payload["last_screens"] = (
+        [list(value) for value in screens]
+        if (isinstance(screens, list) and len(screens) <= 16 and
+            all(_quick_region_data(value) is not None for value in screens))
+        else [])
     path = SCREENSHOT_HISTORY_SETTINGS
     temporary = None
     try:
@@ -4785,6 +4835,10 @@ def run_capture_flow(initial_mode: str = SelectionOverlay.MODE_SHOT, launcher=No
     img = compose_region_from_shots(rect, shots)
     if img.isNull() or img.width() <= 0 or img.height() <= 0:
         return None
+    if mode == SelectionOverlay.MODE_SHOT and launcher is not None:
+        remember = getattr(launcher, "remember_last_region", None)
+        if callable(remember):
+            remember(rect)
     return img
 
 
@@ -5707,7 +5761,7 @@ def _find_launcher() -> Optional["Launcher"]:
     return None
 
 
-def capture_region_interactive() -> Optional[QImage]:
+def capture_region_interactive(on_selected: Optional[Callable[[QRect], None]] = None) -> Optional[QImage]:
     overlay = SelectionOverlay(frozen=True)
     try:
         rect = _run_selection(overlay)
@@ -5719,6 +5773,8 @@ def capture_region_interactive() -> Optional[QImage]:
     img = compose_region_from_shots(rect, shots)
     if img.isNull() or img.width() <= 0 or img.height() <= 0:
         return None
+    if on_selected is not None:
+        on_selected(rect)
     return img
 
 
@@ -7281,6 +7337,21 @@ class Launcher(QMainWindow):
             ("Длинный снимок", self.start_scrolling_capture, False),
             ("Распознать текст", self.make_ocr, False),
         ]))
+        v.addWidget(group_box("Быстрый захват", [
+            ("Область → в буфер", lambda: self.quick_new_area("copy"), False),
+            ("Область → в файл", lambda: self.quick_new_area("save"), False),
+            ("Область → в редактор", lambda: self.quick_new_area("edit"), False),
+            ("Повторить → в буфер", lambda: self.quick_repeat("copy"), False),
+            ("Повторить → в файл", lambda: self.quick_repeat("save"), False),
+            ("Повторить → в редактор", lambda: self.quick_repeat("edit"), False),
+        ]))
+        self.quick_region_label = QLabel(self)
+        self.quick_region_label.setObjectName("np_quick_region_status")
+        self.quick_region_label.setStyleSheet(
+            "color: palette(placeholder-text); padding: 0 4px;")
+        self._update_quick_region_label()
+        v.addWidget(self.quick_region_label)
+
         v.addWidget(group_box("Запись экрана", [
             ("Запись экрана", self.start_recording, True),
             ("Запись отдельного окна", self.start_window_recording, False),
@@ -7314,6 +7385,9 @@ class Launcher(QMainWindow):
         info = QLabel(
             "Горячие клавиши: PrintScreen — выбор действия и объекта; "
             "Shift+PrintScreen — OCR в буфер обмена. "
+            "Ctrl+Shift+F11 — повторить область в буфер, "
+            "Ctrl+Shift+F12 — сохранить, "
+            "Ctrl+Shift+F10 — открыть в редакторе (при доступности сочетаний). "
             "Инструменты: перо, маркер, стрелка, текст, блюр, пиксели, выноска и линейка. "
             "В редакторе: Ctrl+S — сохранить, Ctrl+C — копировать, PrintScreen — новый снимок.",
             self)
@@ -7360,6 +7434,7 @@ class Launcher(QMainWindow):
             }
         """)
         _setup_logging()
+        self._quick_capture_pending = False
         self._scroll_job: Optional[ScrollingScreenshotJob] = None
         self._scroll_panel: Optional[ScrollingCapturePanel] = None
         self._editors: List[EditorWindow] = []
@@ -7577,6 +7652,15 @@ class Launcher(QMainWindow):
         m = QMenu(self)
         self.act_tray_shot = m.addAction("Сделать скриншот", self.make_shot)
         self.act_tray_window = m.addAction("Снимок отдельного окна", self.make_window_shot)
+        quick_menu = m.addMenu("Быстрый захват")
+        for label, callback in (
+                ("Выделить область → в буфер", lambda: self.quick_new_area("copy")),
+                ("Выделить область → в файл", lambda: self.quick_new_area("save")),
+                ("Выделить область → в редактор", lambda: self.quick_new_area("edit")),
+                ("Повторить область → в буфер", lambda: self.quick_repeat("copy")),
+                ("Повторить область → в файл", lambda: self.quick_repeat("save")),
+                ("Повторить область → в редактор", lambda: self.quick_repeat("edit"))):
+            quick_menu.addAction(label, callback)
         self.act_tray_project = m.addAction("Открыть редактируемый проект", self._open_project)
         self.act_tray_history = m.addAction("История скриншотов", self.open_history)
         m.addAction("Длинный снимок с прокруткой", self.start_scrolling_capture)
@@ -7745,6 +7829,152 @@ class Launcher(QMainWindow):
         if hud is not None:
             hud._on_stop()
 
+    def _update_quick_region_label(self) -> None:
+        if not hasattr(self, "quick_region_label"):
+            return
+        stored = self._capture_preferences.get("last_region")
+        if stored is None:
+            text = "Последняя область: ещё не выбрана"
+        elif self._last_valid_quick_region() is None:
+            text = "Последняя область: изменились мониторы — выбери область заново"
+        else:
+            width, height = stored[2], stored[3]
+            text = f"Последняя область: {width} × {height} (можно повторять без выделения)"
+        self.quick_region_label.setText(text)
+
+    def _last_valid_quick_region(self) -> Optional[QRect]:
+        preferences = self._capture_preferences
+        values = _quick_region_data(preferences.get("last_region"))
+        if values is None:
+            return None
+        if preferences.get("last_screens") != _quick_screen_layout():
+            return None
+        if not _quick_region_is_visible(values):
+            return None
+        return QRect(*values)
+
+    def remember_last_region(self, rect: QRect) -> bool:
+        """Помнит только удачный снимок выбранной пользователем области."""
+        values = _quick_region_data(rect)
+        screens = _quick_screen_layout()
+        if values is None or not _quick_region_is_visible(values, screens):
+            return False
+        preferences = load_capture_preferences()
+        preferences["last_region"] = values
+        preferences["last_screens"] = screens
+        if not save_capture_preferences(preferences):
+            log.warning("quick capture: не удалось запомнить область")
+            return False
+        self._capture_preferences = preferences
+        self._update_quick_region_label()
+        return True
+
+    def _quick_notify(self, text: str, *, error: bool = False) -> None:
+        log.warning("quick capture: %s", text) if error else log.info(
+            "quick capture: %s", text)
+        tray = getattr(self, "tray", None)
+        if tray is not None and tray.isVisible():
+            tray.showMessage("NP Screenshot", text,
+                             QSystemTrayIcon.Warning if error else
+                             QSystemTrayIcon.Information, 3500)
+
+    def _quick_finish_image(self, image: QImage, action: str) -> None:
+        if image.isNull():
+            self._quick_notify("Не удалось получить снимок выбранной области.",
+                               error=True)
+            return
+        if self._capture_preferences.get("history_enabled", False):
+            archive_screenshot(image, kind="shot")
+        if action == "copy":
+            QApplication.clipboard().setImage(image, QClipboard.Clipboard)
+            self._quick_notify("Снимок скопирован в буфер обмена.")
+        elif action == "edit":
+            QApplication.clipboard().setImage(image, QClipboard.Clipboard)
+            self._open_editor_image(image)
+        elif action == "save":
+            directory = Path(
+                QStandardPaths.writableLocation(QStandardPaths.PicturesLocation)
+                or str(Path.home())) / "NP Screenshot"
+            try:
+                directory.mkdir(parents=True, exist_ok=True)
+            except OSError:
+                self._quick_notify("Не удалось создать папку для снимков.",
+                                   error=True)
+                return
+            filename = ("Screenshot_" + time.strftime("%Y%m%d_%H%M%S") +
+                        "_" + uuid.uuid4().hex[:8] + ".png")
+            path = directory / filename
+            if save_image_atomically(image, path, "PNG"):
+                self._quick_notify(f"Снимок сохранён: {path}")
+            else:
+                self._quick_notify("Не удалось записать снимок на диск.",
+                                   error=True)
+
+    def quick_new_area(self, action: str = "copy") -> None:
+        """Выбрать новую область, сразу указав результат захвата."""
+        global _capture_in_progress
+        if action not in ("copy", "save", "edit"):
+            raise ValueError("Некорректное действие быстрого захвата")
+        if _capture_in_progress or self._quick_capture_pending:
+            return
+        self._quick_capture_pending = True
+        self.hide()
+        QTimer.singleShot(220, lambda: self._quick_select_area(action))
+
+    def _quick_select_area(self, action: str) -> None:
+        global _capture_in_progress
+        if _capture_in_progress:
+            self._quick_capture_pending = False
+            return
+        _capture_in_progress = True
+        try:
+            image = capture_region_interactive(
+                on_selected=self.remember_last_region)
+        except Exception:
+            log.exception("quick capture: выбор области завершился ошибкой")
+            self._quick_notify("Ошибка выбора области", error=True)
+            return
+        finally:
+            _capture_in_progress = False
+            self._quick_capture_pending = False
+            self.hide()
+        if image is not None:
+            self._quick_finish_image(image, action)
+
+    def quick_repeat(self, action: str = "copy") -> None:
+        """Повторно снять прежний прямоугольник без выделения мышью."""
+        if action not in ("copy", "save", "edit"):
+            raise ValueError("Некорректное действие быстрого захвата")
+        if _capture_in_progress or self._quick_capture_pending:
+            return
+        region = self._last_valid_quick_region()
+        if region is None:
+            QMessageBox.information(
+                self, "Быстрый захват",
+                "Сначала выбери область кнопкой «Область → в буфер». "
+                "При смене мониторов область необходимо выбрать заново.")
+            self._update_quick_region_label()
+            return
+        self._quick_capture_pending = True
+        self.hide()
+        QTimer.singleShot(
+            220, lambda: self._quick_repeat_now(region, action))
+
+    def _quick_repeat_now(self, region: QRect, action: str) -> None:
+        try:
+            # Повторная проверка важна, если монитор отключили за время таймера.
+            if not _quick_region_is_visible(region):
+                self._quick_notify("Область больше не видна на экране.",
+                                   error=True)
+                return
+            image = grab_region_highdpi(region)
+            self._quick_finish_image(image, action)
+        except Exception:
+            log.exception("quick capture: повторное получение области")
+            self._quick_notify("Не удалось повторить захват.", error=True)
+        finally:
+            self._quick_capture_pending = False
+
     def make_shot(self):
         self.hide()
         QTimer.singleShot(200, lambda: self._capture(SelectionOverlay.MODE_SHOT))
@@ -7833,6 +8063,9 @@ class Launcher(QMainWindow):
         self._hotkey = _WinHotkey(
             QApplication.instance(), self.hotkey_capture,
             lambda: self.hotkey_capture(SelectionOverlay.MODE_OCR),
+            quick_copy_callback=lambda: self.quick_repeat("copy"),
+            quick_save_callback=lambda: self.quick_repeat("save"),
+            quick_edit_callback=lambda: self.quick_repeat("edit"),
         )
         log = logging.getLogger(__name__)
         for line in self._hotkey.report:
@@ -7996,7 +8229,9 @@ class _WinHotkey(QAbstractNativeEventFilter):
        поставить не удалось (например, запретил антивирус или политика).
     """
 
-    def __init__(self, app: QApplication, callback, ocr_callback=None):
+    def __init__(self, app: QApplication, callback, ocr_callback=None,
+                 quick_copy_callback=None, quick_save_callback=None,
+                 quick_edit_callback=None):
         super().__init__()
         self._app = app
         self._cb = callback
@@ -8004,6 +8239,7 @@ class _WinHotkey(QAbstractNativeEventFilter):
         self._ids: List[int] = []
         self._keys: List[str] = []
         self._ocr_keys: List[str] = []
+        self._quick_keys: dict[int, Callable] = {}
         self.report: List[str] = []
         self._hook = None
         self._hook_proc = None
@@ -8058,6 +8294,16 @@ class _WinHotkey(QAbstractNativeEventFilter):
             if self._register(3, MOD_SHIFT | MOD_NOREPEAT, VK_SNAPSHOT, "Shift+PrintScreen (текст)") or hook_ok:
                 self._ocr_keys.append("Shift+PrintScreen")
 
+        quick_hotkeys = (
+            (4, 0x7A, "Ctrl+Shift+F11 (повторить в буфер)", quick_copy_callback),
+            (5, 0x7B, "Ctrl+Shift+F12 (повторить в файл)", quick_save_callback),
+            (6, 0x79, "Ctrl+Shift+F10 (повторить в редактор)", quick_edit_callback),
+        )
+        for ident, virtual_key, title, cb in quick_hotkeys:
+            if cb is not None and self._register(
+                    ident, MOD_CONTROL | MOD_SHIFT | MOD_NOREPEAT,
+                    virtual_key, title):
+                self._quick_keys[ident] = cb
         if self._ids:
             app.installNativeEventFilter(self)
             setattr(app, "_global_hotkey_filter", self)
@@ -8180,6 +8426,20 @@ class _WinHotkey(QAbstractNativeEventFilter):
                 "Global hotkey callback failed:\n%s", traceback.format_exc()
             )
 
+    def _fire_quick(self, ident: int) -> None:
+        callback = self._quick_keys.get(ident)
+        if callback is None:
+            return
+        now = time.monotonic()
+        if now - self._last_fire < 0.3:
+            return
+        self._last_fire = now
+        try:
+            callback()
+        except Exception:
+            logging.getLogger(__name__).error(
+                "Quick capture hotkey failed:\n%s", traceback.format_exc())
+
     def _fire_ocr(self):
         now = time.monotonic()
         if now - self._last_fire < 0.3:
@@ -8221,6 +8481,7 @@ class _WinHotkey(QAbstractNativeEventFilter):
         self._ids = []
         self._keys = []
         self._ocr_keys = []
+        self._quick_keys = {}
 
     def nativeEventFilter(self, eventType, message):
         try:
@@ -8232,6 +8493,8 @@ class _WinHotkey(QAbstractNativeEventFilter):
             log.info("hotkey: WM_HOTKEY id=%s", msg.wParam)
             if msg.wParam == 3:
                 self._fire_ocr()
+            elif msg.wParam in self._quick_keys:
+                self._fire_quick(int(msg.wParam))
             else:
                 self._fire()
             return (True, 0)
