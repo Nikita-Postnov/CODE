@@ -5995,6 +5995,185 @@ def find_private_data_regions(payload: dict, image_size: QSize,
                 candidates.append({"kind": kind, "rect": region})
                 if len(candidates) >= 200:
                     return candidates
+    # Дополнительный геометрический проход. Windows OCR иногда возвращает
+    # телефон/ключ как НЕСКОЛЬКО разных Lines, даже если они на одной строке.
+    # Поиск только по text каждой Line при этом пропускает значения.
+    pieces = []
+    for line in lines[:4000]:
+        if not isinstance(line, dict):
+            continue
+        words = line.get("words")
+        usable = [item for item in words[:250]
+                  if isinstance(item, dict) and str(item.get("text") or "").strip()]
+                  if isinstance(words, list) else []
+        if not usable:
+            usable = [line]
+        for item in usable:
+            rect = valid_rect(item)
+            value = str(item.get("text") or "").strip()
+            if rect is not None and not rect.isEmpty() and value:
+                pieces.append({"rect": rect, "text": value})
+    if not pieces:
+        return candidates
+
+    # Собираем визуальные строки независимо от порядка OCR Lines.
+    visual_rows = []
+    for piece in sorted(pieces, key=lambda item: (
+            item["rect"].center().y(), item["rect"].left())):
+        rect = piece["rect"]
+        center = rect.center().y()
+        matched = next((
+            row for row in visual_rows
+            if abs(center - row["center"]) <= max(
+                4, min(rect.height(), row["height"]) * .63)
+        ), None)
+        if matched is None:
+            visual_rows.append({"center": center, "height": rect.height(),
+                                "pieces": [piece]})
+        else:
+            matched["pieces"].append(piece)
+            count = len(matched["pieces"])
+            matched["center"] = (
+                matched["center"] * (count - 1) + center) / count
+            matched["height"] = (
+                matched["height"] * (count - 1) + rect.height()) / count
+
+    # Разделяем независимые колонки по большому горизонтальному пробелу.
+    # Для каждого фрагмента сохраняем точное положение в составленной строке.
+    blocks = []
+    for row in sorted(visual_rows, key=lambda item: item["center"]):
+        current = []
+        previous = None
+        for piece in sorted(row["pieces"], key=lambda item: item["rect"].left()):
+            gap = (piece["rect"].left() - previous["rect"].right()
+                   if previous is not None else 0)
+            max_gap = max(40, row["height"] * 3.4)
+            if current and gap > max_gap:
+                blocks.append(current)
+                current = []
+            current.append(piece)
+            previous = piece
+        if current:
+            blocks.append(current)
+
+    merged_rows = []
+    for group in blocks:
+        combined = ""
+        spans = []
+        region = QRect(group[0]["rect"])
+        prev = None
+        for piece in group:
+            rect = piece["rect"]
+            gap = rect.left() - prev["rect"].right() if prev else 0
+            # Части слова, отделённые движком OCR, сохраняют слитное
+            # написание при малом межсимвольном зазоре.
+            separator = (" " if combined and gap > max(
+                2, min(rect.height(), prev["rect"].height()) * .14) else "")
+            combined += separator
+            start = len(combined)
+            combined += piece["text"]
+            spans.append((start, len(combined), rect))
+            region = region.united(rect)
+            prev = piece
+        merged_rows.append({
+            "text": combined, "spans": spans, "rect": region,
+        })
+
+    def append_candidate(kind: str, rect: QRect) -> None:
+        if rect.isEmpty():
+            return
+        for previous in candidates:
+            old = previous["rect"]
+            overlap = old.intersected(rect)
+            if (previous["kind"] == kind and not overlap.isEmpty() and
+                    overlap.width() * overlap.height() >= .55 *
+                    min(old.width() * old.height(), rect.width() * rect.height())):
+                return
+        if len(candidates) < 200:
+            candidates.append({"kind": kind, "rect": QRect(rect)})
+
+    def matched_region(row: dict, start: int, end: int) -> Optional[QRect]:
+        selected = [rect for a, b, rect in row["spans"]
+                    if a < end and b > start]
+        if not selected:
+            return None
+        area = QRect(selected[0])
+        for rect in selected[1:]:
+            area = area.united(rect)
+        return area
+
+    labeled_secret = re.compile(
+        r"(?i)(?<!\w)(?:api[\s_-]*key|access[\s_-]*token|"
+        r"password|passwd|secret|пароль|токен|ключ)"
+        r"\s*[:=]?\s+(?P<value>[A-Za-z0-9_./+=-]+"
+        r"(?:\s+[A-Za-z0-9_./+=-]+){0,3})")
+    for row in merged_rows:
+        content = row["text"]
+        for kind, pattern in (
+                ("secret", _PRIVATE_SECRET_RE),
+                ("email", _PRIVATE_EMAIL_RE),
+                ("phone", _PRIVATE_PHONE_RE)):
+            for hit in pattern.finditer(content):
+                value = hit.group(0)
+                if kind == "phone":
+                    digits = re.sub(r"\D", "", value)
+                    if not (10 <= len(digits) <= 15 and
+                            len(set(digits)) >= 3):
+                        continue
+                rect = matched_region(row, hit.start(), hit.end())
+                if rect is not None:
+                    append_candidate(kind, rect)
+
+        # Распознавание ключа с разделённым пробелом значением.
+        for hit in labeled_secret.finditer(content):
+            secret = re.sub(r"[\s.+=/_-]", "", hit.group("value"))
+            if len(secret) >= 8 and any(char.isdigit() for char in secret):
+                rect = matched_region(row, hit.start(), hit.end())
+                if rect is not None:
+                    append_candidate("secret", rect)
+
+    # Подписи поля часто распознаются как одна OCR-строка, а его значение
+    # чуть ниже — как другая. При наличии явных PHONE/API KEY/PASSWORD
+    # предлагается закрыть ближайшее значение, даже если его пунктуация
+    # распознана неточно. Это только предложение для ручной проверки.
+    field_types = {
+        "phone": "phone", "телефон": "phone",
+        "apikey": "secret", "accesstoken": "secret",
+        "password": "secret", "passwd": "secret",
+        "пароль": "secret", "токен": "secret",
+    }
+    for label in merged_rows:
+        normalized = re.sub(r"[^a-zа-яё]", "", label["text"].casefold())
+        kind = field_types.get(normalized)
+        if kind is None:
+            continue
+        anchor = label["rect"]
+        possible = []
+        for row in merged_rows:
+            target = row["rect"]
+            distance = target.top() - anchor.bottom()
+            if (distance < -1 or
+                    distance > max(55, anchor.height() * 5) or
+                    abs(target.left() - anchor.left()) > max(
+                        38, anchor.width() * .65)):
+                continue
+            value = row["text"].strip()
+            if not value:
+                continue
+            compact = re.sub(r"[^A-Za-z0-9А-Яа-яЁё]", "", value)
+            if kind == "phone":
+                digits = re.sub(r"\D", "", value)
+                if (not 9 <= len(digits) <= 15 or
+                        len(set(digits)) < 3):
+                    continue
+            elif (len(compact) < 8 or
+                  not any(char.isdigit() for char in compact)):
+                continue
+            possible.append((distance, row))
+        if possible:
+            _distance, nearest = min(possible, key=lambda item: item[0])
+            append_candidate(kind, nearest["rect"])
+
     return candidates
 
 
@@ -6016,8 +6195,20 @@ class PrivateDataReviewDialog(QDialog):
             "оригинальные файлы останутся без изменений.", self)
         hint.setWordWrap(True)
         layout.addWidget(hint)
+        zoom_row = QHBoxLayout()
+        zoom_row.addWidget(QLabel("Масштаб:", self))
+        self.zoom_choice = QComboBox(self)
+        self.zoom_choice.setObjectName("private_review_zoom")
+        self.zoom_choice.addItem("Весь снимок", "fit")
+        self.zoom_choice.addItem("100% — исходные пиксели", "native")
+        self.zoom_choice.currentIndexChanged.connect(
+            lambda _index: self._refresh_preview())
+        zoom_row.addWidget(self.zoom_choice)
+        zoom_row.addStretch(1)
+        layout.addLayout(zoom_row)
         self.scroll = QScrollArea(self)
         self.scroll.setWidgetResizable(False)
+        self.scroll.setAlignment(Qt.AlignCenter)
         self.preview = QLabel(self.scroll)
         self.preview.setAlignment(Qt.AlignCenter)
         self.scroll.setWidget(self.preview)
@@ -6044,6 +6235,7 @@ class PrivateDataReviewDialog(QDialog):
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
         self._refresh_preview()
+        QTimer.singleShot(0, self._refresh_preview)
 
     def selected_rects(self) -> list[QRect]:
         return [QRect(self.proposals[i]["rect"])
@@ -6052,7 +6244,14 @@ class PrivateDataReviewDialog(QDialog):
 
     def _refresh_preview(self):
         source = self.image
-        factor = min(1.0, 850 / max(1, source.width()))
+        if self.zoom_choice.currentData() == "native":
+            factor = 1.0
+        else:
+            viewport = self.scroll.viewport().size()
+            factor = min(
+                1.0,
+                max(1, viewport.width() - 12) / max(1, source.width()),
+                max(1, viewport.height() - 12) / max(1, source.height()))
         self.preview_scale = factor
         size = QSize(max(1, round(source.width() * factor)),
                      max(1, round(source.height() * factor)))
@@ -6071,6 +6270,10 @@ class PrivateDataReviewDialog(QDialog):
         painter.end()
         self.preview.setPixmap(pixmap)
         self.preview.resize(pixmap.size())
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        QTimer.singleShot(0, self._refresh_preview)
 
     def _scroll_to_choice(self, index: int):
         if 0 <= index < len(self.proposals):
