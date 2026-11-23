@@ -1672,6 +1672,7 @@ def _setup_winapi_prototypes() -> None:
 
     # ── user32: окна, фокус, раскладка ──
     _proto(user32, "LoadKeyboardLayoutW", HANDLE, LPCWSTR, UINT)
+    _proto(user32, "GetKeyboardLayout", HANDLE, DWORD)
     _proto(user32, "GetForegroundWindow", HANDLE)
     _proto(user32, "SetForegroundWindow", BOOL, HANDLE)
     _proto(user32, "BringWindowToTop", BOOL, HANDLE)
@@ -2211,23 +2212,78 @@ def _dominant_layout(text: str) -> Optional[str]:
         return LAYOUT_EN
     return None
 
-def _switch_input_language_for_foreground(layout_id: str) -> None:
-    hwnd = user32.GetForegroundWindow()
-    if not hwnd:
-        return
+def _switch_input_language_for_foreground(
+    layout_id: str, expected_foreground: Optional[int] = None,
+) -> bool:
+    """Синхронизирует раскладку именно окна, в котором исправляли текст.
+
+    PostMessageW лишь ставит запрос в очередь и не гарантирует смену языка.
+    Доставляем WM_INPUTLANGCHANGEREQUEST с ограничением времени, проверяем
+    GetKeyboardLayout потока ввода и повторяем запрос лишь при прежнем foreground.
+    Не подменяем язык соседнего приложения, если пользователь сменил окно.
+    """
+    if layout_id not in (LAYOUT_RU, LAYOUT_EN):
+        return False
+    hwnd = _hwnd_value(user32.GetForegroundWindow())
+    if not hwnd or (expected_foreground is not None and hwnd != expected_foreground):
+        return False
+    tid = int(user32.GetWindowThreadProcessId(hwnd, None))
+    if not tid:
+        return False
+    expected_langid = int(layout_id[-4:], 16)
+
+    def same_target() -> bool:
+        return _hwnd_value(user32.GetForegroundWindow()) == hwnd
+
+    def active() -> bool:
+        return (_hwnd_value(user32.GetKeyboardLayout(tid)) & 0xFFFF) == expected_langid
+
+    if active():
+        return True
     hkl = _hkl_cache.get(layout_id)
     if hkl is None:
         hkl = _hwnd_value(user32.LoadKeyboardLayoutW(layout_id, 0))
         if not hkl:
-            _raise_last_error(f"LoadKeyboardLayoutW failed for {layout_id}")
+            logging.warning("Punto: input layout %s is unavailable", layout_id)
+            return False
         _hkl_cache[layout_id] = hkl
-    user32.PostMessageW(hwnd, WM_INPUTLANGCHANGEREQUEST, 0, hkl)
 
-def _switch_layout_toward_text(text: str) -> None:
-    """Переключает раскладку активного окна на язык, преобладающий в тексте."""
+    for attempt in range(2):
+        if not same_target():
+            return False
+        delivered = _sendmsg_ok(hwnd, WM_INPUTLANGCHANGEREQUEST, 0, hkl, timeout_ms=120)
+        if not same_target():
+            return False
+        if active():
+            return True
+        # Обработка языка может завершиться асинхронно даже после доставки.
+        if delivered:
+            time.sleep(0.025)
+            if not same_target():
+                return False
+            if active():
+                return True
+
+    # Резерв для окон, обрабатывающих только очередь сообщений.
+    if same_target() and user32.PostMessageW(hwnd, WM_INPUTLANGCHANGEREQUEST, 0, hkl):
+        for _ in range(4):
+            time.sleep(0.025)
+            if not same_target():
+                return False
+            if active():
+                return True
+    logging.warning("Punto: unable to confirm %s layout for foreground hwnd=%s", layout_id, hwnd)
+    return False
+
+
+def _switch_layout_toward_text(
+    text: str, expected_foreground: Optional[int] = None,
+) -> bool:
+    """После замены букв подтверждает язык ввода исходного окна."""
     layout = _dominant_layout(text)
-    if layout is not None:
-        _switch_input_language_for_foreground(layout)
+    if layout is None:
+        return False
+    return _switch_input_language_for_foreground(layout, expected_foreground)
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Text conversion (layout & case) — чистые функции
@@ -3255,6 +3311,7 @@ def _transform_selection_via_clipboard(
 
 
 def convert_selected_text(timings: Timings) -> None:
+    target_foreground = _hwnd_value(user32.GetForegroundWindow())
     hwnd_focus = _get_focused_control_hwnd()
 
     sel = _edit_get_sel(hwnd_focus)
@@ -3267,10 +3324,13 @@ def convert_selected_text(timings: Timings) -> None:
             converted = convert_keyboard_layout(selected)
             if converted != selected and _try_replace_selection_in_edit(hwnd_focus, converted):
                 _learn_manual_word(selected, converted)
-                _switch_layout_toward_text(converted)
+                _switch_layout_toward_text(converted, target_foreground)
             return
 
-    _transform_selection_via_clipboard(timings, convert_keyboard_layout, _switch_layout_toward_text)
+    _transform_selection_via_clipboard(
+        timings, convert_keyboard_layout,
+        lambda converted: _switch_layout_toward_text(converted, target_foreground),
+    )
 
 
 def toggle_case_selected_text(timings: Timings) -> None:
@@ -3714,6 +3774,7 @@ def _convert_before_caret_with_browser_bridge(timings: Timings) -> None:
 
 def convert_before_caret_text(timings: Timings) -> None:
     """Ctrl+Ins: сменить раскладку фрагмента перед кареткой."""
+    target_foreground = _hwnd_value(user32.GetForegroundWindow())
     converted = _transform_run_before_caret(timings, convert_keyboard_layout)
     if converted is not None:
         logging.info("Ctrl+Ins: converted before caret (length=%d)", len(converted))
@@ -3721,7 +3782,7 @@ def convert_before_caret_text(timings: Timings) -> None:
             original = convert_keyboard_layout(converted)
             if convert_keyboard_layout(original) == converted:
                 _learn_manual_word(original, converted)
-        _switch_layout_toward_text(converted)
+        _switch_layout_toward_text(converted, target_foreground)
     else:
         logging.info("Ctrl+Ins: no text converted (caret/focus/clipboard/application restrictions)")
 
@@ -3846,9 +3907,10 @@ def _try_auto_layout_in_edit(hwnd: object, full_text: str, end: int, caret: int)
     corrected = _candidate_layout_correction(raw, _layout_words)
     if corrected is None:
         return False
+    target_foreground = _hwnd_value(user32.GetForegroundWindow())
     if _replace_range_in_edit_safely(hwnd, start, end, raw, corrected, caret):
         logging.info("Autocorrection: word changed (length=%d)", len(raw))
-        _switch_layout_toward_text(corrected)
+        _switch_layout_toward_text(corrected, target_foreground)
         return True
     logging.debug("Autocorrection: replacement failed (length=%d, class=%s)",
                   len(raw), _get_class_name(hwnd))
@@ -3894,6 +3956,7 @@ def _apply_rules_in_edit(hwnd: object, after_space: bool, characters_after_space
     new_caret = caret + len(match.replacement) - len(match.trigger)
     # _replace_range_in_edit_safely перечитывает текст и проверяет, что на месте
     # всё ещё стоит триггер, — поэтому лишних повторных чтений здесь не нужно.
+    target_foreground = _hwnd_value(user32.GetForegroundWindow())
     if _replace_range_in_edit_safely(
         hwnd=hwnd,
         start=replace_start,
@@ -3902,7 +3965,7 @@ def _apply_rules_in_edit(hwnd: object, after_space: bool, characters_after_space
         replacement=match.replacement,
         caret_after=new_caret,
     ):
-        _switch_layout_toward_text(match.replacement)
+        _switch_layout_toward_text(match.replacement, target_foreground)
     else:
         logging.debug("%s: safe replace aborted", "SPACE" if after_space else "IDLE")
 
