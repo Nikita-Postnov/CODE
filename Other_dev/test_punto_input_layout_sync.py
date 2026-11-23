@@ -143,6 +143,24 @@ class PuntoLayoutSyncTests(unittest.TestCase):
             punto.convert_selected_text(Mock(max_selected_length=100))
             switch.assert_called_once_with('привет',101)
 
+    def test_auto_correction_syncs_layout_after_verified_text_replacement(self):
+        with (patch.object(punto,'_settings',Mock(auto_layout_correction=True)),
+              patch.object(punto,'_layout_words',frozenset({'привет'})),
+              patch.object(punto,'_candidate_layout_correction',return_value='привет'),
+              patch.object(punto,'_replace_range_in_edit_safely',return_value=True),
+              patch.object(punto,'_switch_layout_toward_text') as switch):
+            self.assertTrue(punto._try_auto_layout_in_edit(222,'ghbdtn',6,6))
+            switch.assert_called_once_with('привет',101)
+
+    def test_no_switch_when_auto_replacement_fails(self):
+        with (patch.object(punto,'_settings',Mock(auto_layout_correction=True)),
+              patch.object(punto,'_layout_words',frozenset({'привет'})),
+              patch.object(punto,'_candidate_layout_correction',return_value='привет'),
+              patch.object(punto,'_replace_range_in_edit_safely',return_value=False),
+              patch.object(punto,'_switch_layout_toward_text') as switch):
+            self.assertFalse(punto._try_auto_layout_in_edit(222,'ghbdtn',6,6))
+            switch.assert_not_called()
+
     def test_failed_conversion_does_not_switch(self):
         with (patch.object(punto,'_transform_run_before_caret',return_value=None),
               patch.object(punto,'_switch_layout_toward_text') as switch):
