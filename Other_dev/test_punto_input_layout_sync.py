@@ -157,6 +157,7 @@ class PuntoLayoutSyncTests(unittest.TestCase):
               patch.object(punto,'_layout_words',frozenset({'привет'})),
               patch.object(punto,'_candidate_layout_correction',return_value='привет'),
               patch.object(punto,'_replace_range_in_edit_safely',return_value=False),
+              patch.object(punto,'_get_class_name',return_value='Edit'),
               patch.object(punto,'_switch_layout_toward_text') as switch):
             self.assertFalse(punto._try_auto_layout_in_edit(222,'ghbdtn',6,6))
             switch.assert_not_called()
