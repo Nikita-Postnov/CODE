@@ -125,13 +125,15 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(len(imported), 1)
         self.assertEqual(json.loads(imported[0].read_text())["content"], "v1")
 
-        # A later remote edit must not overwrite B's existing note.
+        # A later remote edit stays encrypted until GUI safely applies it.
         self._save("edited on A")
         self.service._send(self.note_id)
         self.assertTrue(device_b._receive())
         self.assertEqual(json.loads(imported[0].read_text())["content"], "v1")
-        conflicts = list((second_root / "state" / "remote_conflicts").rglob("*.enc"))
-        self.assertEqual(len(conflicts), 1)
+        staged = list((second_root / "state" / "pending_remote_updates").rglob("*.enc"))
+        self.assertEqual(len(staged), 1)
+        self.assertEqual(device_b.apply_staged_remote_updates([self.note_id]), [])
+        self.assertEqual(json.loads(imported[0].read_text())["content"], "v1")
 
     def test_conflict_can_be_restored_as_non_destructive_copy(self):
         from noteapp.incoming_sync import restore_conflict_as_copy
@@ -148,6 +150,11 @@ class ServiceTests(unittest.TestCase):
         originals = list(second_notes.glob("*/note.json"))
         self.assertEqual(len(originals), 1)
 
+        # Simultaneous local edit creates a real conflict.
+        local_file = originals[0]
+        local = json.loads(local_file.read_text())
+        local["content"] = "unsent local edit"
+        local_file.write_text(json.dumps(local), encoding="utf-8")
         self._save("edited remotely on device A")
         self.service._send(self.note_id)
         self.assertTrue(device_b._receive())
@@ -162,7 +169,7 @@ class ServiceTests(unittest.TestCase):
         original = json.loads(originals[0].read_text(encoding="utf-8"))
         self.assertEqual(copied["content"], "edited remotely on device A")
         self.assertNotEqual(copied["uuid"], self.note_id)
-        self.assertEqual(original["content"], "v1")
+        self.assertEqual(original["content"], "unsent local edit")
         self.assertEqual(original["uuid"], self.note_id)
         self.assertTrue(conflicts[0].is_file())
         self.assertEqual(self.remote.writes, 2)
@@ -178,6 +185,10 @@ class ServiceTests(unittest.TestCase):
         )
         device_b.transport = self.remote
         self.assertTrue(device_b._receive())
+        local_path = next(second_notes.glob("*/note.json"))
+        local = json.loads(local_path.read_text())
+        local["content"] = "unsent local revision"
+        local_path.write_text(json.dumps(local), encoding="utf-8")
         self._save("new remote revision")
         self.service._send(self.note_id)
         self.assertTrue(device_b._receive())
