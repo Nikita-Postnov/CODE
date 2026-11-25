@@ -444,6 +444,11 @@ def run_configured_sync(data_dir: Path, *, protected_uuid: str | None = None) ->
     token = os.environ.get("NP_NOTES_GITHUB_TOKEN", "")
     secret = os.environ.get("NP_NOTES_SYNC_PASSPHRASE", "")
     if not token or len(secret) < 16:
+        from .sync_secrets import load_credentials
+        creds = load_credentials(Path(data_dir) / "NoteSync")
+        if creds:
+            token, secret = creds
+    if not token or len(secret) < 16:
         return SyncResult("needs_credentials")
     store = GitHubStore(cfg["repository"], token)
     return SyncEngine(Path(data_dir) / "Notes", Path(data_dir) / "NoteSync", store, secret).run(
