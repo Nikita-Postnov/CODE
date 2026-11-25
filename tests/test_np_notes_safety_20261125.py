@@ -148,6 +148,24 @@ class DesktopWidgetSettingsTests(unittest.TestCase):
         self.assertIn("topmost.toggled.connect(self.set_always_on_top)", code)
 
 
+class NotesOrganizationTests(unittest.TestCase):
+    def test_untagged_view_is_non_destructive(self):
+        source = (ROOT / "app" / "__init__.py").read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        cls = next(node for node in tree.body
+                   if isinstance(node, ast.ClassDef) and node.name == "NotesApp")
+        method = next(node for node in cls.body
+                      if isinstance(node, ast.FunctionDef)
+                      and node.name == "show_untagged_notes")
+        calls = [n.func.attr for n in ast.walk(method)
+                 if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)]
+        self.assertNotIn("save_note_to_file", calls)
+        self.assertNotIn("unlink", calls)
+        self.assertNotIn("remove", calls)
+        self.assertIn("if note.tags:", ast.get_source_segment(source, method))
+        self.assertIn('self.search_mode_combo.addItems(["Заголовок", "Содержимое", "Напоминание", "Везде"])', source)
+
+
 class SearchPerformanceTests(unittest.TestCase):
     def test_global_search_short_circuits_metadata(self):
         code = (ROOT / "app" / "search.py").read_text(encoding="utf-8")
