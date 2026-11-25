@@ -93,3 +93,41 @@ def import_new_note(notes_root: Path, state_dir: Path, note_id: str,
         if temporary.exists():
             shutil.rmtree(temporary)
     return target
+
+
+def restore_conflict_as_copy(notes_root: Path, state_dir: Path, note_id: str,
+                             sha: str, secret: str):
+    """Explicit conflict resolution: create a *new* note; never replace either.
+
+    The conflict is read only from its encrypted quarantine. Its original note
+    and cloud history stay unchanged. Repeated action intentionally creates
+    separately identifiable copies, avoiding destructive implicit merge.
+    """
+    import base64
+    from uuid import uuid4
+    from .encrypted_sync import seal
+    if str(UUID(note_id)) != note_id or not re.fullmatch(r"[a-f0-9]{40}", sha):
+        raise IncomingConflict("Invalid conflict identifier")
+    source = Path(state_dir) / "remote_conflicts" / note_id / (sha + ".enc")
+    if source.is_symlink() or not source.is_file():
+        raise IncomingConflict("Encrypted conflict file missing")
+    if source.stat().st_size > 50 * 1024 * 1024:
+        raise IncomingConflict("Encrypted conflict file too large")
+    original, attachments = unpack_to_memory(
+        unseal(source.read_bytes(), secret, note_id), note_id
+    )
+    new_id = str(uuid4())
+    duplicate = dict(original)
+    duplicate["uuid"] = new_id
+    duplicate["title"] = str(duplicate.get("title", "")) + " (копия конфликта)"
+    payload = json.dumps(
+        {"version": 1, "note": duplicate,
+         "attachments": {
+             name: base64.b64encode(raw).decode("ascii")
+             for name, raw in attachments.items()
+         }},
+        ensure_ascii=False, separators=(",", ":"),
+    ).encode("utf-8")
+    return import_new_note(
+        notes_root, state_dir, new_id, seal(payload, secret, new_id), secret
+    )
