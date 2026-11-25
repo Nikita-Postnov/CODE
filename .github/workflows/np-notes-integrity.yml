@@ -12,6 +12,7 @@ on:
       - "tests/test_np_notes_qt_smoke.py"
       - "tests/test_np_notes_search_benchmark.py"
       - "tools/benchmark_np_notes_search.py"
+      - "tools/benchmark_np_notes_qt_search.py"
       - ".github/workflows/np-notes-integrity.yml"
   pull_request:
     branches: [main]
@@ -24,6 +25,7 @@ on:
       - "tests/test_np_notes_qt_smoke.py"
       - "tests/test_np_notes_search_benchmark.py"
       - "tools/benchmark_np_notes_search.py"
+      - "tools/benchmark_np_notes_qt_search.py"
       - ".github/workflows/np-notes-integrity.yml"
 
 jobs:
@@ -58,3 +60,7 @@ jobs:
         env:
           QT_QPA_PLATFORM: offscreen
         run: python -m unittest -v tests.test_np_notes_qt_smoke
+      - name: Benchmark synthetic QTextDocument search
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python tools/benchmark_np_notes_qt_search.py --notes 100,1000,10000 --repeats 3
