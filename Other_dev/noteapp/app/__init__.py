@@ -2990,6 +2990,33 @@ class NotesApp(NotePersistenceMixin, PluginsMixin, RemindersMixin, TrayMixin, Au
         self.font_size_spin.setValue(14)
         self.font_size_spin.valueChanged.connect(self.change_font_size)
         flow_layout.addWidget(self.font_size_spin)
+        self.line_spacing_combo = QComboBox()
+        self.line_spacing_combo.setToolTip("Межстрочный интервал выбранных абзацев")
+        self.line_spacing_combo.setAccessibleName("Межстрочный интервал")
+        for label, ratio in (("Интервал 1,0", 1.0), ("Интервал 1,15", 1.15),
+                             ("Интервал 1,5", 1.5), ("Интервал 2,0", 2.0)):
+            self.line_spacing_combo.addItem(label, ratio)
+        self.line_spacing_combo.setCurrentIndex(0)
+        self.line_spacing_combo.currentIndexChanged.connect(
+            lambda _: self.set_paragraph_line_spacing(
+                self.line_spacing_combo.currentData()
+            )
+        )
+        flow_layout.addWidget(self.line_spacing_combo)
+        self.paragraph_after_combo = QComboBox()
+        self.paragraph_after_combo.setToolTip(
+            "Интервал после абзаца (пт) для выделенных абзацев"
+        )
+        self.paragraph_after_combo.setAccessibleName("Интервал после абзаца")
+        for amount in (0, 4, 8, 12):
+            self.paragraph_after_combo.addItem(f"После: {amount} пт", amount)
+        self.paragraph_after_combo.setCurrentIndex(0)
+        self.paragraph_after_combo.currentIndexChanged.connect(
+            lambda _: self.set_paragraph_after_spacing(
+                self.paragraph_after_combo.currentData()
+            )
+        )
+        flow_layout.addWidget(self.paragraph_after_combo)
         reminder_layout = QHBoxLayout()
         reminder_layout.setContentsMargins(0, 0, 0, 0)
         reminder_layout.setSpacing(10)
