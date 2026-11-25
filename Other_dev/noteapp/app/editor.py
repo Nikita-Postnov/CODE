@@ -466,7 +466,23 @@ class EditorMixin:
         try:
             if cursor.hasSelection():
                 cursor.setPosition(cursor.selectionEnd())
-            if cursor.positionInBlock():
+            # Legacy versions sometimes left an isolated dot in place of an
+            # HR. Only replace it on explicit invocation while the cursor is
+            # inside that exact one-character paragraph. Never scan/migrate
+            # all notes: a standalone dot can also be deliberate user text.
+            current_block = cursor.block()
+            old_divider = (
+                current_block.isValid()
+                and current_block.text().strip() == "."
+                and cursor.currentTable() is None
+                and cursor.currentList() is None
+            )
+            if old_divider:
+                cursor.select(QTextCursor.BlockUnderCursor)
+                cursor.removeSelectedText()
+                # Cursor remains in the now-empty block; do not remove the
+                # following paragraph or its existing formatting.
+            elif cursor.positionInBlock():
                 cursor.insertBlock()
             table_format = QTextTableFormat()
             table_format.setWidth(QTextLength(QTextLength.PercentageLength, 100))
