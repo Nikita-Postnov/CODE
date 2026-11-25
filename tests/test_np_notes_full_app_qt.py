@@ -59,6 +59,9 @@ class FullAppFirstRunSmoke(unittest.TestCase):
             if target and Path(target).is_relative_to(cls.root):
                 logging.getLogger().removeHandler(handler)
                 handler.close()
+        # Dedicated CI process: force-close any rotating handlers still held
+        # by global logger registries before Windows can remove crash.log.
+        logging.shutdown()
         cls.temp.cleanup()
 
     def test_empty_data_then_create_first_note(self):
