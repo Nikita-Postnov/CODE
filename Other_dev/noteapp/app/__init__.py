@@ -2443,6 +2443,22 @@ class NotesApp(NotePersistenceMixin, PluginsMixin, RemindersMixin, TrayMixin, Au
             self.current_note.favorite = not self.current_note.favorite
             self.refresh_notes_list()
 
+    def show_untagged_notes(self) -> None:
+        """Виртуальная группа заметок без тегов — без изменения их хранения."""
+        self.notes_list.clear()
+        for note in self.notes:
+            if note.tags:
+                continue
+            timestamp = QDateTime.fromString(note.timestamp or "", Qt.ISODate)
+            date_str = timestamp.toString("dd.MM.yyyy") if timestamp.isValid() else ""
+            reminder_symbol = " 🔔" if note.reminder else ""
+            item = QListWidgetItem(f"{note.title} — {date_str}{reminder_symbol}")
+            item.setData(Qt.UserRole, note)
+            item.setFont(QFont("Segoe UI Emoji", 10))
+            if note.favorite:
+                item.setForeground(self.get_contrast_favorite_color())
+            self.notes_list.addItem(item)
+
     def show_favorites_only(self) -> None:
         self.notes_list.clear()
         for note in self.notes:
@@ -2673,6 +2689,10 @@ class NotesApp(NotePersistenceMixin, PluginsMixin, RemindersMixin, TrayMixin, Au
         favorites_button = QPushButton("★Избранные")
         favorites_button.clicked.connect(self.show_favorites_only)
         flow_layout.addWidget(favorites_button)
+        no_tags_button = QPushButton("Без тегов")
+        no_tags_button.setToolTip("Показать заметки без тегов (без изменения данных)")
+        no_tags_button.clicked.connect(self.show_untagged_notes)
+        flow_layout.addWidget(no_tags_button)
         reset_button = QPushButton("Сбросить фильтр")
         reset_button.clicked.connect(self.refresh_notes_list)
         flow_layout.addWidget(reset_button)
@@ -2687,7 +2707,7 @@ class NotesApp(NotePersistenceMixin, PluginsMixin, RemindersMixin, TrayMixin, Au
         self.sort_order_combo.currentIndexChanged.connect(self.apply_sorting)
         flow_layout.addWidget(self.sort_order_combo)
         self.search_mode_combo = QComboBox()
-        self.search_mode_combo.addItems(["Заголовок", "Содержимое", "Напоминание"])
+        self.search_mode_combo.addItems(["Заголовок", "Содержимое", "Напоминание", "Везде"])
         flow_layout.addWidget(self.search_mode_combo)
         self.search_bar = QLineEdit()
         self.search_bar.setPlaceholderText("Поиск...")
