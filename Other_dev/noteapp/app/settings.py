@@ -214,7 +214,7 @@ class SettingsMixin:
                 return
             states = {
                 "idle": "Ожидание синхронизации",
-                "waiting_for_network": "Нет интернета — данные сохраняются локально",
+                "waiting_for_network": "GitHub недоступен — данные сохраняются локально",
                 "synchronizing": "Синхронизация",
                 "synchronized": "Синхронизировано",
                 "retry_pending": "Ошибка или конфликт — изменения сохранены локально",
