@@ -86,6 +86,24 @@ class ServiceTests(unittest.TestCase):
             self.service._send(self.note_id)
         self.assertEqual(self.remote.writes, 1)
 
+    def test_encrypted_attachment_survives_between_fake_devices(self):
+        attachment = self.note_folder / "synthetic-image.bin"
+        payload = b"\x00TEST-ONLY-BINARY\xff" * 50
+        attachment.write_bytes(payload)
+        self.service._send(self.note_id)
+        second_root = Path(self.temp.name) / "attachment_device"
+        second_notes = second_root / "Notes"
+        second_notes.mkdir(parents=True)
+        device_b = EncryptedOutboundService(
+            second_root / "state", second_notes, "fake", "fake",
+            "fake-token", "synthetic long secret phrase",
+        )
+        device_b.transport = self.remote
+        self.assertTrue(device_b._receive())
+        received = list(second_notes.glob("*/synthetic-image.bin"))
+        self.assertEqual(len(received), 1)
+        self.assertEqual(received[0].read_bytes(), payload)
+
     def test_restart_scan_enqueues_saved_notes(self):
         self.assertEqual(self.service.queue.count(), 0)
         self.service.enqueue_existing()
