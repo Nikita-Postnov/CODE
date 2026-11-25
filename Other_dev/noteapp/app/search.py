@@ -91,7 +91,7 @@ class SearchMixin:
         if tag == "все теги":
             tag = ""
 
-        text = self.search_bar.text().strip().lower()
+        text = self.search_bar.text().strip().casefold()
         mode = self.search_mode_combo.currentText()
 
         if not text and not tag:
@@ -109,13 +109,20 @@ class SearchMixin:
             elif mode == "Напоминание":
                 matches_search_main = bool(note.reminder) and text in str(note.reminder).lower()
             else:
-                content_plain = getattr(note, "content_txt", "") or ""
-                if not content_plain:
-                    doc = QTextDocument()
-                    doc.setHtml(note.content)
-                    content_plain = doc.toPlainText()
-                    note.content_txt = content_plain
-                matches_search_main = text in content_plain.lower()
+                # Не используем устаревший кэш для открытой заметки.
+                if self.current_note and note.uuid == self.current_note.uuid:
+                    content_plain = self.text_edit.toPlainText()
+                else:
+                    content_plain = getattr(note, "content_txt", "") or ""
+                    if not content_plain:
+                        doc = QTextDocument()
+                        doc.setHtml(note.content or "")
+                        content_plain = doc.toPlainText()
+                        note.content_txt = content_plain
+                matches_search_main = text in content_plain.casefold()
+                if mode == "Везде":
+                    matches_search_main = (matches_search_main
+                                           or text in (note.title or "").casefold())
             return matches_tag_filter and (matches_search_main or matches_search_by_tags)
         filtered = [n for n in self.notes if _matches(n)]
         fav_color = self.get_contrast_favorite_color()
@@ -165,10 +172,13 @@ class SearchMixin:
     def update_search_filter_items(self) -> None:
         if not hasattr(self, "search_mode_combo") or self.search_mode_combo is None:
             return
-        modes = ["Заголовок", "Содержимое", "Напоминание"]
+        modes = ["Заголовок", "Содержимое", "Напоминание", "Везде"]
+        selected = self.search_mode_combo.currentText()
         self.search_mode_combo.blockSignals(True)
         self.search_mode_combo.clear()
         self.search_mode_combo.addItems(modes)
+        if selected in modes:
+            self.search_mode_combo.setCurrentText(selected)
         self.search_mode_combo.blockSignals(False)
 
     def _timestamp_sort_key(self, note: "Note") -> int:
