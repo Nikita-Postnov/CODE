@@ -276,6 +276,16 @@ class GithubSyncTests(unittest.TestCase):
         with self.assertRaises(SyncError):
             unpack_snapshot(buffer.getvalue(), self.note_uuid)
 
+    def test_zip_bomb_is_rejected_before_any_local_write(self):
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as z:
+            z.writestr("note.json", json.dumps({"uuid": self.note_uuid, "content": "safe"}))
+            z.writestr("attachments/bomb.bin", b"X" * (21 * 1024 * 1024))
+        self.assertLess(len(buf.getvalue()), 1024 * 1024)
+        with self.assertRaises(SyncError):
+            unpack_snapshot(buf.getvalue(), self.note_uuid)
+        self.assertFalse((self.device_a / "Notes").exists())
+
     def test_disabled_configuration_causes_no_network_or_data_reads(self):
         self.assertIsNone(enabled_config(self.device_a))
         self.assertEqual(run_configured_sync(self.device_a).status, "disabled")
