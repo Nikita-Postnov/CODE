@@ -67,14 +67,27 @@ class ImagesMixin:
         except Exception:
             self._clipboard_connected = False
 
+    @staticmethod
+    def _clear_private_clipboard_if_unchanged(expected: str) -> None:
+        """Не удалять новые данные пользователя из буфера при очистке секрета."""
+        clipboard = QApplication.clipboard()
+        if clipboard.text() == expected:
+            clipboard.clear()
+
     def copy_password_manager_to_clipboard(self) -> None:
         text = self.password_manager_field.text().strip()
         if not text:
             QToolTip.showText(QCursor.pos(), "Поле пустое")
             return
         QApplication.clipboard().setText(text)
+        # Секрет не должен бессрочно оставаться в буфере обмена.
+        # Очистка сработает только если пользователь не скопировал другой текст.
+        QTimer.singleShot(
+            30000,
+            lambda value=text: self._clear_private_clipboard_if_unchanged(value),
+        )
         self.show_toast(
-            "Скопировано",
+            "Скопировано (буфер очистится через 30 секунд)",
             boundary_widget=self.dock_editor.widget(),
             anchor_widget=self.password_manager_copy_btn,
         )
