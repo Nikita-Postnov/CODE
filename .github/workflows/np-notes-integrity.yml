@@ -17,6 +17,7 @@ on:
       - "tools/benchmark_np_notes_qt_search.py"
       - "tools/preview_np_notes_pr83.ps1"
       - "tools/backup_np_notes_data.ps1"
+      - "tools/preflight_np_notes_release.ps1"
       - ".github/workflows/np-notes-integrity.yml"
   pull_request:
     branches: [main]
@@ -34,6 +35,7 @@ on:
       - "tools/benchmark_np_notes_qt_search.py"
       - "tools/preview_np_notes_pr83.ps1"
       - "tools/backup_np_notes_data.ps1"
+      - "tools/preflight_np_notes_release.ps1"
       - ".github/workflows/np-notes-integrity.yml"
 
 jobs:
@@ -158,6 +160,31 @@ jobs:
           }
           finally {
             if (Test-Path $root) { Remove-Item -LiteralPath $root -Recurse -Force }
+          }
+      - name: Release preflight is read-only under Windows PowerShell 5.1
+        shell: pwsh
+        run: |
+          $sandbox = Join-Path $env:RUNNER_TEMP ('np-notes-preflight-' + [guid]::NewGuid().ToString('N'))
+          try {
+            New-Item -ItemType Directory -Path (Join-Path $sandbox 'Data\Notes') -Force | Out-Null
+            New-Item -ItemType Directory -Path (Join-Path $sandbox 'noteapp\app') -Force | Out-Null
+            New-Item -ItemType File -Path (Join-Path $sandbox 'notes_app.py') | Out-Null
+            New-Item -ItemType File -Path (Join-Path $sandbox 'noteapp\app\__init__.py') | Out-Null
+            Set-Content -LiteralPath (Join-Path $sandbox 'Data\Notes\example.json') -Value '{"keep":true}' -Encoding UTF8
+            $file = Join-Path $sandbox 'Data\Notes\example.json'
+            $hash = (Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash
+            $script = (Resolve-Path 'tools/preflight_np_notes_release.ps1').Path
+            $report = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $script -LauncherRoot $sandbox
+            if ($LASTEXITCODE -ne 0) { throw 'Windows PowerShell release preflight failed' }
+            if (-not (($report | Out-String) -match 'DATA_NOT_MODIFIED=TRUE')) {
+              throw 'Expected read-only preflight marker absent'
+            }
+            if ((Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash -ne $hash) {
+              throw 'Preflight unexpectedly modified data'
+            }
+          }
+          finally {
+            if (Test-Path $sandbox) { Remove-Item -LiteralPath $sandbox -Recurse -Force }
           }
       - name: Install Qt dependencies
         run: python -m pip install "PySide6>=6.7,<7"
