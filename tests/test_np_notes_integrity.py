@@ -80,7 +80,8 @@ class TestNotesStorage(unittest.TestCase):
             raise OSError("simulated disk full")
 
         with patch.object(shutil, "copyfileobj", partial_copy):
-            self.worker._make_backup_if_exists(file)
+            with self.assertRaises(OSError):
+                self.worker._make_backup_if_exists(file)
         self.assertEqual(list(folder.glob("note_backup_*.json")), [])
         self.assertEqual(list(folder.glob("note_backup_*.tmp")), [])
         self.assertEqual(file.read_text(encoding="utf-8"), '{"title":"saved"}')
