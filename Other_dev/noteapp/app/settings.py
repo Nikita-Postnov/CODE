@@ -230,6 +230,13 @@ class SettingsMixin:
             detail = f" · Конфликтов: {conflicts}" if conflicts else ""
             if incoming:
                 detail += f" · Ожидают применения: {incoming}"
+            failure = getattr(service.worker, "last_failure", None)
+            if failure and service.worker.state == "retry_pending":
+                detail += f" · Причина: {failure}"
+            if service.worker.state == "waiting_for_network":
+                probe_error = getattr(service, "last_probe_error", None)
+                if probe_error:
+                    detail += f" · Причина: {probe_error}"
             sync_label.setText(
                 f"{states.get(service.worker.state, 'Ожидание')} "
                 f"· В очереди: {pending}{detail} · Каждые 5 минут"
