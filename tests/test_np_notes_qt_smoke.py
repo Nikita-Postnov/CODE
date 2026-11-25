@@ -38,6 +38,47 @@ def extract_widget_method(name):
     return namespace[name]
 
 
+def extract_search_method(name):
+    file = APP_DIR / "search.py"
+    tree = ast.parse(file.read_text(encoding="utf-8"))
+    cls = next(node for node in tree.body
+               if isinstance(node, ast.ClassDef) and node.name == "SearchMixin")
+    method = next(node for node in cls.body
+                  if isinstance(node, ast.FunctionDef) and node.name == name)
+    namespace = {}
+    body = ast.Module(body=[method], type_ignores=[])
+    exec(compile(ast.fix_missing_locations(body), "<search-qt-test>", "exec"), namespace)
+    return namespace[name]
+
+
+class SearchQtSmokeTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QApplication.instance() or QApplication([])
+
+    def test_find_next_wraps_and_only_selects(self):
+        edit = QTextEdit()
+        self.addCleanup(edit.close)
+        edit.setPlainText("alpha beta alpha")
+        class Bar:
+            def text(self):
+                return "alpha"
+        class Owner:
+            pass
+        owner = Owner()
+        owner.current_note = object()
+        owner.search_bar = Bar()
+        owner.text_edit = edit
+        find = extract_search_method("find_next_in_current_note")
+        self.assertTrue(find(owner))
+        self.assertEqual(edit.textCursor().selectionStart(), 0)
+        self.assertTrue(find(owner))
+        self.assertEqual(edit.textCursor().selectionStart(), 11)
+        self.assertTrue(find(owner))
+        self.assertEqual(edit.textCursor().selectionStart(), 0)
+        self.assertEqual(edit.toPlainText(), "alpha beta alpha")
+
+
 class WidgetQtSmokeTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
