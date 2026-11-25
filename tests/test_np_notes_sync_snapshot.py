@@ -37,6 +37,24 @@ class SnapshotTests(unittest.TestCase):
         self.assertNotIn("note_cache.json", files)
         self.assertNotIn("note_backup_123.json", files)
 
+    def test_attachment_link_portable_between_computers(self):
+        note = json.loads((self.folder / "note.json").read_text())
+        note["content"] = (
+            '<p><a href="file:///C:/OldPC/Notes/document.txt">'
+            'Open attachment</a></p>'
+        )
+        (self.folder / "note.json").write_text(json.dumps(note), encoding="utf-8")
+        packed = snapshot.pack_note(self.folder, self.note_id)
+        received, files = snapshot.unpack_to_memory(packed, self.note_id)
+        self.assertIn("npnotes-attachment:///document.txt", received["content"])
+        self.assertNotIn("OldPC", received["content"])
+        new_folder = Path(self.temp.name) / "different-computer"
+        restored = snapshot.restore_attachment_links(
+            received["content"], new_folder, files,
+        )
+        self.assertIn(new_folder.resolve().as_uri(), restored)
+        self.assertNotIn("npnotes-attachment:", restored)
+
     def test_wrong_note_identifier_rejected(self):
         with self.assertRaises(snapshot.UnsafeSnapshot):
             snapshot.pack_note(self.folder, str(uuid4()))
