@@ -24,6 +24,18 @@ class EncryptedCredentialsTests(unittest.TestCase):
                 configure_from_environment(self.folder, self.folder / "Notes")
             )
 
+    def test_credentials_do_not_implicitly_activate_real_sync(self):
+        # Even if credentials exist, an explicit deployment gate is required.
+        with patch.dict("os.environ", {"NP_NOTES_SYNC_OWNER": "fake",
+                                      "NP_NOTES_SYNC_REPOSITORY": "fake",
+                                      "NP_NOTES_SYNC_TOKEN": "fake",
+                                      "NP_NOTES_SYNC_PASSPHRASE": "syntheticlongsecret"}, clear=True):
+            with patch("noteapp.sync_credentials.load_dpapi_credentials",
+                       side_effect=AssertionError("must not read credentials")):
+                self.assertIsNone(
+                    configure_from_environment(self.folder, self.folder / "Notes")
+                )
+
     def test_loader_never_assumes_plaintext(self):
         (self.folder / "credentials.dpapi").write_text(
             json.dumps({"owner": "fake", "repository": "fake",
