@@ -5,7 +5,10 @@ never touches real Data automatically and never follows symbolic links.
 """
 from __future__ import annotations
 import base64
+import html
 import json
+import re
+from urllib.parse import quote, unquote, urlsplit
 from pathlib import Path
 from uuid import UUID
 
@@ -25,6 +28,48 @@ def _valid_uuid(value):
             raise ValueError
     except (TypeError, ValueError, AttributeError) as exc:
         raise UnsafeSnapshot("Invalid UUID") from exc
+
+
+_HREF = re.compile(r'''(href\s*=\s*["'])([^"']+)(["'])''', re.IGNORECASE)
+
+
+def canonicalize_attachment_links(content: str, attachment_names) -> str:
+    """Replace machine-specific file URLs with portable attachment references."""
+    if not isinstance(content, str):
+        return content
+    names = set(attachment_names)
+
+    def replace(match):
+        raw = html.unescape(match.group(2))
+        parsed = urlsplit(raw)
+        if parsed.scheme.lower() != "file":
+            return match.group(0)
+        filename = unquote(parsed.path).replace(chr(92), "/").rsplit("/", 1)[-1]
+        if filename not in names:
+            return match.group(0)
+        portable = "npnotes-attachment:///" + quote(filename, safe="")
+        return match.group(1) + portable + match.group(3)
+
+    return _HREF.sub(replace, content)
+
+
+def restore_attachment_links(content: str, folder: Path, attachment_names) -> str:
+    """Resolve portable references only to files imported in this note folder."""
+    if not isinstance(content, str):
+        return content
+    names = set(attachment_names)
+
+    def replace(match):
+        raw = html.unescape(match.group(2))
+        parsed = urlsplit(raw)
+        if parsed.scheme.lower() != "npnotes-attachment":
+            return match.group(0)
+        filename = unquote(parsed.path.lstrip("/"))
+        if filename not in names:
+            raise UnsafeSnapshot("Portable reference to absent attachment")
+        return match.group(1) + html.escape((folder / filename).resolve().as_uri(), quote=True) + match.group(3)
+
+    return _HREF.sub(replace, content)
 
 
 def pack_note(note_folder: Path, note_id: str) -> bytes:
@@ -59,6 +104,8 @@ def pack_note(note_folder: Path, note_id: str) -> bytes:
         if total > MAX_SNAPSHOT_BYTES:
             raise UnsafeSnapshot("Too many attachment bytes")
         files[child.name] = base64.b64encode(raw).decode("ascii")
+    note = dict(note)
+    note["content"] = canonicalize_attachment_links(note.get("content"), files)
     result = json.dumps({"version": 1, "note": note, "attachments": files},
                         ensure_ascii=False, separators=(",", ":")).encode()
     if len(result) > MAX_SNAPSHOT_BYTES:
