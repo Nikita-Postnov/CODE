@@ -55,6 +55,8 @@ $backupBase = Join-Path $env:USERPROFILE 'Documents\NP_Notes_Code_Backups'
 $backup = Join-Path $backupBase ('Code_' + (Get-Date -Format 'yyyyMMdd_HHmmss') + '_' + $CommitSha.Substring(0,12))
 $rollbackInRoot = Join-Path $root ('.np-notes-rollback-' + [guid]::NewGuid().ToString('N'))
 $changed = $false
+$entryMoved = $false
+$packageMoved = $false
 New-Item -ItemType Directory -Path $work | Out-Null
 try {
     Invoke-WebRequest -Uri "https://github.com/Nikita-Postnov/CODE/archive/$CommitSha.zip" -OutFile $zip -UseBasicParsing
@@ -87,7 +89,9 @@ try {
     New-Item -ItemType Directory -Path $rollbackInRoot | Out-Null
     try {
         Move-Item -LiteralPath $package -Destination (Join-Path $rollbackInRoot 'noteapp')
+        $packageMoved = $true
         Move-Item -LiteralPath $entry -Destination (Join-Path $rollbackInRoot 'notes_app.py')
+        $entryMoved = $true
         $changed = $true
         Copy-OnlyCode $stage $root
         Assert-File (Join-Path $root 'notes_app.py')
@@ -98,11 +102,15 @@ try {
         if ($left -ne $right) { throw 'Entry file validation failed' }
     }
     catch {
-        if ($changed) {
-            Remove-Item -LiteralPath $package -Recurse -Force -ErrorAction SilentlyContinue
-            Remove-Item -LiteralPath $entry -Force -ErrorAction SilentlyContinue
-            Move-Item -LiteralPath (Join-Path $rollbackInRoot 'noteapp') -Destination $package
-            Move-Item -LiteralPath (Join-Path $rollbackInRoot 'notes_app.py') -Destination $entry
+        if ($packageMoved -or $entryMoved) {
+            if ($packageMoved) {
+                Remove-Item -LiteralPath $package -Recurse -Force -ErrorAction SilentlyContinue
+                Move-Item -LiteralPath (Join-Path $rollbackInRoot 'noteapp') -Destination $package
+            }
+            if ($entryMoved) {
+                Remove-Item -LiteralPath $entry -Force -ErrorAction SilentlyContinue
+                Move-Item -LiteralPath (Join-Path $rollbackInRoot 'notes_app.py') -Destination $entry
+            }
             $changed = $false
         }
         throw
