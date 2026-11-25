@@ -84,7 +84,11 @@ class DropdownsMixin:
             vals = self._load_dropdown_values()
 
         text = re.sub(r"<[^>]+>", "", inner)
-        text = text.replace("▼", "").replace("&#9662;", "").strip()
+        # Qt converts HTML &#9662; to the actual U+25BE glyph in toHtml().
+        # Without stripping it, reopened dropdowns acquire an extra "▾"
+        # in their persisted selected value after every reload.
+        text = (text.replace("▼", "").replace("▾", "")
+                    .replace("&#9662;", "").strip())
 
         info = {"value": text, "values": vals}
         self._dropdown_tokens[dd_id] = info
