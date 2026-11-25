@@ -124,7 +124,19 @@ jobs:
             New-Item -ItemType Directory -Force -Path (Join-Path $source 'Notes\sample') | Out-Null
             Set-Content -LiteralPath (Join-Path $source 'Notes\sample\note.json') -Value '{"text":"example"}' -Encoding UTF8
             Set-Content -LiteralPath (Join-Path $source 'settings.ini') -Value 'key=value' -Encoding UTF8
-            & $path -SourceRoot $source -BackupRoot $backup
+            $log = Join-Path $source 'crash.log'
+            Set-Content -LiteralPath $log -Value 'diagnostic only' -Encoding UTF8
+            $locked = [IO.File]::Open($log, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+            try {
+              $result = & $path -SourceRoot $source -BackupRoot $backup
+            }
+            finally { $locked.Dispose() }
+            if (-not (($result | Out-String) -match 'SKIPPED_DIAGNOSTIC_LOGS=1')) {
+              throw 'Locked crash.log must be explicitly reported as skipped'
+            }
+            if (Test-Path -LiteralPath (Join-Path $backup 'crash.log')) {
+              throw 'Diagnostic crash.log must not be copied'
+            }
             if (-not (Test-Path -LiteralPath (Join-Path $backup 'SHA256-manifest.json'))) {
               throw 'Missing backup manifest'
             }
