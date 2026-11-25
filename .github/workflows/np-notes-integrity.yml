@@ -83,6 +83,16 @@ jobs:
         env:
           QT_QPA_PLATFORM: offscreen
         run: python -m unittest -v tests.test_np_notes_full_app_qt
+      - name: Diagnose isolated full-app smoke logs on failure
+        if: failure()
+        shell: pwsh
+        run: |
+          Get-ChildItem -LiteralPath $env:TEMP -Directory -Filter 'np-notes-full-smoke-*' -ErrorAction SilentlyContinue | ForEach-Object {
+            Get-ChildItem -LiteralPath (Join-Path $_.FullName 'Data') -Filter '*crash.log' -File -ErrorAction SilentlyContinue | ForEach-Object {
+              Write-Host "=== Test crash log ==="
+              Get-Content -LiteralPath $_.FullName -Tail 60
+            }
+          }
       - name: Remove isolated test logs after Qt process exits
         if: always()
         shell: pwsh
