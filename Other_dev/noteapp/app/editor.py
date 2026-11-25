@@ -110,7 +110,9 @@ class EditorMixin:
         self.text_edit.setFontPointSize(14)
 
     def change_font(self, font: QFont) -> None:
-        self.text_edit.setCurrentFont(font)
+        # This is the connected QFontComboBox callback, not set_font_family.
+        # Apply only the family to preserve font size and selected styles.
+        self.set_font_family(font.family())
 
     def change_font_size(self, size: int) -> None:
         try:
