@@ -36,6 +36,30 @@ class EncryptedCredentialsTests(unittest.TestCase):
                     configure_from_environment(self.folder, self.folder / "Notes")
                 )
 
+    def test_activation_marker_requires_exact_opt_in(self):
+        marker = self.folder / "sync_enabled.json"
+        fake = {"owner": "fake", "repository": "fake", "token": "fake",
+                "passphrase": "synthetic long secret"}
+        with patch.dict("os.environ", {}, clear=True):
+            for payload in ('{"enabled":true}', '{"version":1,"enabled":false}',
+                            'not valid JSON'):
+                marker.write_text(payload, encoding="utf-8")
+                with patch("noteapp.sync_credentials.load_dpapi_credentials",
+                           side_effect=AssertionError("unexpected secret read")):
+                    self.assertIsNone(
+                        configure_from_environment(self.folder, self.folder / "Notes")
+                    )
+            marker.write_text('{"version":1,"enabled":true}', encoding="utf-8")
+            with patch("noteapp.sync_credentials.load_dpapi_credentials",
+                       return_value=fake), patch(
+                       "noteapp.sync_service.EncryptedOutboundService"
+                       ) as factory:
+                result = configure_from_environment(
+                    self.folder, self.folder / "Notes"
+                )
+                self.assertIs(result, factory.return_value)
+                self.assertEqual(factory.call_count, 1)
+
     def test_loader_never_assumes_plaintext(self):
         (self.folder / "credentials.dpapi").write_text(
             json.dumps({"owner": "fake", "repository": "fake",
