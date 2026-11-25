@@ -211,6 +211,59 @@ class SyntheticTrashDeletionTests(unittest.TestCase):
         self.assertEqual(self.transport.deletes, 0)
         self.assertIn(self.note_id, self.transport.notes)
 
+    def test_stale_pending_trashed_note_is_acknowledged_without_upload(self):
+        self.a._send(self.note_id)
+        self.to_trash(self.a, self.note_folder)
+        self.a.saved(self.note_id)  # old-version UI may enqueue after Trash move
+        self.assertEqual(self.a.queue.count(), 1)
+        old_sha = self.transport.read(self.note_id)[1]
+        self.assertTrue(self.a.worker.sync_once())
+        self.assertEqual(self.a.queue.count(), 0)
+        self.assertEqual(self.transport.read(self.note_id)[1], old_sha)
+        self.assertEqual(self.transport.deletes, 0)
+
+    def test_unknown_missing_note_is_never_treated_as_permanent_deletion(self):
+        self.a.saved(self.note_id)
+        shutil.rmtree(self.note_folder)
+        self.assertFalse(self.a.worker.sync_once())
+        self.assertEqual(self.a.queue.count(), 1)
+        self.assertEqual(self.transport.deletes, 0)
+        self.assertFalse(self.transport.tombstones)
+
+    def test_second_device_may_finally_delete_its_already_deleted_trash_copy(self):
+        self.a._send(self.note_id)
+        b = self.make_device("b")
+        self.assertTrue(b._receive())
+        local_b = b._find_folder(self.note_id)
+        self.assertIsNotNone(local_b)
+        target_a = self.to_trash(self.a, self.note_folder)
+        self.a.prepare_permanent_delete(self.note_id)
+        shutil.rmtree(target_a)
+        self.a.commit_permanent_delete(self.note_id)
+        self.assertTrue(self.a.worker.sync_once())
+        self.assertTrue(b._receive())
+        self.assertEqual(b.apply_staged_remote_deletions([]), [self.note_id])
+        target_b = b._folder_in_trash(self.note_id)
+        self.assertIsNotNone(target_b)
+        b.prepare_permanent_delete(self.note_id)
+        shutil.rmtree(target_b)
+        b.commit_permanent_delete(self.note_id)
+        self.assertTrue(b.worker.sync_once())
+        self.assertEqual(b.queue.count(), 0)
+        self.assertEqual(b._deletion_status(self.note_id), "done")
+        self.assertEqual(self.transport.deletes, 1)
+
+    def test_tampered_remote_tombstone_is_not_applied(self):
+        self.a._send(self.note_id)
+        b = self.make_device("b")
+        self.assertTrue(b._receive())
+        self.transport.tombstones[self.note_id] = (b"unauthenticated", "a" * 40)
+        with self.assertRaises(SyncConflict):
+            b._receive()
+        self.assertIsNotNone(b._find_folder(self.note_id))
+        self.assertEqual(b.apply_staged_remote_deletions([]), [])
+
+
 
 if __name__ == "__main__":
     unittest.main()
