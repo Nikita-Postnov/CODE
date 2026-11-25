@@ -3898,12 +3898,19 @@ class NotesApp(NotePersistenceMixin, PluginsMixin, RemindersMixin, TrayMixin, Au
     def closeEvent(self, event: QCloseEvent):
         self.save_settings()
         try:
+            # Одного сохранения активной заметки достаточно.
             self.save_note_quiet(force=True)
-            if getattr(self, "current_note", None):
-                self.save_note_quiet(force=True)
             self.save_all_notes_to_disk()
         except Exception:
             logging.exception("Save on close failed")
+            self._set_unsaved(True)
+            event.ignore()
+            QMessageBox.warning(
+                self, "Не удалось сохранить заметки",
+                "Окно останется открытым: изменения не удалось записать. "
+                "Проверьте свободное место и доступ к папке Data.",
+            )
+            return
         event.ignore()
         self.hide()
         try:
