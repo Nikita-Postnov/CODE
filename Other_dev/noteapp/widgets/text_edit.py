@@ -782,13 +782,10 @@ class CustomTextEdit(QTextEdit):
         tbl = cur.currentTable()
         if not tbl:
             return
-        first = tbl.cellAt(0, 0).firstCursorPosition()
-        last = tbl.cellAt(tbl.rows() - 1, tbl.columns() - 1).lastCursorPosition()
-        c = QTextCursor(first)
-        c.setPosition(last.position(), QTextCursor.KeepAnchor)
-        c.beginEditBlock()
-        c.removeSelectedText()
-        c.endEditBlock()
+        # Selecting the text between the first and last cells only empties
+        # the cells; it does not delete the QTextTable structure itself.
+        # Qt removes the table frame when its last row is deleted.
+        tbl.removeRows(0, tbl.rows())
 
     def _insert_table(self, rows=2, cols=2) -> None:
         cur = self.textCursor()
