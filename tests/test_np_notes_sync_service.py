@@ -149,6 +149,32 @@ class ServiceTests(unittest.TestCase):
         self.assertTrue(conflicts[0].is_file())
         self.assertEqual(self.remote.writes, 2)
 
+    def test_service_restore_conflict_copy_is_queued_for_future_sync(self):
+        self.service._send(self.note_id)
+        second_root = Path(self.temp.name) / "restore_device"
+        second_notes = second_root / "Notes"
+        second_notes.mkdir(parents=True)
+        device_b = EncryptedOutboundService(
+            second_root / "state", second_notes, "fake", "fake",
+            "fake-token", "synthetic long secret phrase",
+        )
+        device_b.transport = self.remote
+        self.assertTrue(device_b._receive())
+        self._save("new remote revision")
+        self.service._send(self.note_id)
+        self.assertTrue(device_b._receive())
+        pending_conflicts = list(
+            (second_root / "state" / "remote_conflicts").rglob("*.enc")
+        )
+        self.assertEqual(len(pending_conflicts), 1)
+        target = device_b.restore_conflict_copy(
+            self.note_id, pending_conflicts[0].stem
+        )
+        new_note_id = json.loads((target / "note.json").read_text())["uuid"]
+        self.assertNotEqual(new_note_id, self.note_id)
+        self.assertEqual(device_b.queue.pending(), [(new_note_id, 1)])
+        self.assertEqual(device_b.received_count, 2)
+
     def test_does_not_read_sibling_data(self):
         outside = Path(self.temp.name) / "OtherApp"
         outside.mkdir()
