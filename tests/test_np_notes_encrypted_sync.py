@@ -87,6 +87,37 @@ class TransportTests(unittest.TestCase):
             self.transport.write(str(uuid4()), b"fake")
         self.assertNotIn("fake-ciphertext", self.calls[0].full_url)
 
+    def test_delete_requires_exact_git_blob_sha(self):
+        identifier = str(uuid4())
+        with self.assertRaises(sync.SyncSecurityError):
+            self.transport.delete_note(identifier, "not-a-sha")
+        self.assertEqual(self.calls, [])
+        with self.assertRaises(OSError):
+            self.transport.delete_note(identifier, "a" * 40)
+        self.assertEqual(len(self.calls), 1)
+        self.assertEqual(self.calls[0].get_method(), "DELETE")
+        self.assertTrue(self.calls[0].full_url.endswith(
+            "/encrypted/" + identifier + ".json"
+        ))
+        self.assertIn(b'"sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"',
+                      self.calls[0].data)
+
+    def test_encrypted_deletion_marker_uses_separate_directory(self):
+        identifier = str(uuid4())
+        payload = sync.seal(
+            b'{"v":1,"uuid":"' + identifier.encode() + b'"}',
+            "synthetic password for tests",
+            identifier
+        )
+        with self.assertRaises(OSError):
+            self.transport.write_tombstone(identifier, payload)
+        self.assertEqual(len(self.calls), 1)
+        self.assertTrue(self.calls[0].full_url.endswith(
+            "/tombstones/" + identifier + ".json"
+        ))
+        self.assertNotIn(identifier.encode() + b'"}', self.calls[0].data)
+
+
 
 if __name__ == "__main__":
     unittest.main()
