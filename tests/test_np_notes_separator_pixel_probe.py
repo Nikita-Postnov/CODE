@@ -1,7 +1,7 @@
 """Offscreen Qt rendering diagnostics for horizontal separator alternatives."""
 import os, sys, unittest
 os.environ.setdefault("QT_QPA_PLATFORM","offscreen")
-from PySide6.QtGui import QColor, QTextCursor, QTextBlockFormat, QTextFrameFormat, QTextLength, QTextTableFormat, QTextTableCellFormat
+from PySide6.QtGui import QImage, QColor, QTextCursor, QTextBlockFormat, QTextFrameFormat, QTextLength, QTextTableFormat, QTextTableCellFormat
 from PySide6.QtWidgets import QApplication, QTextEdit
 
 def probe(mode):
@@ -26,7 +26,7 @@ def probe(mode):
         fmt=QTextFrameFormat();fmt.setBorder(2);fmt.setBorderBrush(QColor("#a0a0a0"));fmt.setWidth(QTextLength(QTextLength.PercentageLength,100))
         cur.insertFrame(fmt)
     te.show();QApplication.processEvents()
-    pic=te.viewport().grab().toImage().convertToFormat(4)
+    pic=te.viewport().grab().toImage().convertToFormat(QImage.Format.Format_RGBA8888)
     hits=[]
     for y in range(25,min(pic.height()-20,180)):
         v=0
