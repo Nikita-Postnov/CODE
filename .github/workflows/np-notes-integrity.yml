@@ -126,28 +126,38 @@ jobs:
             Set-Content -LiteralPath (Join-Path $source 'settings.ini') -Value 'key=value' -Encoding UTF8
             $log = Join-Path $source 'crash.log'
             $faultLog = Join-Path $source 'crash_fault.log'
+            $indicatorLog = Join-Path $source 'language_indicator_error.log'
+            $attachmentLog = Join-Path $source 'Notes\sample\customer_attachment.log'
             Set-Content -LiteralPath $log -Value 'diagnostic only' -Encoding UTF8
             Set-Content -LiteralPath $faultLog -Value 'fault diagnostic only' -Encoding UTF8
+            Set-Content -LiteralPath $indicatorLog -Value 'runtime diagnostic' -Encoding UTF8
+            Set-Content -LiteralPath $attachmentLog -Value 'important attachment must survive' -Encoding UTF8
             $locked = [IO.File]::Open($log, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
             $lockedFault = [IO.File]::Open($faultLog, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+            $lockedIndicator = [IO.File]::Open($indicatorLog, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
             try {
               $result = & $path -SourceRoot $source -BackupRoot $backup
             }
             finally {
               $locked.Dispose()
               $lockedFault.Dispose()
+              $lockedIndicator.Dispose()
             }
-            if (-not (($result | Out-String) -match 'SKIPPED_DIAGNOSTIC_LOGS=2')) {
-              throw 'Both locked diagnostic logs must be explicitly reported as skipped'
+            if (-not (($result | Out-String) -match 'SKIPPED_DIAGNOSTIC_LOGS=3')) {
+              throw 'All three locked runtime logs must be reported as skipped'
             }
-            if ((Test-Path -LiteralPath (Join-Path $backup 'crash.log')) -or
-                (Test-Path -LiteralPath (Join-Path $backup 'crash_fault.log'))) {
-              throw 'Diagnostic crash logs must not be copied'
+            foreach ($runtimeLog in @('crash.log','crash_fault.log','language_indicator_error.log')) {
+              if (Test-Path -LiteralPath (Join-Path $backup $runtimeLog)) {
+                throw "Diagnostic runtime log must not be copied: $runtimeLog"
+              }
+            }
+            if (-not (Test-Path -LiteralPath (Join-Path $backup 'Notes\sample\customer_attachment.log'))) {
+              throw 'Nested .log attachment must be preserved'
             }
             if (-not (Test-Path -LiteralPath (Join-Path $backup 'SHA256-manifest.json'))) {
               throw 'Missing backup manifest'
             }
-            foreach ($name in @('Notes\sample\note.json', 'settings.ini')) {
+            foreach ($name in @('Notes\sample\note.json', 'settings.ini', 'Notes\sample\customer_attachment.log')) {
               $srcHash = (Get-FileHash -LiteralPath (Join-Path $source $name) -Algorithm SHA256).Hash
               $dstHash = (Get-FileHash -LiteralPath (Join-Path $backup $name) -Algorithm SHA256).Hash
               if ($srcHash -ne $dstHash) { throw "Hash mismatch: $name" }
