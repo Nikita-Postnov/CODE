@@ -7,6 +7,7 @@ select_note, show_toast) остаются в NotesApp и доступны чер
 from PySide6.QtCore import QDateTime, QTimer, Qt
 from datetime import datetime, timedelta
 from calendar import monthrange
+from html import escape as escape_html
 from PySide6.QtWidgets import (
     QComboBox,
     QDateTimeEdit,
@@ -307,8 +308,8 @@ class RemindersMixin:
         dlg.setWindowModality(Qt.NonModal)
         dlg.setMinimumWidth(300)
         layout = QVBoxLayout(dlg)
-        layout.addWidget(QLabel(f"Напоминание по заметке: <b>{note.title}</b>"))
-        layout.addWidget(QLabel(f"Время: {note.reminder}"))
+        layout.addWidget(QLabel(f"Напоминание по заметке: <b>{escape_html(note.title or '')}</b>"))
+        layout.addWidget(QLabel("Время: " + escape_html(str(note.reminder or ""))))
         btn = QPushButton("ОК")
         btn.clicked.connect(dlg.accept)
         layout.addWidget(btn)
