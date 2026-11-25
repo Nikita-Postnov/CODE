@@ -29,7 +29,16 @@ if (Test-Path -LiteralPath $destination) {
 }
 
 # Preflight all entries before writing a backup, reject symlinks/junctions.
-$files = @(Get-ChildItem -LiteralPath $source -File -Recurse -Force)
+# Diagnostic crash logs can be held exclusively by a running process.
+# They do not contain notes. Skip only this known log and rotated copies.
+function IsDiagnosticCrashLog([string]$FileName) {
+    return $FileName -eq 'crash.log' -or
+        $FileName.StartsWith('crash.log.', [StringComparison]::OrdinalIgnoreCase)
+}
+$files = @(Get-ChildItem -LiteralPath $source -File -Recurse -Force |
+    Where-Object { -not (IsDiagnosticCrashLog $_.Name) })
+$skippedLogs = @(Get-ChildItem -LiteralPath $source -File -Recurse -Force |
+    Where-Object { IsDiagnosticCrashLog $_.Name })
 $folders = @(Get-ChildItem -LiteralPath $source -Directory -Recurse -Force)
 foreach ($entry in @($files) + @($folders)) {
     if (($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
@@ -65,7 +74,8 @@ try {
         })
     }
     # Also ensure files did not appear/disappear mid-backup.
-    $latest = @(Get-ChildItem -LiteralPath $source -File -Recurse -Force)
+    $latest = @(Get-ChildItem -LiteralPath $source -File -Recurse -Force |
+        Where-Object { -not (IsDiagnosticCrashLog $_.Name) })
     if ($latest.Count -ne $files.Count) {
         throw 'Source file count changed during backup; retry while Notes is closed'
     }
@@ -75,6 +85,7 @@ try {
     Move-Item -LiteralPath $staging -Destination $destination -ErrorAction Stop
     Write-Output "BACKUP_VERIFIED=$destination"
     Write-Output "FILE_COUNT=$($files.Count)"
+    Write-Output "SKIPPED_DIAGNOSTIC_LOGS=$($skippedLogs.Count)"
 }
 catch {
     if (Test-Path -LiteralPath $staging) {
