@@ -292,6 +292,8 @@ class EditorQtSmokeTests(unittest.TestCase):
         exec(compile(module, "<notesapp-undo>", "exec"), namespace)
         owner.record_state_for_undo = MethodType(namespace["record_state_for_undo"], owner)
         owner.undo = MethodType(namespace["undo"], owner)
+        # Isolated editor test: persistence itself is covered separately.
+        owner._persist_history_navigation = lambda: None
         toggle = extract_editor_method("toggle_checkbox_at_cursor")
         toggle(owner)
         self.assertEqual(self.edit.toPlainText(), "☑ Задача")
