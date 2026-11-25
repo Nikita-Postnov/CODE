@@ -65,6 +65,29 @@ class ServiceTests(unittest.TestCase):
             "timestamp": "2026-11-25T10:45:00"
         }), encoding="utf-8")
 
+    def test_online_probe_uses_private_authenticated_repository(self):
+        class PrivateProbe:
+            def __init__(self):
+                self.calls = 0
+            def assert_private(self):
+                self.calls += 1
+                return True
+        probe = PrivateProbe()
+        self.service.transport = probe
+        self.assertTrue(self.service._online())
+        self.assertEqual(probe.calls, 1)
+
+    def test_unreachable_github_keeps_local_queue(self):
+        class FailingProbe:
+            def assert_private(self):
+                raise ConnectionError("synthetic proxy unavailable")
+        self.service.transport = FailingProbe()
+        self.service.saved(self.note_id)
+        self.assertFalse(self.service.worker.sync_once())
+        self.assertEqual(self.service.worker.state, "waiting_for_network")
+        self.assertEqual(self.service.queue.count(), 1)
+        self.assertEqual(self.service.last_probe_error, "ConnectionError")
+
     def test_first_upload_then_no_unnecessary_rewrite(self):
         self.service.saved(self.note_id)
         self.assertTrue(self.service._send(self.note_id))
