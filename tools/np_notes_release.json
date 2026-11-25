@@ -1,0 +1,181 @@
+{
+  "schema": 1,
+  "app": "NP Notes",
+  "source_repository": "Nikita-Postnov/CODE",
+  "source_commit": "f58bba8dacedcc943a99ebd5771dfeb83959c9a0",
+  "source_directory": "Other_dev",
+  "install_scope": [
+    "notes_app.py",
+    "noteapp"
+  ],
+  "files": [
+    {
+      "path": "noteapp/__init__.py",
+      "git_blob_sha": "deba39c79bead9bb144edb9da2ff9094524df105"
+    },
+    {
+      "path": "noteapp/app/__init__.py",
+      "git_blob_sha": "280eb0467eaa55a568e4bfded6d6175a6556fbf3"
+    },
+    {
+      "path": "noteapp/app/autosave.py",
+      "git_blob_sha": "91e5443544615e8b509187e645a58ae14a0e8f3c"
+    },
+    {
+      "path": "noteapp/app/dropdowns.py",
+      "git_blob_sha": "d342ca13b67644193bb0847aea8f6fe87627d2fc"
+    },
+    {
+      "path": "noteapp/app/editor.py",
+      "git_blob_sha": "f000eeff82fd303dd739298dbe7bfbb22627067e"
+    },
+    {
+      "path": "noteapp/app/images.py",
+      "git_blob_sha": "0bc5e437625b6d09793e85c3886577844f94aa85"
+    },
+    {
+      "path": "noteapp/app/layout.py",
+      "git_blob_sha": "3d27bf6331d069c1e022d75785decd9c585c58ac"
+    },
+    {
+      "path": "noteapp/app/persistence.py",
+      "git_blob_sha": "98957bd51fdf5331f29dc54eb187fdae0155ea61"
+    },
+    {
+      "path": "noteapp/app/plugins.py",
+      "git_blob_sha": "ac81347b67407e8002ca396cca6e0513357fafd8"
+    },
+    {
+      "path": "noteapp/app/recovery.py",
+      "git_blob_sha": "87fcb0886b83bb7512c522b006e2dbaea71fa5f0"
+    },
+    {
+      "path": "noteapp/app/reminders.py",
+      "git_blob_sha": "f73e95393cf60c04080e590c21bd4c8b71a4fb28"
+    },
+    {
+      "path": "noteapp/app/search.py",
+      "git_blob_sha": "ff3f353b19ffe044f82b576400718e5e70c26ad8"
+    },
+    {
+      "path": "noteapp/app/settings.py",
+      "git_blob_sha": "9baf6dc6d4a0872c261e9b8b47af925ac2df4656"
+    },
+    {
+      "path": "noteapp/app/templates.py",
+      "git_blob_sha": "aaf7b699c17123e252d962b711bbcbf5f1a39b58"
+    },
+    {
+      "path": "noteapp/app/tray.py",
+      "git_blob_sha": "826f7046acf0b4da47e9be70ff6a0fc860b52e85"
+    },
+    {
+      "path": "noteapp/attachments.py",
+      "git_blob_sha": "9b45c7f52c99e14f01bca0489782057344b4b2cd"
+    },
+    {
+      "path": "noteapp/central_proxy.py",
+      "git_blob_sha": "c3fcd5b80ca227df766a47c8539a57a558b5e7a4"
+    },
+    {
+      "path": "noteapp/config.py",
+      "git_blob_sha": "0c4bceff304d13b65bf73ddf752953a80575a393"
+    },
+    {
+      "path": "noteapp/constants.py",
+      "git_blob_sha": "2c13cfb66da51e3ac94e47d1665cfad692adeb4e"
+    },
+    {
+      "path": "noteapp/encrypted_sync.py",
+      "git_blob_sha": "6963497e3f9a6b375ec8182428dd7506dca86a03"
+    },
+    {
+      "path": "noteapp/generators.py",
+      "git_blob_sha": "1f4f02d6742208bd449e19e3e2c7f000180b4d0d"
+    },
+    {
+      "path": "noteapp/incoming_apply.py",
+      "git_blob_sha": "bd122ca49065b82035f44c293355daf94f4a6777"
+    },
+    {
+      "path": "noteapp/incoming_sync.py",
+      "git_blob_sha": "f89b3ac77b047a264779c18c42675cd1536f4cd3"
+    },
+    {
+      "path": "noteapp/logging_setup.py",
+      "git_blob_sha": "e662e58206231c12af7541a23b4d3564cdbfa0b6"
+    },
+    {
+      "path": "noteapp/models.py",
+      "git_blob_sha": "156af8d84bc7b18ea8480e7ab69493acdea3a8b7"
+    },
+    {
+      "path": "noteapp/offline_sync.py",
+      "git_blob_sha": "19febdfe2b2b904b782da3bc3bf9218de930afd8"
+    },
+    {
+      "path": "noteapp/recovery.py",
+      "git_blob_sha": "fa339db28366b93e335c1d954a74535ee8118d33"
+    },
+    {
+      "path": "noteapp/requirements-sync.txt",
+      "git_blob_sha": "5d50492ac40f285c2990e1b2503e7dc7d9269b9b"
+    },
+    {
+      "path": "noteapp/sync_credentials.py",
+      "git_blob_sha": "26fa68a03efba5c48c763f6644a8c15661586eea"
+    },
+    {
+      "path": "noteapp/sync_service.py",
+      "git_blob_sha": "7605d1913940a1e21647d003fb16997133a2d354"
+    },
+    {
+      "path": "noteapp/sync_snapshot.py",
+      "git_blob_sha": "032a857cedfdaf015a05fcd9ff503770fd191f04"
+    },
+    {
+      "path": "noteapp/threads.py",
+      "git_blob_sha": "2a49c63be9da0c8106869b4cdc7e6631759170c8"
+    },
+    {
+      "path": "noteapp/utils.py",
+      "git_blob_sha": "ff6cb1e103fdf03947d7ee983563f725d93a10dc"
+    },
+    {
+      "path": "noteapp/widgets/__init__.py",
+      "git_blob_sha": "4d98a8e95a929e8ee6d2af67041abb456e808759"
+    },
+    {
+      "path": "noteapp/widgets/desktop_notes.py",
+      "git_blob_sha": "43a9f504f9b62bf437423c724dd05341b7ad7697"
+    },
+    {
+      "path": "noteapp/widgets/dialogs.py",
+      "git_blob_sha": "b3076bc492e715025986f97add8ee651684dc1df"
+    },
+    {
+      "path": "noteapp/widgets/drawing.py",
+      "git_blob_sha": "2f1423412ba5891774b96f7c73e350b97e3194b8"
+    },
+    {
+      "path": "noteapp/widgets/flow_layout.py",
+      "git_blob_sha": "d28d53dd85b845625c63eb1475c8dbdb5469dc87"
+    },
+    {
+      "path": "noteapp/widgets/message_box.py",
+      "git_blob_sha": "8f50adfaf8ccbd1d3b4f7d55dab7ce7807a400eb"
+    },
+    {
+      "path": "noteapp/widgets/spellcheck.py",
+      "git_blob_sha": "6aae9ea390f70153bf93db671574340451893a66"
+    },
+    {
+      "path": "noteapp/widgets/text_edit.py",
+      "git_blob_sha": "f411d1a8b54697f2889231d413cff1694f614415"
+    },
+    {
+      "path": "notes_app.py",
+      "git_blob_sha": "c9d505c3826c4eb2baf15719bbd88efe916f1bc7"
+    }
+  ]
+}
