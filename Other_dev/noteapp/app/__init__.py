@@ -1496,20 +1496,46 @@ class NotesApp(NotePersistenceMixin, PluginsMixin, RemindersMixin, TrayMixin, Au
             edit.installEventFilter(self)
         if dlg.exec():
             new_title = dlg.textValue().strip()
-            if new_title and new_title != note.title:
-                old_dir = os.path.join(
-                    NOTES_DIR,
-                    safe_folder_name(note.title, note.uuid, note.timestamp),
+            if not new_title or new_title == note.title:
+                return
+            if any(n.uuid != note.uuid and n.title == new_title for n in self.notes):
+                QMessageBox.warning(
+                    self, "Дубликат", "Заметка с таким названием уже существует."
                 )
-                note.title = new_title
-                new_dir = os.path.join(
-                    NOTES_DIR,
-                    safe_folder_name(note.title, note.uuid, note.timestamp),
-                )
-                if os.path.exists(old_dir):
+                return
+            previous_title = note.title
+            old_dir = os.path.join(
+                NOTES_DIR,
+                safe_folder_name(previous_title, note.uuid, note.timestamp),
+            )
+            new_dir = os.path.join(
+                NOTES_DIR,
+                safe_folder_name(new_title, note.uuid, note.timestamp),
+            )
+            moved = False
+            try:
+                if old_dir != new_dir and os.path.exists(new_dir):
+                    raise FileExistsError("Целевая папка заметки уже существует")
+                if old_dir != new_dir and os.path.exists(old_dir):
                     os.rename(old_dir, new_dir)
+                    moved = True
+                note.title = new_title
                 self.save_note_to_file(note)
-                self.refresh_notes_list()
+            except Exception:
+                logging.exception("Переименование заметки не удалось")
+                note.title = previous_title
+                if moved:
+                    try:
+                        os.rename(new_dir, old_dir)
+                    except OSError:
+                        logging.exception("Не удалось откатить перенос папки заметки")
+                QMessageBox.warning(
+                    self, "Не удалось переименовать",
+                    "Переименование не выполнено. Исходное название "
+                    "восстановлено; проверьте доступ к папке Data."
+                )
+                return
+            self.refresh_notes_list()
 
     @staticmethod
     def safe_filename(title: str, ext: str) -> str:
