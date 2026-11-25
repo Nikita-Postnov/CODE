@@ -49,6 +49,7 @@ class DraftSecurityTests(unittest.TestCase):
             def _clear_recovery_snapshot(self, uuid):
                 self.cleared = True
         owner = Owner()
+        owner.current_note = Note()
         owner.fail = True
         with self.assertRaises(OSError):
             namespace["save_note_to_file"](owner, Note())
@@ -57,6 +58,29 @@ class DraftSecurityTests(unittest.TestCase):
         namespace["save_note_to_file"](owner, Note())
         self.assertTrue(owner.called)
         self.assertTrue(owner.cleared)
+
+    def test_unrelated_note_save_keeps_other_recovery_draft(self):
+        persistence = FILE.parent / "app" / "persistence.py"
+        tree = ast.parse(persistence.read_text(encoding="utf-8"))
+        cls = next(node for node in tree.body if isinstance(node, ast.ClassDef)
+                   and node.name == "NotePersistenceMixin")
+        method = next(node for node in cls.body if isinstance(node, ast.FunctionDef)
+                      and node.name == "save_note_to_file")
+        module = ast.Module(body=[method], type_ignores=[])
+        ast.fix_missing_locations(module)
+        ns = {"NOTES_DIR": object(), "Note": object}
+        exec(compile(module, "<non-active-save>", "exec"), ns)
+        class Fake:
+            current_note = type("Note", (), {"uuid": "active"})()
+            cleared = []
+            def save_note_to_specific_folder(self, note, folder):
+                pass
+            def _clear_recovery_snapshot(self, uuid):
+                self.cleared.append(uuid)
+        target = type("Note", (), {"uuid": "background"})()
+        fake = Fake()
+        ns["save_note_to_file"](fake, target)
+        self.assertEqual(fake.cleared, [])
 
     def test_snapshot_refuses_mismatched_note_uuid(self):
         file = FILE.parent / "app" / "recovery.py"
