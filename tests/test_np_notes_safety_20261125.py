@@ -148,6 +148,25 @@ class DesktopWidgetSettingsTests(unittest.TestCase):
         self.assertIn("topmost.toggled.connect(self.set_always_on_top)", code)
 
 
+class EditorChecklistTests(unittest.TestCase):
+    def test_checklist_toggle_uses_edit_block_and_is_exposed_in_ui(self):
+        editor = (ROOT / "app" / "editor.py").read_text(encoding="utf-8")
+        main = (ROOT / "app" / "__init__.py").read_text(encoding="utf-8")
+        tree = ast.parse(editor)
+        cls = next(node for node in tree.body
+                   if isinstance(node, ast.ClassDef) and node.name == "EditorMixin")
+        toggle = next(node for node in cls.body
+                      if isinstance(node, ast.FunctionDef)
+                      and node.name == "toggle_checkbox_at_cursor")
+        method = ast.get_source_segment(editor, toggle)
+        self.assertIn("beginEditBlock()", method)
+        self.assertIn("endEditBlock()", method)
+        self.assertIn('text.startswith("☐ ")', method)
+        self.assertIn('text.startswith("☑ ")', method)
+        self.assertIn('QKeySequence("Ctrl+Shift+K")', main)
+        self.assertIn("self.toggle_checkbox_at_cursor)", main)
+
+
 class ExitSafetyTests(unittest.TestCase):
     def test_failed_save_prevents_process_exit(self):
         source = (ROOT / "app" / "__init__.py").read_text(encoding="utf-8")
