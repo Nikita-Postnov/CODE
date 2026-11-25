@@ -55,6 +55,32 @@ class SnapshotTests(unittest.TestCase):
         self.assertIn(new_folder.resolve().as_uri(), restored)
         self.assertNotIn("npnotes-attachment:", restored)
 
+    def test_embedded_image_src_is_portable(self):
+        note = json.loads((self.folder / "note.json").read_text())
+        note["content"] = (
+            '<p><img src="file:///C:/OldPC/Notes/photo.png"></p>'
+        )
+        (self.folder / "note.json").write_text(json.dumps(note), encoding="utf-8")
+        packed = snapshot.pack_note(self.folder, self.note_id)
+        received, attachments = snapshot.unpack_to_memory(packed, self.note_id)
+        self.assertIn('src="npnotes-attachment:///photo.png"', received["content"])
+        self.assertNotIn("OldPC", received["content"])
+        new_folder = Path(self.temp.name) / "another-device"
+        restored = snapshot.restore_attachment_links(
+            received["content"], new_folder, attachments
+        )
+        self.assertIn('src="' + (new_folder / "photo.png").resolve().as_uri(), restored)
+
+    def test_reserved_attachment_names_rejected(self):
+        for name in ("note_cache.json", "note_backup_forged.json"):
+            with self.subTest(name=name):
+                packed = json.dumps({
+                    "version": 1, "note": {"uuid": self.note_id},
+                    "attachments": {name: "ZmFrZQ=="},
+                }).encode()
+                with self.assertRaises(snapshot.UnsafeSnapshot):
+                    snapshot.unpack_to_memory(packed, self.note_id)
+
     def test_wrong_note_identifier_rejected(self):
         with self.assertRaises(snapshot.UnsafeSnapshot):
             snapshot.pack_note(self.folder, str(uuid4()))
