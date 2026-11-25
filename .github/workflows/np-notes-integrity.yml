@@ -13,6 +13,7 @@ on:
       - "tests/test_np_notes_full_app_qt.py"
       - "tests/test_np_notes_search_benchmark.py"
       - "tests/test_np_notes_recovery.py"
+      - "tests/test_np_notes_offline_sync.py"
       - "tools/benchmark_np_notes_search.py"
       - "tools/benchmark_np_notes_qt_search.py"
       - "tools/preview_np_notes_pr83.ps1"
@@ -32,6 +33,7 @@ on:
       - "tests/test_np_notes_full_app_qt.py"
       - "tests/test_np_notes_search_benchmark.py"
       - "tests/test_np_notes_recovery.py"
+      - "tests/test_np_notes_offline_sync.py"
       - "tools/benchmark_np_notes_search.py"
       - "tools/benchmark_np_notes_qt_search.py"
       - "tools/preview_np_notes_pr83.ps1"
@@ -55,7 +57,7 @@ jobs:
       - name: Check Python syntax
         run: python -m compileall -q Other_dev/noteapp Other_dev/notes_app.py
       - name: Validate backups, portability, autosave, plugins, attachments
-        run: python -m unittest -v tests.test_np_notes_integrity tests.test_np_notes_hardening tests.test_np_notes_safety_20261125 tests.test_np_notes_search_benchmark tests.test_np_notes_recovery
+        run: python -m unittest -v tests.test_np_notes_integrity tests.test_np_notes_hardening tests.test_np_notes_safety_20261125 tests.test_np_notes_search_benchmark tests.test_np_notes_recovery tests.test_np_notes_offline_sync
       - name: Benchmark synthetic notes search (100 / 1000 / 10000)
         run: python tools/benchmark_np_notes_search.py --notes 100,1000,10000 --repeats 3
 
