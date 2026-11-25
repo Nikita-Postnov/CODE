@@ -217,9 +217,28 @@ class NotesApp(NotePersistenceMixin, PluginsMixin, RemindersMixin, TrayMixin, Au
             service = configure_from_environment(DATA_DIR / "NPNotesSync", NOTES_DIR)
             if service is not None:
                 self._np_notes_sync = service
+                self._np_notes_received_seen = 0
+                self._np_notes_refresh_timer = QTimer(self)
+                self._np_notes_refresh_timer.setInterval(10000)
+                self._np_notes_refresh_timer.timeout.connect(
+                    self._refresh_received_np_notes
+                )
+                self._np_notes_refresh_timer.start()
                 service.start()
         except Exception:
             logging.exception("NP Notes encrypted cloud sync unavailable")
+
+    def _refresh_received_np_notes(self) -> None:
+        service = getattr(self, "_np_notes_sync", None)
+        if service is None:
+            return
+        count = service.received_count
+        if count == getattr(self, "_np_notes_received_seen", 0):
+            return
+        self._np_notes_received_seen = count
+        # The existing preload merge preserves in-memory edits while
+        # adding newly received notes to the list on the main GUI thread.
+        self._start_background_preload()
 
     @staticmethod
     def _html_to_plain_text(content: str) -> str:
