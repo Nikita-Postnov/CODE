@@ -467,7 +467,6 @@ class EditorMixin:
             if cursor.positionInBlock() != 0:
                 cursor.insertBlock()
             cursor.insertHtml('<hr width="100%" size="2" />')
-            cursor.insertBlock()
         finally:
             cursor.endEditBlock()
         self.text_edit.setTextCursor(cursor)
