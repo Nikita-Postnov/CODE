@@ -79,6 +79,56 @@ class SearchQtSmokeTests(unittest.TestCase):
         self.assertEqual(edit.toPlainText(), "alpha beta alpha")
 
 
+def extract_notesapp_method(name):
+    file = APP_DIR / "__init__.py"
+    tree = ast.parse(file.read_text(encoding="utf-8"))
+    cls = next(node for node in tree.body
+               if isinstance(node, ast.ClassDef) and node.name == "NotesApp")
+    method = next(node for node in cls.body
+                  if isinstance(node, ast.FunctionDef) and node.name == name)
+    namespace = {}
+    body = ast.Module(body=[method], type_ignores=[])
+    exec(compile(ast.fix_missing_locations(body), "<notesapp-qt-test>", "exec"), namespace)
+    return namespace[name]
+
+
+class EmptyFirstRunQtSmokeTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QApplication.instance() or QApplication([])
+
+    def test_empty_notes_keep_central_widget_visible(self):
+        window = QWidget()
+        window.show()
+        self.addCleanup(window.close)
+        center = QWidget(window)
+        center.show()
+        empty = QWidget(center)
+        empty.show()
+        class Fake:
+            current_note = None
+            notes = []
+            def __init__(self):
+                self.dock_editor = center
+                self.empty_notes_page = empty
+                self.empty_notes_title = type("Label", (), {"setText": lambda self, v: None})()
+                self.empty_notes_hint = type("Label", (), {"setText": lambda self, v: None})()
+                self.dock_toolbar = QWidget(window)
+                self.visibility_toolbar = QWidget(window)
+                self.text_edit = QTextEdit(center)
+                self.tags_label = QWidget(center)
+                self._add_field_panel = QWidget(center)
+                self.add_field_btn = QWidget(center)
+                self.attachments_scroll = QWidget(center)
+                self.password_manager_row = QWidget(center)
+                self.custom_fields_widgets = []
+        owner = Fake()
+        extract_notesapp_method("_update_editor_visibility")(owner)
+        self.assertTrue(center.isVisible())
+        self.assertTrue(empty.isVisible())
+        self.assertFalse(owner.text_edit.isVisible())
+
+
 class WidgetQtSmokeTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
