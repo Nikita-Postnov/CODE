@@ -319,7 +319,7 @@ class EditorMixin:
             cursor.setPosition(cursor.selectionStart())
         fmt = cursor.blockFormat()
         line_type = fmt.lineHeightType()
-        if line_type == QTextBlockFormat.ProportionalHeight:
+        if line_type == QTextBlockFormat.ProportionalHeight.value:
             line_ratio = fmt.lineHeight() / 100.0
         else:
             line_ratio = 1.0
