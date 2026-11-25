@@ -595,7 +595,9 @@ class NotesApp(NotePersistenceMixin, PluginsMixin, RemindersMixin, TrayMixin, Au
         self.spell_highlighter.set_online_enabled(self.spell_online_enabled)
         self._save_debouncer = QTimer(self)
         self._save_debouncer.setSingleShot(True)
-        self._save_debouncer.setInterval(400)
+        # Сохранение на диск работает отдельно; историю Undo группируем
+        # после паузы ввода, а не создаём версию каждые 400 мс.
+        self._save_debouncer.setInterval(1400)
         self._save_debouncer.timeout.connect(self.update_current_note_content)
         self.text_edit.textChanged.connect(self._save_debouncer.start)
         self.text_edit.cursorPositionChanged.connect(self.update_font_controls)
@@ -1353,12 +1355,13 @@ class NotesApp(NotePersistenceMixin, PluginsMixin, RemindersMixin, TrayMixin, Au
             doc.setHtml(note.history[-1])
             if doc.toPlainText() == current_plain:
                 return
-        if len(note.history) >= MAX_HISTORY:
-            note.history = [current_html]
-            note.history_index = 0
-        else:
-            note.history.append(current_html)
-            note.history_index = len(note.history) - 1
+        # При достижении лимита удаляем только старейшие версии.
+        # Полный сброс истории терял возможность отменить последние правки.
+        note.history.append(current_html)
+        overflow = max(0, len(note.history) - MAX_HISTORY)
+        if overflow:
+            del note.history[:overflow]
+        note.history_index = len(note.history) - 1
         self.update_history_list()
         self.update_history_list_selection()
 
