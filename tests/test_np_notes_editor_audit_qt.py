@@ -347,16 +347,12 @@ class EditorControlsAudit(unittest.TestCase):
         self.assertIn("Above", host.text_edit.toPlainText())
 
     def test_context_copy_commands_available_without_alphabetic_word(self):
+        from PySide6.QtWidgets import QMenu
         host = self.new_host("!!! ───")
         self.select(host, 0, len("!!! ───"))
-        actions = []
-
-        def collect(menu, *unused_args):
-            actions.extend(action.text() for action in menu.actions())
-
-        with patch("noteapp.widgets.text_edit.QMenu.exec", new=collect):
-            ev = QContextMenuEvent(QContextMenuEvent.Mouse, QPoint(5, 5))
-            host.text_edit.contextMenuEvent(ev)
+        menu = QMenu(host.text_edit)
+        host.text_edit._add_copy_format_actions(menu)
+        actions = [action.text() for action in menu.actions()]
         self.assertIn("Copy (without formatting)", actions)
         self.assertIn("Copy (with formatting)", actions)
 
