@@ -199,7 +199,7 @@ class ServiceTests(unittest.TestCase):
         target = device_b.restore_conflict_copy(
             self.note_id, pending_conflicts[0].stem
         )
-        new_note_id = json.loads((target / "note.json").read_text())["uuid"]
+        new_note_id = json.loads((target / "note.json").read_text(encoding="utf-8"))["uuid"]
         self.assertNotEqual(new_note_id, self.note_id)
         self.assertEqual(device_b.queue.pending(), [(new_note_id, 1)])
         self.assertEqual(device_b.received_count, 2)
