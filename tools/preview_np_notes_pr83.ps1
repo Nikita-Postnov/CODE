@@ -26,8 +26,52 @@ $preview = Join-Path $env:TEMP ("NP_Notes_PR83_" + $commit.Substring(0,12))
 if ([IO.Path]::GetFullPath($preview).TrimEnd('\').Equals($launcher, [StringComparison]::OrdinalIgnoreCase)) {
     throw 'Preview destination cannot equal the production launcher'
 }
+function Start-IsolatedPreview([string]$Root) {
+    $python = @(
+        (Join-Path $launcher 'Runtime\pythonw.exe'),
+        (Join-Path $launcher 'Runtime\python.exe')
+    ) | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+    if (-not $python) {
+        throw 'No portable Python runtime found in Launcher\Runtime'
+    }
+    $previousLauncherRoot = $env:LAUNCHER_ROOT
+    try {
+        $env:LAUNCHER_ROOT = $Root
+        Start-Process -FilePath $python -ArgumentList ('"' + (Join-Path $Root 'notes_app.py') + '"') -WorkingDirectory $Root
+    }
+    finally {
+        if ($null -eq $previousLauncherRoot) {
+            Remove-Item Env:\LAUNCHER_ROOT -ErrorAction SilentlyContinue
+        }
+        else {
+            $env:LAUNCHER_ROOT = $previousLauncherRoot
+        }
+    }
+    Write-Host 'PREVIEW_REOPENED_WITH_EXISTING_DATA'
+}
+
 if (Test-Path -LiteralPath $preview) {
-    throw "Preview already exists, refusing to overwrite: $preview"
+    # Reopen the exact same SHA and isolated Data. Never overwrite data/code.
+    $marker = Join-Path $preview 'PREVIEW_ONLY.txt'
+    $data = Join-Path $preview 'Data'
+    $scriptFile = Join-Path $preview 'notes_app.py'
+    $packageFile = Join-Path $preview 'noteapp\app\__init__.py'
+    if (-not (Test-Path -LiteralPath $marker -PathType Leaf) -or
+        -not (Test-Path -LiteralPath $data -PathType Container) -or
+        -not (Test-Path -LiteralPath $scriptFile -PathType Leaf) -or
+        -not (Test-Path -LiteralPath $packageFile -PathType Leaf)) {
+        throw "Existing preview has an unexpected structure; refusing to change it: $preview"
+    }
+    $identity = Get-Content -LiteralPath $marker -Raw
+    if (-not $identity.Contains("NP Notes isolated preview of $commit")) {
+        throw "Existing preview belongs to another revision; refusing to change it: $preview"
+    }
+    Write-Host "PREVIEW_REUSED=$preview"
+    Write-Host "ISOLATED_DATA=$data"
+    if ($Launch) {
+        Start-IsolatedPreview $preview
+    }
+    return
 }
 
 $work = Join-Path $env:TEMP ([guid]::NewGuid().ToString('N'))
@@ -64,27 +108,7 @@ try {
     Write-Host "ISOLATED_DATA=$(Join-Path $preview 'Data')"
 
     if ($Launch) {
-        $python = @(
-            (Join-Path $launcher 'Runtime\python.exe'),
-            (Join-Path $launcher 'Runtime\pythonw.exe')
-        ) | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
-        if (-not $python) {
-            throw 'No portable Python runtime found in Launcher\Runtime'
-        }
-        $previousLauncherRoot = $env:LAUNCHER_ROOT
-        try {
-            $env:LAUNCHER_ROOT = $preview
-            Start-Process -FilePath $python -ArgumentList @((Join-Path $preview 'notes_app.py')) -WorkingDirectory $preview
-        }
-        finally {
-            if ($null -eq $previousLauncherRoot) {
-                Remove-Item Env:\LAUNCHER_ROOT -ErrorAction SilentlyContinue
-            }
-            else {
-                $env:LAUNCHER_ROOT = $previousLauncherRoot
-            }
-        }
-        Write-Host 'Preview process launched with an isolated Data folder.'
+        Start-IsolatedPreview $preview
     }
 }
 finally {
