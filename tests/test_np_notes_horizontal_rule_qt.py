@@ -220,7 +220,7 @@ class HorizontalLineRegression(unittest.TestCase):
 
     def test_declining_repair_of_old_gap_preserves_document_exactly(self):
         rule = "─" * 60
-        editor = self.new_editor("Before\\n" + rule + "\\n\\nHeading")
+        editor = self.new_editor("Before\n" + rule + "\n\nHeading")
         original = editor.text_edit.toHtml()
         with patch("noteapp.app.editor.QMessageBox.information") as info, patch(
             "noteapp.app.editor.QMessageBox.question",
