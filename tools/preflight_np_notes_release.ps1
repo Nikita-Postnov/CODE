@@ -12,6 +12,12 @@ $package = Join-Path $root 'noteapp'
 $notes = Join-Path $data 'Notes'
 $runtime = Join-Path $root 'Runtime'
 $choiceConfig = Join-Path $root 'launcher_config.json'
+if (-not (Test-Path -LiteralPath $choiceConfig -PathType Leaf)) {
+    $alternative = Join-Path $data 'launcher_config.json'
+    if (Test-Path -LiteralPath $alternative -PathType Leaf) {
+        $choiceConfig = $alternative
+    }
+}
 $repo = 'Nikita-Postnov/CODE'
 Write-Output "LAUNCHER_ROOT=$root"
 Write-Output "CHOICE_CONFIG_PRESENT=$(Test-Path -LiteralPath $choiceConfig -PathType Leaf)"
@@ -32,6 +38,11 @@ $processes = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
         ($_.CommandLine -and $_.CommandLine.IndexOf($script, [StringComparison]::OrdinalIgnoreCase) -ge 0)
     })
 Write-Output "NOTES_PROCESSES=$($processes.Count)"
+foreach ($process in $processes) {
+    $exe = if ($process.ExecutablePath) { $process.ExecutablePath } else { '(unknown)' }
+    Write-Output "NOTES_PROCESS_PID=$($process.ProcessId);NAME=$($process.Name);EXE=$exe"
+}
+Write-Output 'PROCESSES_NOT_TERMINATED=TRUE'
 Write-Output "DATA_NOT_MODIFIED=TRUE"
 if (-not (Test-Path -LiteralPath $notes -PathType Container)) {
     throw 'Unable to identify the actual Notes data tree'
