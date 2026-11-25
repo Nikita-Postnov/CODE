@@ -2926,6 +2926,8 @@ class NotesApp(NotePersistenceMixin, PluginsMixin, RemindersMixin, TrayMixin, Au
         add_tool_button("", "🔗 - Ссылка", self.insert_link)
         add_tool_button("", "❌ - Удалить ссылку", self.remove_link)
         add_tool_button("", "▁ - Горизонтальная линия", self.insert_horizontal_line)
+        add_tool_button("", "═ - Восстановить старые линии",
+                        self.restore_legacy_horizontal_lines)
         add_tool_button("", "+🏷 - Добавить тег", self.add_tag_to_note)
         self.tag_filter = QComboBox()
         self.tag_filter.setEditable(False)

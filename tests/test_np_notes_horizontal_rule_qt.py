@@ -1,192 +1,171 @@
-"""Qt offscreen regression: horizontal divider must be a real full-width HR.
+"""Regression tests for the actual NP Notes toolbar/editor callback.
 
-Synthetic QTextEdit only; never touches notes, attachments, credentials or GitHub.
+Only synthetic in-memory documents, with Qt offscreen. No real notes, GitHub
+credentials, sync state, or user files are accessed.
 """
 import os
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import patch
+
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "Other_dev"))
+
 try:
-    from PySide6.QtGui import QTextCursor
-    from PySide6.QtWidgets import QApplication, QTextEdit
+    from PySide6.QtGui import QFontMetrics, QImage, QTextCursor, QTextOption
+    from PySide6.QtWidgets import QApplication, QPushButton, QMessageBox, QWidget
+    from noteapp.widgets.text_edit import CustomTextEdit
     from noteapp.app.editor import EditorMixin
 except ImportError:
     QApplication = None
 
 
-class _Editor(EditorMixin):
+class FakeNotesApp(QWidget, EditorMixin):
+    """Match NotesApp's real _set_unsaved(flag: bool) signature."""
+
     def __init__(self):
-        self.text_edit = QTextEdit()
-        self.current_note = object()
-        self.changed = False
-    def _set_unsaved(self):
-        self.changed = True
+        super().__init__()
+        self.text_edit = CustomTextEdit(parent=self)
+        self.text_edit.setFixedSize(640, 220)
+        self.text_edit.setLineWrapMode(CustomTextEdit.LineWrapMode.NoWrap)
+        self.text_edit.setWordWrapMode(QTextOption.NoWrap)
+        self.text_edit.setStyleSheet(
+            "QTextEdit { background: #2d2d2d; color: #eeeeee; border: 0; }"
+        )
+        self.unsaved_calls = []
+        self.line_button = QPushButton("▁", self)
+        self.line_button.clicked.connect(self.insert_horizontal_line)
+        self.repair_button = QPushButton("═", self)
+        self.repair_button.clicked.connect(self.restore_legacy_horizontal_lines)
+
+    def _set_unsaved(self, flag: bool):
+        self.unsaved_calls.append(flag)
 
 
-@unittest.skipIf(QApplication is None, "PySide6 missing")
-class HorizontalRuleTest(unittest.TestCase):
+@unittest.skipIf(QApplication is None, "PySide6 not installed")
+class HorizontalLineRegression(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.app = QApplication.instance() or QApplication([])
 
-    def test_rule_in_middle_of_text_survives_html_roundtrip(self):
-        editor = _Editor()
-        editor.text_edit.setPlainText("Before\nAfter")
+    def new_editor(self, text):
+        obj = FakeNotesApp()
+        obj.text_edit.setPlainText(text)
+        obj.text_edit.show()
+        self.app.processEvents()
+        return obj
+
+    def test_toolbar_clicked_calls_real_signature_and_inserts_visible_line(self):
+        editor = self.new_editor("Before\nAfter")
         cursor = editor.text_edit.textCursor()
         cursor.setPosition(len("Before"))
         editor.text_edit.setTextCursor(cursor)
-        editor.insert_horizontal_line()
-        html = editor.text_edit.toHtml()
-        self.assertIn("<table", html.lower())
-        self.assertIn('width="100%"', html.lower())
-        self.assertIn('bgcolor="#989898"', html.lower())
-        self.assertNotIn("<p>.</p>", html.lower())
-        self.assertTrue(editor.changed)
-        reopened = QTextEdit()
-        reopened.setHtml(html)
-        html2 = reopened.toHtml().lower()
-        self.assertIn("<table", html2)
-        self.assertIn("before", html2)
-        self.assertIn("after", html2)
-        self.assertNotIn("<p>.</p>", html2)
+        editor.line_button.click()
+        output = editor.text_edit.toPlainText()
+        lines = output.splitlines()
+        self.assertEqual(lines[0], "Before")
+        self.assertEqual(lines[-1], "After")
+        rule = [line for line in lines if "─" in line]
+        self.assertEqual(len(rule), 1)
+        self.assertEqual(set(rule[0]), {"─"})
+        self.assertGreater(len(rule[0]), 40)
+        self.assertEqual(editor.unsaved_calls, [True])
 
-    def test_existing_content_preserved_when_cursor_has_selection(self):
-        editor = _Editor()
-        editor.text_edit.setPlainText("first\nsecond")
-        cursor = editor.text_edit.textCursor()
-        cursor.setPosition(0)
-        cursor.setPosition(5, QTextCursor.KeepAnchor)
-        editor.text_edit.setTextCursor(cursor)
-        editor.insert_horizontal_line()
-        html = editor.text_edit.toHtml()
-        self.assertIn("<table", html.lower())
-        self.assertIn("first", html.lower())
-        self.assertIn("second", html.lower())
+        metrics = QFontMetrics(editor.text_edit.textCursor().charFormat().font())
+        self.assertGreater(editor.text_edit.viewport().width(), 100)
+        self.assertIn("─", editor.text_edit.toHtml())
+        cloned = CustomTextEdit()
+        cloned.setHtml(editor.text_edit.toHtml())
+        self.assertEqual(cloned.toPlainText(), output)
 
-    def test_repeat_insertion_keeps_two_separators(self):
-        editor = _Editor()
-        editor.text_edit.setPlainText("Test")
+    def test_real_qt_viewport_paints_visible_rule_after_button_click(self):
+        editor = self.new_editor("Above")
         cursor = editor.text_edit.textCursor()
         cursor.movePosition(QTextCursor.End)
         editor.text_edit.setTextCursor(cursor)
-        editor.insert_horizontal_line()
-        editor.insert_horizontal_line()
-        html = editor.text_edit.toHtml().lower()
-        self.assertEqual(html.count("<table"), 2)
-        self.assertIn("test", html)
-
-
-    def test_visible_full_width_after_roundtrip(self):
-        from PySide6.QtGui import QImage
-        editor = _Editor()
-        editor.text_edit.setFixedSize(600, 160)
-        editor.text_edit.setStyleSheet(
-            "QTextEdit { background-color: #2d2d2d; color: #eeeeee; border: 0px; }"
-        )
-        editor.text_edit.setPlainText("Above")
-        c = editor.text_edit.textCursor()
-        c.movePosition(QTextCursor.End)
-        editor.text_edit.setTextCursor(c)
-        editor.insert_horizontal_line()
-        editor.text_edit.show()
+        editor.line_button.click()
         self.app.processEvents()
-        for sample in (editor.text_edit,):
-            pic = sample.viewport().grab().toImage().convertToFormat(
-                QImage.Format.Format_RGBA8888
-            )
-            total_width = pic.width()
-            strong_rows = []
-            for y in range(15, min(90, pic.height())):
-                bright = sum(
-                    1 for x in range(20, total_width - 20)
-                    if pic.pixelColor(x, y).red() >= 125
-                )
-                if bright >= (total_width - 40) * 0.85:
-                    strong_rows.append(y)
-            self.assertTrue(strong_rows,
-                "Divider did not render across most of the dark QTextEdit viewport")
-
-        reopened = QTextEdit()
-        reopened.setFixedSize(600, 160)
-        reopened.setStyleSheet(
-            "QTextEdit { background-color: #2d2d2d; color: #eeeeee; border: 0px; }"
-        )
-        reopened.setHtml(editor.text_edit.toHtml())
-        reopened.show()
-        self.app.processEvents()
-        pic = reopened.viewport().grab().toImage().convertToFormat(
+        image = editor.text_edit.viewport().grab().toImage().convertToFormat(
             QImage.Format.Format_RGBA8888
         )
-        strong_rows = []
-        for y in range(15, min(90, pic.height())):
-            bright = sum(
-                1 for x in range(20, pic.width() - 20)
-                if pic.pixelColor(x, y).red() >= 125
+        values = []
+        for y in range(0, min(140, image.height())):
+            lit = sum(
+                1 for x in range(15, image.width() - 15)
+                if (lambda color: color.red() >= 110
+                    and color.green() >= 110
+                    and color.blue() >= 110)(image.pixelColor(x, y))
             )
-            if bright >= (pic.width() - 40) * 0.85:
-                strong_rows.append(y)
-        self.assertTrue(strong_rows,
-            "Divider disappeared after QTextDocument HTML serialization")
+            values.append((lit, y))
+        best = max(values)
+        print("NP_NOTES_RULE_PIXELS=" + str(best[0]), flush=True)
+        self.assertGreater(
+            best[0], int((image.width() - 30) * 0.55),
+            "Actual NP Notes-style dark editor did not paint a long rule",
+        )
 
-    def test_after_divider_typing_is_not_in_shaded_cell(self):
-        editor = _Editor()
-        editor.text_edit.setPlainText("Before")
-        c = editor.text_edit.textCursor()
-        c.movePosition(QTextCursor.End)
-        editor.text_edit.setTextCursor(c)
-        editor.insert_horizontal_line()
-        c = editor.text_edit.textCursor()
-        self.assertIsNone(c.currentTable(), "Caret remained inside separator table")
-        c.insertText("After")
-        html = editor.text_edit.toHtml().lower()
-        self.assertIn("after", html)
-        self.assertEqual(html.count("<table"), 1)
+    def test_existing_selected_text_is_not_deleted(self):
+        editor = self.new_editor("Important\nOther")
+        cursor = editor.text_edit.textCursor()
+        cursor.setPosition(0)
+        cursor.setPosition(9, QTextCursor.KeepAnchor)
+        editor.text_edit.setTextCursor(cursor)
+        editor.line_button.click()
+        plain = editor.text_edit.toPlainText()
+        self.assertIn("Important", plain)
+        self.assertIn("Other", plain)
+        self.assertIn("─", plain)
 
+    def test_second_line_insertion_does_not_overwrite_first(self):
+        editor = self.new_editor("Above")
+        cursor = editor.text_edit.textCursor()
+        cursor.movePosition(QTextCursor.End)
+        editor.text_edit.setTextCursor(cursor)
+        editor.line_button.click()
+        editor.line_button.click()
+        self.assertEqual(
+            len([line for line in editor.text_edit.toPlainText().splitlines()
+                 if len(line) > 40 and set(line) == {"─"}]), 2
+        )
 
-    def test_legacy_isolated_dot_is_replaced_only_when_user_targets_it(self):
-        editor = _Editor()
-        editor.text_edit.setPlainText("Above\n.\nBelow\n.")
+    def test_explicit_target_dot_only(self):
+        editor = self.new_editor("Above\n.\nBelow\n.")
         cursor = editor.text_edit.textCursor()
         cursor.setPosition(len("Above\n"))
         editor.text_edit.setTextCursor(cursor)
-        editor.insert_horizontal_line()
-        html = editor.text_edit.toHtml().lower()
-        self.assertEqual(html.count("<table"), 1)
-        self.assertIn("above", html)
-        self.assertIn("below", html)
-        # The other standalone dot is untouched.
-        self.assertTrue(editor.text_edit.toPlainText().rstrip().endswith("."))
-        self.assertNotIn("above\n.\nbelow", editor.text_edit.toPlainText().lower())
+        editor.line_button.click()
+        plain = editor.text_edit.toPlainText()
+        self.assertIn("Above", plain)
+        self.assertIn("Below", plain)
+        self.assertIn("─", plain)
+        self.assertEqual(plain.splitlines()[-1], ".")
 
-    def test_nonisolated_dots_and_no_implicit_migration(self):
-        editor = _Editor()
-        editor.text_edit.setPlainText("One. Two\n.\nThree")
-        cursor = editor.text_edit.textCursor()
-        cursor.setPosition(2)
-        editor.text_edit.setTextCursor(cursor)
-        editor.insert_horizontal_line()
-        html = editor.text_edit.toHtml().lower()
-        self.assertEqual(html.count("<table"), 1)
-        self.assertIn(">on</p>", html)
-        self.assertIn(">e. two</p>", html)
-        self.assertIn(">.</p>", html)
-        self.assertIn(">three</p>", html)
+    def test_restore_existing_standalone_dots_on_approval(self):
+        editor = self.new_editor("Top\n.\nMiddle\n.\nEnd. A real dot.")
+        with patch("noteapp.app.editor.QMessageBox.question",
+                   return_value=QMessageBox.Yes) as question:
+            editor.repair_button.click()
+        self.assertEqual(question.call_count, 1)
+        plain = editor.text_edit.toPlainText()
+        self.assertNotIn("\n.\n", plain)
+        self.assertEqual(sum(1 for line in plain.splitlines()
+                             if len(line)>40 and set(line)=={"─"}), 2)
+        self.assertIn("End. A real dot.", plain)
+        self.assertEqual(editor.unsaved_calls, [True])
+        reopened = CustomTextEdit()
+        reopened.setHtml(editor.text_edit.toHtml())
+        self.assertEqual(reopened.toPlainText(), plain)
 
-    def test_legacy_dot_replacement_survives_save_and_reopen(self):
-        editor = _Editor()
-        editor.text_edit.setPlainText("Before\n.\nAfter")
-        cursor = editor.text_edit.textCursor()
-        cursor.setPosition(len("Before\n"))
-        editor.text_edit.setTextCursor(cursor)
-        editor.insert_horizontal_line()
-        html = editor.text_edit.toHtml()
-        reopened = QTextEdit()
-        reopened.setHtml(html)
-        self.assertIn("<table", reopened.toHtml().lower())
-        self.assertIn("before", reopened.toHtml().lower())
-        self.assertIn("after", reopened.toHtml().lower())
+    def test_declining_repair_does_not_modify_text(self):
+        editor = self.new_editor("Top\n.\nBottom")
+        initial = editor.text_edit.toHtml()
+        with patch("noteapp.app.editor.QMessageBox.question",
+                   return_value=QMessageBox.No):
+            editor.repair_button.click()
+        self.assertEqual(editor.text_edit.toHtml(), initial)
+        self.assertEqual(editor.unsaved_calls, [])
+
 
 if __name__ == "__main__":
     unittest.main()
