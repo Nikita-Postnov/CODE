@@ -264,6 +264,30 @@ class SyntheticTrashDeletionTests(unittest.TestCase):
         self.assertEqual(b.apply_staged_remote_deletions([]), [])
 
 
+    def test_ambiguous_active_and_trash_duplicate_fails_closed(self):
+        self.a._send(self.note_id)
+        target = self.a.repository_root / "Trash" / self.note_folder.name
+        target.parent.mkdir()
+        shutil.copytree(self.note_folder, target)
+        self.a.saved(self.note_id)
+        original = self.transport.read(self.note_id)[1]
+        self.assertFalse(self.a.worker.sync_once())
+        self.assertEqual(self.transport.read(self.note_id)[1], original)
+        self.assertEqual(self.a.queue.count(), 1)
+
+    def test_remote_tombstone_cannot_override_inflight_local_deletion(self):
+        self.a._send(self.note_id)
+        target = self.to_trash(self.a, self.note_folder)
+        self.a.prepare_permanent_delete(self.note_id)
+        shutil.rmtree(target)
+        self.a.commit_permanent_delete(self.note_id)
+        self.a._adopt_remote_deletion(self.note_id)
+        self.assertEqual(self.a._deletion_status(self.note_id), "pending")
+        self.assertTrue(self.a.worker.sync_once())
+        self.a._adopt_remote_deletion(self.note_id)
+        self.assertEqual(self.a._deletion_status(self.note_id), "done")
+
+
 
 if __name__ == "__main__":
     unittest.main()
