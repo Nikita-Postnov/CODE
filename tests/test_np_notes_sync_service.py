@@ -16,6 +16,12 @@ class FakeTransport:
         self.remote = {}
         self.writes = 0
 
+    def assert_private(self):
+        return True
+
+    def list_note_ids(self):
+        return list(self.remote)
+
     def read(self, note_id):
         return self.remote.get(note_id, (None, None))
 
