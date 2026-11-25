@@ -2081,9 +2081,21 @@ class NotesApp(NotePersistenceMixin, PluginsMixin, RemindersMixin, TrayMixin, Au
 
     def _update_editor_visibility(self):
         has = self.current_note is not None
-        self.dock_editor.setVisible(has)
+        # dock_editor — это прокси НАСТОЯЩЕГО центрального виджета:
+        # скрывать его при отсутствии заметки нельзя, иначе исчезнет и welcome-screen.
+        self.dock_editor.setVisible(True)
         if hasattr(self, "empty_notes_page"):
             self.empty_notes_page.setVisible(not has)
+            if not has:
+                self.empty_notes_title.setText(
+                    "Выберите заметку" if getattr(self, "notes", None)
+                    else "Пока нет заметок"
+                )
+                self.empty_notes_hint.setText(
+                    "Выберите заметку слева или создайте новую."
+                    if getattr(self, "notes", None)
+                    else "Создайте первую заметку — редактор и инструменты появятся автоматически."
+                )
         self.dock_toolbar.setVisible(has)
         self.visibility_toolbar.setVisible(has)
         self.text_edit.setVisible(has)
