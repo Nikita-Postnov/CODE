@@ -560,6 +560,8 @@ def enabled_config(data_dir: Path) -> dict | None:
     cfg = json.loads(path.read_text(encoding="utf-8"))
     if cfg.get("enabled") is not True or cfg.get("interval_minutes") != 5:
         return None
+    if cfg.get("attachments") is not True:
+        raise SyncError("Attachment sync must be explicitly enabled in this version")
     repo = cfg.get("repository", "")
     if not isinstance(repo, str) or not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo):
         raise SyncError("Invalid GitHub sync repository configuration")
