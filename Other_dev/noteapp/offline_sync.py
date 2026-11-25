@@ -6,6 +6,7 @@ An authenticated encrypted GitHub transport must be configured separately.
 from __future__ import annotations
 
 import sqlite3
+import urllib.error
 from contextlib import contextmanager
 import threading
 import time
@@ -110,14 +111,24 @@ class OfflineSyncWorker:
         self.interval_seconds = interval_seconds
         self.retry_seconds = retry_seconds
         self.state = "idle"
+        self.last_failure = None
         self._wakeup = threading.Event()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
 
+    @staticmethod
+    def _error_code(exc):
+        """Only a safe error category. Never disclose IDs, URLs or secrets."""
+        if isinstance(exc, urllib.error.HTTPError):
+            return "GitHub HTTP " + str(exc.code)
+        return type(exc).__name__
+
     def sync_once(self):
+        self.last_failure = None
         try:
             available = self.online()
-        except Exception:
+        except Exception as exc:
+            self.last_failure = "Подключение: " + self._error_code(exc)
             available = False
         if not available:
             self.state = "waiting_for_network"
@@ -132,15 +143,19 @@ class OfflineSyncWorker:
                 if self.send_encrypted(item_id) is True:
                     self.queue.acknowledge(item_id, revision)
                 else:
+                    self.last_failure = "Отправка: отклонена"
                     failures = True
-            except Exception:
+            except Exception as exc:
                 # One bad note or conflict cannot block every other note.
+                self.last_failure = "Отправка: " + self._error_code(exc)
                 failures = True
         if self.receive_encrypted is not None:
             try:
                 if self.receive_encrypted() is not True:
+                    self.last_failure = "Получение: отклонено"
                     failures = True
-            except Exception:
+            except Exception as exc:
+                self.last_failure = "Получение: " + self._error_code(exc)
                 failures = True
         self.state = "retry_pending" if failures else "synchronized"
         return not failures
