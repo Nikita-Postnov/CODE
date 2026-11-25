@@ -8,6 +8,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication, QTextEdit, QWidget, QLabel
 from PySide6.QtGui import QTextCursor
+from PySide6.QtCore import QDateTime, Qt
 
 APP_DIR = Path(__file__).resolve().parents[1] / "Other_dev" / "noteapp" / "app"
 
@@ -90,6 +91,28 @@ def extract_notesapp_method(name):
     body = ast.Module(body=[method], type_ignores=[])
     exec(compile(ast.fix_missing_locations(body), "<notesapp-qt-test>", "exec"), namespace)
     return namespace[name]
+
+
+class RecentNotesQtTests(unittest.TestCase):
+    def test_recent_sort_uses_datetime_including_offsets(self):
+        source = (APP_DIR / "__init__.py").read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        owner = next(n for n in tree.body if isinstance(n, ast.ClassDef)
+                     and n.name == "NotesApp")
+        method = next(n for n in owner.body if isinstance(n, ast.FunctionDef)
+                      and n.name == "_timestamp_sort_key")
+        ns = {"QDateTime": QDateTime, "Qt": Qt, "Note": object}
+        module = ast.Module(body=[method], type_ignores=[])
+        ast.fix_missing_locations(module)
+        exec(compile(module, "<recent-notes-sort>", "exec"), ns)
+        fn = ns["_timestamp_sort_key"]
+        class Note:
+            def __init__(self, timestamp):
+                self.timestamp = timestamp
+        older = Note("2026-11-25T09:00:00+03:00")
+        newer = Note("2026-11-25T07:30:00+00:00")
+        self.assertLess(fn(older), fn(newer))
+        self.assertEqual(fn(Note("bad timestamp")), 0)
 
 
 class EmptyFirstRunQtSmokeTests(unittest.TestCase):
