@@ -18,6 +18,7 @@ from uuid import UUID
 from .encrypted_sync import GitHubTransport, SyncConflict, seal, unseal
 from .offline_sync import OfflineSyncQueue, OfflineSyncWorker
 from .sync_snapshot import pack_note, UnsafeSnapshot
+from .incoming_sync import import_new_note, stage_conflict
 
 
 class EncryptedOutboundService:
@@ -32,7 +33,10 @@ class EncryptedOutboundService:
         self._lock = threading.RLock()
         self._db_path = self.state_directory / "remote_revisions.sqlite3"
         self._init_db()
-        self.worker = OfflineSyncWorker(self.queue, self._online, self._send)
+        self.received_count = 0
+        self.worker = OfflineSyncWorker(
+            self.queue, self._online, self._send, receive_encrypted=self._receive
+        )
 
     @contextmanager
     def _connect(self):
@@ -93,9 +97,9 @@ class EncryptedOutboundService:
                     matches.append(folder)
             except (OSError, ValueError, UnicodeDecodeError):
                 continue
-        if len(matches) != 1:
-            raise UnsafeSnapshot("Note UUID has zero or multiple matching folders")
-        return matches[0]
+        if len(matches) > 1:
+            raise UnsafeSnapshot("Duplicate local note UUID")
+        return matches[0] if matches else None
 
     def _online(self):
         # Respect system HTTPS proxy/VPN settings without exposing a token.
@@ -107,7 +111,10 @@ class EncryptedOutboundService:
             return False
 
     def _send(self, note_id):
-        plain = pack_note(self._find_folder(note_id), note_id)
+        folder = self._find_folder(note_id)
+        if folder is None:
+            raise UnsafeSnapshot("Local note deleted or not found")
+        plain = pack_note(folder, note_id)
         digest = hashlib.sha256(plain).hexdigest()
         known = self._known_sha(note_id)
         remote, current_sha = self.transport.read(note_id)
@@ -128,6 +135,42 @@ class EncryptedOutboundService:
         )
         self._remember_sha(note_id, sha)
         self._remember_digest(note_id, digest)
+        return True
+
+    def _receive(self):
+        """Import absent notes only; quarantine all divergent remote revisions."""
+        for note_id in self.transport.list_note_ids():
+            encrypted, sha = self.transport.read(note_id)
+            if encrypted is None or sha is None:
+                continue
+            known = self._known_sha(note_id)
+            if known == sha:
+                continue
+            folder = self._find_folder(note_id)
+            if folder is not None:
+                if known is None:
+                    # Another device can already have identical note data.
+                    local_plain = pack_note(folder, note_id)
+                    if unseal(encrypted, self.passphrase, note_id) == local_plain:
+                        self._remember_sha(note_id, sha)
+                        self._remember_digest(
+                            note_id, hashlib.sha256(local_plain).hexdigest()
+                        )
+                        continue
+                stage_conflict(self.state_directory, note_id, sha, encrypted)
+                continue
+            # Incoming new UUID: never overwrite any local folder.
+            import_new_note(
+                self.repository_root, self.state_directory, note_id,
+                encrypted, self.passphrase,
+            )
+            self._remember_sha(note_id, sha)
+            self._remember_digest(
+                note_id, hashlib.sha256(
+                    unseal(encrypted, self.passphrase, note_id)
+                ).hexdigest()
+            )
+            self.received_count += 1
         return True
 
     def saved(self, note_id):
