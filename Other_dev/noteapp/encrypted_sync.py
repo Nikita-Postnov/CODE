@@ -112,6 +112,31 @@ class GitHubTransport:
         with self.opener(request, timeout=15) as response:
             return json.load(response)
 
+    def list_note_ids(self):
+        """List encrypted note UUIDs only; ignore unrelated repository files."""
+        try:
+            entries = self._call("encrypted")
+        except urllib.error.HTTPError as exc:
+            if exc.code == 404:
+                return []
+            raise
+        if not isinstance(entries, list):
+            raise SyncSecurityError("Encrypted directory is not a file listing")
+        note_ids = []
+        for entry in entries:
+            if not isinstance(entry, dict) or entry.get("type") != "file":
+                continue
+            name = entry.get("name")
+            if not isinstance(name, str) or not name.endswith(".json"):
+                continue
+            candidate = name[:-5]
+            try:
+                _note_id(candidate)
+            except SyncSecurityError:
+                continue
+            note_ids.append(candidate)
+        return sorted(set(note_ids))
+
     def read(self, note_id: str):
         path = "encrypted/" + _note_id(note_id) + ".json"
         try:
