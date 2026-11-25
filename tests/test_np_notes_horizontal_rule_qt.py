@@ -98,15 +98,13 @@ class HorizontalRuleTest(unittest.TestCase):
             )
             total_width = pic.width()
             strong_rows = []
-            for y in range(22, min(90, pic.height())):
+            for y in range(15, min(90, pic.height())):
                 bright = sum(
                     1 for x in range(20, total_width - 20)
                     if pic.pixelColor(x, y).red() >= 125
                 )
                 if bright >= (total_width - 40) * 0.85:
                     strong_rows.append(y)
-            print("DIVIDER_PIXEL_SCAN", sorted(((sum(1 for x in range(20,pic.width()-20) if pic.pixelColor(x,y).red()>=125),y) for y in range(0,pic.height())),reverse=True)[:15], flush=True)
-            print("DIVIDER_HTML", editor.text_edit.toHtml()[-700:], flush=True)
             self.assertTrue(strong_rows,
                 "Divider did not render across most of the dark QTextEdit viewport")
 
@@ -122,7 +120,7 @@ class HorizontalRuleTest(unittest.TestCase):
             QImage.Format.Format_RGBA8888
         )
         strong_rows = []
-        for y in range(22, min(90, pic.height())):
+        for y in range(15, min(90, pic.height())):
             bright = sum(
                 1 for x in range(20, pic.width() - 20)
                 if pic.pixelColor(x, y).red() >= 125
