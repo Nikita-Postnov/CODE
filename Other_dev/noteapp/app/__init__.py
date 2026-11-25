@@ -120,6 +120,7 @@ from .reminders import RemindersMixin
 from .tray import TrayMixin
 from .autosave import AutosaveMixin
 from .recovery import RecoveryMixin
+from .sync import SyncMixin
 from .templates import TemplatesMixin
 from .settings import SettingsMixin
 from .search import SearchMixin
@@ -152,7 +153,7 @@ def init_app_environment() -> None:
     logging.info("=== APP START ===")
 
 
-class NotesApp(NotePersistenceMixin, PluginsMixin, RemindersMixin, TrayMixin, AutosaveMixin, RecoveryMixin, TemplatesMixin, SettingsMixin, SearchMixin, DropdownsMixin, ImagesMixin, EditorMixin, LayoutMixin, QMainWindow):
+class NotesApp(SyncMixin, NotePersistenceMixin, PluginsMixin, RemindersMixin, TrayMixin, AutosaveMixin, RecoveryMixin, TemplatesMixin, SettingsMixin, SearchMixin, DropdownsMixin, ImagesMixin, EditorMixin, LayoutMixin, QMainWindow):
     TRASH_DIR: Path = NOTES_DIR / "Trash"
     window_hidden = Signal()
 
@@ -207,6 +208,7 @@ class NotesApp(NotePersistenceMixin, PluginsMixin, RemindersMixin, TrayMixin, Au
         self.reminder_timer = QTimer(self)
         self.reminder_timer.timeout.connect(self.check_reminders)
         self.reminder_timer.start(60000)
+        self._setup_github_sync()
 
     @staticmethod
     def _html_to_plain_text(content: str) -> str:
