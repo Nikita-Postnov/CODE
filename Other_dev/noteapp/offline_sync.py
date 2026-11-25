@@ -6,6 +6,7 @@ An authenticated encrypted GitHub transport must be configured separately.
 from __future__ import annotations
 
 import sqlite3
+from contextlib import contextmanager
 import threading
 import time
 from pathlib import Path
@@ -25,12 +26,17 @@ class OfflineSyncQueue:
         self._lock = threading.RLock()
         self._initialize()
 
+    @contextmanager
     def _connect(self):
         db = sqlite3.connect(str(self.db_path), timeout=10)
-        db.execute("PRAGMA busy_timeout=10000")
-        db.execute("PRAGMA journal_mode=WAL")
-        db.execute("PRAGMA synchronous=FULL")
-        return db
+        try:
+            db.execute("PRAGMA busy_timeout=10000")
+            db.execute("PRAGMA journal_mode=WAL")
+            db.execute("PRAGMA synchronous=FULL")
+            with db:
+                yield db
+        finally:
+            db.close()
 
     def _initialize(self):
         with self._lock, self._connect() as db:
@@ -44,7 +50,7 @@ class OfflineSyncQueue:
     def _validate_item(item_id: str):
         if (not isinstance(item_id, str) or not item_id or
                 len(item_id) > 200 or "/" in item_id or
-                "\\\\" in item_id or item_id in (".", "..")):
+                chr(92) in item_id or item_id in (".", "..")):
             raise ValueError("Invalid sync item identifier")
 
     def mark_changed(self, item_id: str):
