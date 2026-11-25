@@ -181,6 +181,59 @@ class GithubSyncTests(unittest.TestCase):
         self.assertEqual(data, (folder / "note.json").read_bytes())
         self.assertEqual(self.store.files, {})
 
+    def test_encrypted_staging_does_not_touch_editor_until_main_thread(self):
+        self.note(self.device_a)
+        self.engine(self.device_a).run()
+        b = self.engine(self.device_b)
+        b.stage_downloads = True
+        self.assertEqual(b.run().downloaded, 1)
+        inbox = self.device_b / "NoteSync" / "inbox"
+        blob = (inbox / (self.note_uuid + ".npn")).read_bytes()
+        self.assertTrue(blob.startswith(b"NPNS1"))
+        self.assertNotIn(b"hello", blob)
+        self.assertFalse((self.device_b / "Notes").exists())
+        self.assertEqual(b.apply_pending(protected_uuid=self.note_uuid), ())
+        self.assertFalse((self.device_b / "Notes").exists())
+        self.assertEqual(b.apply_pending(), (self.note_uuid,))
+        target = self.device_b / "Notes" / portable_note_folder({
+            "uuid": self.note_uuid, "title": "Example",
+            "timestamp": "2026-11-25T10:00:00"})
+        self.assertTrue((target / "image.png").exists())
+        self.assertFalse((inbox / (self.note_uuid + ".npn")).exists())
+
+    def test_local_edit_while_remote_staged_is_preserved(self):
+        self.note(self.device_a)
+        self.engine(self.device_a).run()
+        self.engine(self.device_b).run()
+        a = self.device_a / "Notes" / ("Folder_" + self.note_uuid)
+        note = json.loads((a / "note.json").read_text())
+        note["content"] = "remote version"
+        (a / "note.json").write_text(json.dumps(note))
+        self.engine(self.device_a).run()
+        b = self.engine(self.device_b)
+        b.stage_downloads = True
+        self.assertEqual(b.run().downloaded, 1)
+        target = self.device_b / "Notes" / portable_note_folder({
+            "uuid": self.note_uuid, "title": "Example",
+            "timestamp": "2026-11-25T10:00:00"})
+        note = json.loads((target / "note.json").read_text())
+        note["content"] = "local version"
+        (target / "note.json").write_text(json.dumps(note))
+        self.assertEqual(b.apply_pending(), ())
+        self.assertEqual(json.loads((target / "note.json").read_text())["content"], "local version")
+        self.assertEqual(len(list((self.device_b / "NoteSync" / "conflicts").glob("*.npn"))), 1)
+
+    @unittest.skipUnless(os.name == "nt", "Windows DPAPI only")
+    def test_enrolled_credentials_are_dpapi_protected(self):
+        from noteapp.sync_secrets import save_credentials, load_credentials
+        state = self.device_a / "NoteSync"
+        save_credentials(state, "synthetic-token-only", PASSWORD)
+        blob = (state / "credentials.dpapi").read_bytes()
+        self.assertNotIn(b"synthetic-token-only", blob)
+        self.assertEqual(load_credentials(state), ("synthetic-token-only", PASSWORD))
+        with self.assertRaises(SyncError):
+            save_credentials(state, "synthetic-token-only", PASSWORD)
+
     def test_deletion_not_propagated(self):
         folder = self.note(self.device_a)
         self.engine(self.device_a).run()
