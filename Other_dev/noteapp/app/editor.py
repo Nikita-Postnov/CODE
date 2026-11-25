@@ -451,11 +451,29 @@ class EditorMixin:
         self.text_edit.setFocus()
 
     def insert_horizontal_line(self) -> None:
+        """Insert a full-width Qt rich-text horizontal rule as its own block.
+
+        Qt's QTextDocument HTML subset supports <hr> and its width/size
+        attributes, but not all browser CSS border/margin declarations.
+        Keep the rule separate from adjacent paragraphs so it survives
+        serialization and reopening instead of becoming a tiny mark.
+        """
         cursor = self.text_edit.textCursor()
         cursor.beginEditBlock()
-        cursor.insertHtml("<hr style='border:1px solid #888; margin:0;'>")
-        cursor.endEditBlock()
+        try:
+            # Never replace the user's selected text with a separator.
+            if cursor.hasSelection():
+                cursor.setPosition(cursor.selectionEnd())
+            if cursor.positionInBlock() != 0:
+                cursor.insertBlock()
+            cursor.insertHtml('<hr width="100%" size="2" />')
+            cursor.insertBlock()
+        finally:
+            cursor.endEditBlock()
         self.text_edit.setTextCursor(cursor)
+        self.text_edit.setFocus()
+        if hasattr(self, "_set_unsaved"):
+            self._set_unsaved()
 
     def insert_audio_link(self, filepath: str) -> None:
         filename = os.path.basename(filepath)
