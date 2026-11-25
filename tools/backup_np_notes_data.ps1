@@ -28,21 +28,23 @@ if (Test-Path -LiteralPath $destination) {
     throw "Backup directory already exists; refusing to overwrite: $destination"
 }
 
-# Preflight all entries before writing. Runtime diagnostic logs located
-# directly inside Data are not note content and may be exclusively locked.
-# Do NOT exclude .log attachments in nested Notes or other data folders.
-function IsRuntimeLog($Item) {
+# An exclusively locked diagnostic log may belong to another running Launcher
+# component (e.g. LaptopCare), not to NP Notes. Exclude only .log files
+# OUTSIDE note-related folders, and explicitly disclose each omission.
+# Attachments named *.log beneath Notes, Trash, etc. remain mandatory.
+function IsOptionalDiagnosticLog($Item) {
     if (-not $Item -or -not $Item.FullName) { return $false }
-    $parent = [IO.Path]::GetDirectoryName($Item.FullName).TrimEnd('\')
-    if (-not [string]::Equals($parent, $source, [StringComparison]::OrdinalIgnoreCase)) {
+    if ($Item.Name -notmatch '(?i)\.log(?:\.\d+)?$') { return $false }
+    $relative = $Item.FullName.Substring($source.Length).TrimStart('\')
+    $firstFolder = ($relative -split '\\', 2)[0]
+    if ($firstFolder -match '^(?i:Notes|Trash|Attachments|Archive|Backups|Recovery|Заметки|Корзина|Вложения|Архив)$') {
         return $false
     }
-    # Include rotated diagnostics, e.g. crash.log.1 and language_indicator_error.log.
-    return $Item.Name -match '(?i)\.log(?:\.\d+)?$'
+    return $true
 }
 $allFiles = @(Get-ChildItem -LiteralPath $source -File -Recurse -Force)
-$files = @($allFiles | Where-Object { -not (IsRuntimeLog $_) })
-$skippedLogs = @($allFiles | Where-Object { IsRuntimeLog $_ })
+$files = @($allFiles | Where-Object { -not (IsOptionalDiagnosticLog $_) })
+$skippedLogs = @($allFiles | Where-Object { IsOptionalDiagnosticLog $_ })
 $folders = @(Get-ChildItem -LiteralPath $source -Directory -Recurse -Force)
 foreach ($entry in @($files) + @($folders)) {
     if (($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
@@ -79,7 +81,7 @@ try {
     }
     # Also ensure files did not appear/disappear mid-backup.
     $latest = @(Get-ChildItem -LiteralPath $source -File -Recurse -Force |
-        Where-Object { -not (IsRuntimeLog $_) })
+        Where-Object { -not (IsOptionalDiagnosticLog $_) })
     if ($latest.Count -ne $files.Count) {
         throw 'Source file count changed during backup; retry while Notes is closed'
     }
@@ -90,6 +92,10 @@ try {
     Write-Output "BACKUP_VERIFIED=$destination"
     Write-Output "FILE_COUNT=$($files.Count)"
     Write-Output "SKIPPED_DIAGNOSTIC_LOGS=$($skippedLogs.Count)"
+    foreach ($log in $skippedLogs) {
+        $relativeLog = $log.FullName.Substring($source.Length).TrimStart('\')
+        Write-Output "SKIPPED_LOG=$relativeLog"
+    }
 }
 catch {
     if (Test-Path -LiteralPath $staging) {
