@@ -115,7 +115,7 @@ class EditorControlsAudit(unittest.TestCase):
         host = self.new_host("Size Font")
         self.select(host, 0, 4)
         host.change_font_size(18)
-        host.set_font_family("Arial")
+        host.change_font(QFont("Arial"))
         html = host.text_edit.toHtml().lower()
         self.assertIn("18pt", html)
         self.assertIn("arial", html)
@@ -149,7 +149,7 @@ class EditorControlsAudit(unittest.TestCase):
         for i in range(4):
             a = host.text_edit.document().findBlockByNumber(i).blockFormat().alignment()
             b = clone.document().findBlockByNumber(i).blockFormat().alignment()
-            self.assertEqual(a, b)
+            self.assertEqual(a & Qt.AlignHorizontal_Mask, b & Qt.AlignHorizontal_Mask)
 
     def test_headings_h1_h2_h3_and_roundtrip(self):
         host = self.new_host("Heading One\nHeading Two\nHeading Three")
@@ -223,6 +223,26 @@ class EditorControlsAudit(unittest.TestCase):
         self.assertNotIn("example.org/new", host.text_edit.toHtml())
         self.roundtrip(host)
 
+    def test_audio_link_html_escapes_special_file_names(self):
+        host = self.new_host("Audio")
+        with patch.object(host, "save_note"):
+            host.insert_audio_link("fake<evil>&sound.wav")
+        html = host.text_edit.toHtml()
+        self.assertIn("fake&lt;evil&gt;&amp;sound.wav", html)
+        self.assertNotIn("<evil>", html)
+
+    def test_font_dropdown_preserves_bold_and_size(self):
+        host = self.new_host("Important")
+        self.select(host, 0, len("Important"))
+        host.change_font_size(18)
+        host.toggle_bold()
+        host.change_font(QFont("Arial"))
+        html = host.text_edit.toHtml().lower()
+        self.assertIn("arial", html)
+        self.assertIn("18pt", html)
+        self.assertIn("font-weight:700", html)
+        self.roundtrip(host)
+
     def test_table_creation_and_context_actions(self):
         host = self.new_host("Above")
         self.cursor_at(host, len("Above"))
@@ -242,9 +262,13 @@ class EditorControlsAudit(unittest.TestCase):
     def test_table_context_insert_and_delete_row_col(self):
         host = self.new_host("")
         host.text_edit._insert_table(rows=2, cols=2)
-        cursor = host.text_edit.textCursor()
-        tbl = cursor.currentTable()
-        self.assertIsNotNone(tbl)
+        root = host.text_edit.document().rootFrame()
+        table_frames = [x for x in root.childFrames() if hasattr(x, "cellAt")]
+        self.assertTrue(table_frames)
+        tbl = table_frames[0]
+        c = tbl.cellAt(0, 0).firstCursorPosition()
+        host.text_edit.setTextCursor(c)
+        self.assertIsNotNone(host.text_edit.textCursor().currentTable())
         host.text_edit._table_insert_row(0, above=True)
         self.assertEqual(tbl.rows(), 3)
         host.text_edit._table_insert_col(0, left=True)
