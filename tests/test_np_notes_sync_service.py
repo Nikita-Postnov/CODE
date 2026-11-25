@@ -193,6 +193,81 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(device_b.queue.pending(), [(new_note_id, 1)])
         self.assertEqual(device_b.received_count, 2)
 
+    def test_two_device_clean_revisions_fast_forward_both_directions(self):
+        self.service._send(self.note_id)
+        second_root = Path(self.temp.name) / "two_way"
+        second_notes = second_root / "Notes"
+        second_notes.mkdir(parents=True)
+        device_b = EncryptedOutboundService(
+            second_root / "state", second_notes, "fake", "fake",
+            "fake-token", "synthetic long secret phrase",
+        )
+        device_b.transport = self.remote
+        self.assertTrue(device_b._receive())
+        second_file = next(second_notes.glob("*/note.json"))
+
+        self._save("revision from A")
+        self.service._send(self.note_id)
+        self.assertTrue(device_b._receive())
+        self.assertEqual(json.loads(second_file.read_text())["content"], "v1")
+
+        # Simulates the editor being open: never overwrite active model.
+        self.assertEqual(
+            device_b.apply_staged_remote_updates([self.note_id]), []
+        )
+        self.assertEqual(json.loads(second_file.read_text())["content"], "v1")
+        changed = device_b.apply_staged_remote_updates([])
+        self.assertEqual([item[0] for item in changed], [self.note_id])
+        self.assertEqual(
+            json.loads(second_file.read_text())["content"], "revision from A"
+        )
+        backups = list((second_root / "state" / "remote_update_backups")
+                       .rglob("note.json"))
+        self.assertEqual(len(backups), 1)
+        self.assertEqual(json.loads(backups[0].read_text())["content"], "v1")
+
+        record = json.loads(second_file.read_text())
+        record["content"] = "revision from B"
+        second_file.write_text(json.dumps(record), encoding="utf-8")
+        self.assertTrue(device_b._send(self.note_id))
+        self.assertTrue(self.service._receive())
+        self.assertEqual(json.loads(self.note_file.read_text())["content"],
+                         "revision from A")
+        self.assertEqual(
+            [item[0] for item in self.service.apply_staged_remote_updates([])],
+            [self.note_id],
+        )
+        self.assertEqual(json.loads(self.note_file.read_text())["content"],
+                         "revision from B")
+
+    def test_local_dirty_revision_never_fast_forwards(self):
+        self.service._send(self.note_id)
+        second_root = Path(self.temp.name) / "dirty_device"
+        second_notes = second_root / "Notes"
+        second_notes.mkdir(parents=True)
+        device_b = EncryptedOutboundService(
+            second_root / "state", second_notes, "fake", "fake",
+            "fake-token", "synthetic long secret phrase",
+        )
+        device_b.transport = self.remote
+        self.assertTrue(device_b._receive())
+        second_file = next(second_notes.glob("*/note.json"))
+        record = json.loads(second_file.read_text())
+        record["content"] = "local unsent change"
+        second_file.write_text(json.dumps(record), encoding="utf-8")
+
+        self._save("remote edit from A")
+        self.service._send(self.note_id)
+        self.assertTrue(device_b._receive())
+        self.assertEqual(device_b.apply_staged_remote_updates([]), [])
+        self.assertEqual(
+            json.loads(second_file.read_text())["content"],
+            "local unsent change",
+        )
+        conflicts = list((second_root / "state" / "remote_conflicts")
+                         .rglob("*.enc"))
+        self.assertEqual(len(conflicts), 1)
+
     def test_does_not_read_sibling_data(self):
         outside = Path(self.temp.name) / "OtherApp"
         outside.mkdir()
