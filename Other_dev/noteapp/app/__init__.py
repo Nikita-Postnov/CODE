@@ -347,6 +347,21 @@ class NotesApp(NotePersistenceMixin, PluginsMixin, RemindersMixin, TrayMixin, Au
             self.debounce_timer.start()
 
     def exit_app(self) -> None:
+        # При обычном скрытии окна closeEvent может перехватить ошибку записи,
+        # но при реальном выходе нельзя закрывать процесс с несохранённой заметкой.
+        try:
+            self.save_note_quiet(force=True)
+            self.save_all_notes_to_disk()
+        except Exception as exc:
+            logging.exception("Не удалось сохранить заметки перед завершением")
+            self._set_unsaved(True)
+            QMessageBox.warning(
+                self, "Не удалось завершить работу",
+                "Заметки не удалось сохранить. Приложение продолжит работать, "
+                "чтобы вы могли исправить проблему и повторить попытку.\n\n"
+                + str(exc),
+            )
+            return
         try:
             if getattr(self, "tray_icon", None):
                 self.tray_icon.hide()
@@ -2712,6 +2727,8 @@ class NotesApp(NotePersistenceMixin, PluginsMixin, RemindersMixin, TrayMixin, Au
         self.search_bar = QLineEdit()
         self.search_bar.setPlaceholderText("Поиск...")
         flow_layout.addWidget(self.search_bar)
+        self.search_focus_shortcut = QShortcut(QKeySequence("Ctrl+Shift+F"), self)
+        self.search_focus_shortcut.activated.connect(self.search_bar.setFocus)
         search_button = QPushButton("🔍 - Поиск")
         search_button.clicked.connect(self.trigger_search)
         flow_layout.addWidget(search_button)
