@@ -23,7 +23,7 @@ class ChoiceWindowSmokeTests(unittest.TestCase):
         self.assertFalse(icon.pixmap(32, 32).isNull())
 
     def test_installed_and_portable_icon_locations(self):
-        paths = [str(p).replace("\\\\", "/") for p in choice_icon_paths()]
+        paths = [p.as_posix() for p in choice_icon_paths()]
         self.assertTrue(any(p.lower().endswith("/data/choice.ico") for p in paths))
         self.assertTrue(any(p.lower().endswith("/choice.ico") for p in paths))
 
