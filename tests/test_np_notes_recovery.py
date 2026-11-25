@@ -102,6 +102,7 @@ class DraftSecurityTests(unittest.TestCase):
                 return cls.No
         ns = {
             "os": os, "logging": logging, "RECOVERY_DIR": self.folder,
+            "NOTES_DIR": self.folder,
             "list_drafts": lambda directory: [self.note_uuid],
             "read_draft": lambda directory, uuid: {"html": "Unsaved"},
             "clear_draft": lambda directory, uuid: deleted.append(uuid),
@@ -157,6 +158,7 @@ class DraftSecurityTests(unittest.TestCase):
                 self.html = html
         ns = {
             "os": os, "logging": logging, "RECOVERY_DIR": self.folder,
+            "NOTES_DIR": self.folder,
             "list_drafts": lambda directory: [self.note_uuid],
             "read_draft": lambda directory, uuid: {"html": "Unsaved"},
             "QMessageBox": MessageBox,
