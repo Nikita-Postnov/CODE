@@ -61,9 +61,6 @@ try {
             throw 'NP Notes sync state backup already exists'
         }
         New-Item -ItemType Directory -Path $stateBackup -Force | Out-Null
-        $stateFiles = @(
-            Get-ChildItem -LiteralPath $syncState -Recurse -Force -File -ErrorAction Stop
-        )
         $stateEntries = @(
             Get-ChildItem -LiteralPath $syncState -Recurse -Force -ErrorAction Stop
         )
@@ -177,7 +174,7 @@ finally {
     $source = "https://raw.githubusercontent.com/Nikita-Postnov/CODE/$mainSha/tools"
     foreach ($name in @('np_notes_release.json', 'check_np_notes_release.py', 'install_np_notes_code.ps1', 'backup_np_notes_data.ps1')) {
         $target = Join-Path $work $name
-        Invoke-WebRequest -Uri "$source/$name?nonce=$nonce" -OutFile $target -UseBasicParsing -Headers @{ 'Cache-Control'='no-cache'; 'Pragma'='no-cache' } -ErrorAction Stop
+        Invoke-WebRequest -Uri "${source}/${name}?nonce=${nonce}" -OutFile $target -UseBasicParsing -Headers @{ 'Cache-Control'='no-cache'; 'Pragma'='no-cache' } -ErrorAction Stop
         if (-not (Test-Path -LiteralPath $target -PathType Leaf)) {
             throw "Missing immutable updater resource: $name"
         }
