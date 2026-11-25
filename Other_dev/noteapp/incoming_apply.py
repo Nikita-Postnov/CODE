@@ -16,7 +16,7 @@ from pathlib import Path
 from uuid import UUID, uuid4
 
 from .encrypted_sync import unseal
-from .incoming_sync import IncomingConflict
+from .incoming_sync import IncomingConflict, _folder_name
 from .sync_snapshot import pack_note, unpack_to_memory, restore_attachment_links
 
 
@@ -73,12 +73,19 @@ def apply_clean_remote_revision(note_folder, state_dir, note_id, encrypted,
     before = pack_note(folder, note_id)
     if not baseline_digest or hashlib.sha256(before).hexdigest() != baseline_digest:
         raise IncomingConflict("Local note has unmerged edits")
-    _, prior_files = unpack_to_memory(before, note_id)
+    previous, prior_files = unpack_to_memory(before, note_id)
     remote = unseal(encrypted, secret, note_id)
     updated, next_files = unpack_to_memory(remote, note_id)
     updated = dict(updated)
+    rename_needed = (
+        previous.get("title") != updated.get("title")
+        or previous.get("timestamp") != updated.get("timestamp")
+    )
+    target = folder.parent / _folder_name(updated, note_id) if rename_needed else folder
+    if target != folder and (target.exists() or target.is_symlink()):
+        raise IncomingConflict("Renamed note target already exists")
     updated["content"] = restore_attachment_links(
-        updated.get("content"), folder, next_files
+        updated.get("content"), target, next_files
     )
     for candidate in folder.iterdir():
         if candidate.is_symlink():
@@ -90,6 +97,7 @@ def apply_clean_remote_revision(note_folder, state_dir, note_id, encrypted,
     # Keep a complete pre-update copy even after success, for manual recovery.
     original_note = (folder / "note.json").read_bytes()
     changed = False
+    active_folder = folder
     try:
         for filename, raw in next_files.items():
             _atomic_write(folder / filename, raw)
@@ -102,10 +110,16 @@ def apply_clean_remote_revision(note_folder, state_dir, note_id, encrypted,
         # Drop only tracked attachment files after the new metadata is durable.
         for filename in prior_files.keys() - next_files.keys():
             (folder / filename).unlink()
-        return folder
+        if target != folder:
+            os.rename(folder, target)
+            active_folder = target
+        (active_folder / "note_cache.json").unlink(missing_ok=True)
+        return active_folder
     except Exception as exc:
         if changed:
             try:
+                if active_folder != folder:
+                    os.rename(active_folder, folder)
                 for filename, raw in prior_files.items():
                     _atomic_write(folder / filename, raw)
                 for filename in next_files.keys() - prior_files.keys():
