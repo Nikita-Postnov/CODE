@@ -2516,7 +2516,7 @@ class NotesApp(NotePersistenceMixin, PluginsMixin, RemindersMixin, TrayMixin, Au
         return stamp.toMSecsSinceEpoch() if stamp.isValid() else 0
 
     def show_recent_notes(self) -> None:
-        """Последние 15 заметок без изменения порядка или JSON на диске."""
+        """Последние 15 созданных заметок без изменения JSON на диске."""
         self.notes_list.clear()
         recent = sorted(
             self.notes,
@@ -2786,8 +2786,8 @@ class NotesApp(NotePersistenceMixin, PluginsMixin, RemindersMixin, TrayMixin, Au
         no_tags_button.setToolTip("Показать заметки без тегов (без изменения данных)")
         no_tags_button.clicked.connect(self.show_untagged_notes)
         flow_layout.addWidget(no_tags_button)
-        recent_button = QPushButton("Недавние")
-        recent_button.setToolTip("Последние 15 заметок по дате изменения")
+        recent_button = QPushButton("Недавно созданные")
+        recent_button.setToolTip("15 последних заметок по дате создания")
         recent_button.clicked.connect(self.show_recent_notes)
         flow_layout.addWidget(recent_button)
         reset_button = QPushButton("Сбросить фильтр")
