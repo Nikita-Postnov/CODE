@@ -2509,6 +2509,12 @@ class NotesApp(NotePersistenceMixin, PluginsMixin, RemindersMixin, TrayMixin, Au
             self.current_note.favorite = not self.current_note.favorite
             self.refresh_notes_list()
 
+    @staticmethod
+    def _timestamp_sort_key(note: Note) -> int:
+        """Сортировка по реальному времени изменения, включая timezone."""
+        stamp = QDateTime.fromString(str(getattr(note, "timestamp", "") or ""), Qt.ISODate)
+        return stamp.toMSecsSinceEpoch() if stamp.isValid() else 0
+
     def show_recent_notes(self) -> None:
         """Последние 15 заметок без изменения порядка или JSON на диске."""
         self.notes_list.clear()
