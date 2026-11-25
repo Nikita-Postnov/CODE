@@ -78,7 +78,7 @@ def encrypt_snapshot(clear: bytes, password: str, repository: str, note_uuid: st
         raise SyncError("Note and attachments exceed sync limit")
     u = valid_uuid(note_uuid)
     salt = hashlib.sha256(("np-notes-sync-v1:" + repository.lower()).encode()).digest()[:16]
-    key = hashlib.scrypt(password.encode(), salt=salt, n=2**15, r=8, p=1, dklen=32)
+    key = hashlib.scrypt(password.encode(), salt=salt, n=2**15, r=8, p=1, dklen=32, maxmem=128 * 1024 * 1024)
     nonce = os.urandom(12)
     aad = ("np-notes-v1:" + u).encode()
     return b"NPNS1" + nonce + AESGCM(key).encrypt(nonce, clear, aad)
@@ -90,7 +90,7 @@ def decrypt_snapshot(blob: bytes, password: str, repository: str, note_uuid: str
         raise SyncError("Invalid encrypted sync snapshot")
     u = valid_uuid(note_uuid)
     salt = hashlib.sha256(("np-notes-sync-v1:" + repository.lower()).encode()).digest()[:16]
-    key = hashlib.scrypt(password.encode(), salt=salt, n=2**15, r=8, p=1, dklen=32)
+    key = hashlib.scrypt(password.encode(), salt=salt, n=2**15, r=8, p=1, dklen=32, maxmem=128 * 1024 * 1024)
     try:
         return AESGCM(key).decrypt(blob[5:17], blob[17:], ("np-notes-v1:" + u).encode())
     except Exception as exc:
@@ -121,12 +121,17 @@ def snapshot_from_folder(folder: Path) -> tuple[str, bytes, str]:
             raise SyncError("Too many note attachments")
         files.append(path)
     output = io.BytesIO()
-    with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=5) as archive:
-        archive.writestr("note.json", raw)
+    def add(archive, name: str, value: bytes):
+        entry = zipfile.ZipInfo(name, (2020, 1, 1, 0, 0, 0))
+        entry.compress_type = zipfile.ZIP_DEFLATED
+        entry.external_attr = 0o600 << 16
+        archive.writestr(entry, value, compress_type=zipfile.ZIP_DEFLATED, compresslevel=5)
+    with zipfile.ZipFile(output, "w") as archive:
+        add(archive, "note.json", raw)
         for path in files:
             if path.stat().st_size > MAX_SNAPSHOT:
                 raise SyncError("Attachment too large for GitHub sync")
-            archive.write(path, "attachments/" + path.name)
+            add(archive, "attachments/" + path.name, path.read_bytes())
     data = output.getvalue()
     if len(data) > MAX_SNAPSHOT:
         raise SyncError("Snapshot is larger than the 20 MiB limit")
