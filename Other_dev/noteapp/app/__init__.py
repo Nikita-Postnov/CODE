@@ -1680,6 +1680,7 @@ class NotesApp(NotePersistenceMixin, PluginsMixin, RemindersMixin, TrayMixin, Au
             self.password_manager_field.clear()
             self.refresh_notes_list()
             self.show_note_with_attachments(note)
+            self._update_editor_visibility()
             self.text_edit.setFocus()
             self.text_edit.setReadOnly(False)
             note.password_manager_visible = False
