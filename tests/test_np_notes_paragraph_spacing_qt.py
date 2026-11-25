@@ -65,15 +65,6 @@ class ParagraphSpacingTests(unittest.TestCase):
         editor.set_paragraph_after_spacing(8)
         self.assertEqual(editor.text_edit.toPlainText(), original)
         self.assertEqual(editor.unsaved, [True, True])
-        print("SPACING_DEBUG", "cursor", editor.text_edit.textCursor().position(),
-              "selection", editor.text_edit.textCursor().selectionStart(),
-              editor.text_edit.textCursor().selectionEnd(),
-              "blocks", [(editor.text_edit.document().findBlockByNumber(i).blockFormat().lineHeight(),
-                          editor.text_edit.document().findBlockByNumber(i).blockFormat().lineHeightType(),
-                          editor.text_edit.document().findBlockByNumber(i).blockFormat().bottomMargin())
-                         for i in range(3)],
-              "combos", editor.line_spacing_combo.currentData(),
-              editor.paragraph_after_combo.currentData(), flush=True)
         self.assertEqual(editor.line_spacing_combo.currentData(), 1.5)
         self.assertEqual(editor.paragraph_after_combo.currentData(), 8)
 
@@ -82,7 +73,7 @@ class ParagraphSpacingTests(unittest.TestCase):
         third = editor.text_edit.document().findBlockByNumber(2).blockFormat()
         for fmt in (first, second):
             self.assertEqual(fmt.lineHeightType(),
-                             QTextBlockFormat.ProportionalHeight)
+                             QTextBlockFormat.ProportionalHeight.value)
             self.assertAlmostEqual(fmt.lineHeight(), 150)
             self.assertGreater(fmt.bottomMargin(), 0)
         self.assertLess(third.bottomMargin(), first.bottomMargin())
