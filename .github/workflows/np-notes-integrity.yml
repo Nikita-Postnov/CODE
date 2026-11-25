@@ -11,6 +11,7 @@ on:
       - "tests/test_np_notes_safety_20261125.py"
       - "tests/test_np_notes_qt_smoke.py"
       - "tests/test_np_notes_search_benchmark.py"
+      - "tests/test_np_notes_recovery.py"
       - "tools/benchmark_np_notes_search.py"
       - "tools/benchmark_np_notes_qt_search.py"
       - ".github/workflows/np-notes-integrity.yml"
@@ -24,6 +25,7 @@ on:
       - "tests/test_np_notes_safety_20261125.py"
       - "tests/test_np_notes_qt_smoke.py"
       - "tests/test_np_notes_search_benchmark.py"
+      - "tests/test_np_notes_recovery.py"
       - "tools/benchmark_np_notes_search.py"
       - "tools/benchmark_np_notes_qt_search.py"
       - ".github/workflows/np-notes-integrity.yml"
@@ -43,7 +45,7 @@ jobs:
       - name: Check Python syntax
         run: python -m compileall -q Other_dev/noteapp Other_dev/notes_app.py
       - name: Validate backups, portability, autosave, plugins, attachments
-        run: python -m unittest -v tests.test_np_notes_integrity tests.test_np_notes_hardening tests.test_np_notes_safety_20261125 tests.test_np_notes_search_benchmark
+        run: python -m unittest -v tests.test_np_notes_integrity tests.test_np_notes_hardening tests.test_np_notes_safety_20261125 tests.test_np_notes_search_benchmark tests.test_np_notes_recovery
       - name: Benchmark synthetic notes search (100 / 1000 / 10000)
         run: python tools/benchmark_np_notes_search.py --notes 100,1000,10000 --repeats 3
 
