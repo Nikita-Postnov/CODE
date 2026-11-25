@@ -8,6 +8,8 @@ param(
     [switch]$Replace
 )
 $ErrorActionPreference = 'Stop'
+# Windows PowerShell 5.1 does not automatically load the System.Security assembly.
+Add-Type -AssemblyName System.Security -ErrorAction Stop
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
 function Get-SensitiveText([string]$Prompt) {
