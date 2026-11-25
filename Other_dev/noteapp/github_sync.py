@@ -9,6 +9,7 @@ from __future__ import annotations
 import base64
 import datetime
 import hashlib
+import html
 import io
 import json
 import os
@@ -98,6 +99,32 @@ def decrypt_snapshot(blob: bytes, password: str, repository: str, note_uuid: str
         raise SyncError("Wrong sync passphrase or damaged encrypted content") from exc
 
 
+_LINK = re.compile(r'(?P<attr>\b(?:href|src)\s*=\s*)(?P<quote>["\'])(?P<url>[^"\']+)(?P=quote)', re.I)
+
+
+def rewrite_attachment_links(markup: str, names: set[str], folder: Path, *, to_portable: bool) -> str:
+    """Keep file links functional without syncing machine-specific absolute paths."""
+    def replace(match):
+        raw_url = html.unescape(match.group("url"))
+        parsed = urllib.parse.urlsplit(raw_url)
+        if to_portable:
+            if parsed.scheme.lower() != "file":
+                return match.group(0)
+            name = urllib.parse.unquote(parsed.path).replace("\\", "/").rsplit("/", 1)[-1]
+            if name not in names:
+                return match.group(0)
+            converted = "npnotes-attachment:" + urllib.parse.quote(name, safe="")
+        else:
+            if parsed.scheme.lower() != "npnotes-attachment":
+                return match.group(0)
+            name = urllib.parse.unquote(parsed.path)
+            if name not in names:
+                return match.group(0)
+            converted = (folder / name).resolve().as_uri()
+        return match.group("attr") + match.group("quote") + html.escape(converted, quote=True) + match.group("quote")
+    return _LINK.sub(replace, markup)
+
+
 def snapshot_from_folder(folder: Path) -> tuple[str, bytes, str]:
     """Capture note.json and attachments only. Excludes caches, backups and secrets."""
     if folder.is_symlink() or not folder.is_dir():
@@ -121,6 +148,17 @@ def snapshot_from_folder(folder: Path) -> tuple[str, bytes, str]:
         if len(files) >= MAX_NOTE_FILES:
             raise SyncError("Too many note attachments")
         files.append(path)
+    # Replace absolute file:/// links only when a matching attachment exists.
+    names = {p.name for p in files}
+    for key in ("content",):
+        if isinstance(clean.get(key), str):
+            clean[key] = rewrite_attachment_links(clean[key], names, folder, to_portable=True)
+    if isinstance(clean.get("history"), list):
+        clean["history"] = [
+            rewrite_attachment_links(value, names, folder, to_portable=True) if isinstance(value, str) else value
+            for value in clean["history"]
+        ]
+    raw = json_bytes(clean)
     output = io.BytesIO()
     def add(archive, name: str, value: bytes):
         entry = zipfile.ZipInfo(name, (2020, 1, 1, 0, 0, 0))
@@ -399,6 +437,14 @@ class SyncEngine:
             if target.is_symlink() or (target.exists() and target.read_bytes() != content):
                 raise Conflict("Attachment changed locally")
         folder.mkdir(parents=True, exist_ok=True)
+        names = set(attachments)
+        if isinstance(note.get("content"), str):
+            note["content"] = rewrite_attachment_links(note["content"], names, folder, to_portable=False)
+        if isinstance(note.get("history"), list):
+            note["history"] = [
+                rewrite_attachment_links(value, names, folder, to_portable=False)
+                if isinstance(value, str) else value for value in note["history"]
+            ]
         if (folder / "note.json").exists():
             existing = json.loads((folder / "note.json").read_text(encoding="utf-8"))
             # Local-only password_manager fields must never be erased on remote import.
