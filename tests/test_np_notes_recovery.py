@@ -81,6 +81,44 @@ class DraftSecurityTests(unittest.TestCase):
         namespace["_write_recovery_snapshot"](Fake())
         self.assertEqual(called, [])
 
+    @unittest.skipUnless(os.name == "nt", "Recovery prompt runs on Windows")
+    def test_recovery_decline_discards_only_the_test_draft(self):
+        import logging
+        from types import SimpleNamespace
+        source = FILE.parent / "app" / "recovery.py"
+        tree = ast.parse(source.read_text(encoding="utf-8"))
+        cls = next(node for node in tree.body
+                   if isinstance(node, ast.ClassDef) and node.name == "RecoveryMixin")
+        method = next(node for node in cls.body
+                      if isinstance(node, ast.FunctionDef) and node.name == "_offer_recovery_snapshots")
+        module = ast.Module(body=[method], type_ignores=[])
+        ast.fix_missing_locations(module)
+        note = SimpleNamespace(uuid=self.note_uuid, title="Example", content="Saved")
+        deleted = []
+        class MessageBox:
+            Yes, No, Cancel = 1, 2, 4
+            @classmethod
+            def question(cls, *args):
+                return cls.No
+        ns = {
+            "os": os, "logging": logging, "RECOVERY_DIR": self.folder,
+            "list_drafts": lambda directory: [self.note_uuid],
+            "read_draft": lambda directory, uuid: {"html": "Unsaved"},
+            "clear_draft": lambda directory, uuid: deleted.append(uuid),
+            "QMessageBox": MessageBox,
+        }
+        exec(compile(module, "<recovery-dialog>", "exec"), ns)
+        class Fake:
+            notes = [note]
+            current_note = None
+            def isWindowModified(self):
+                return False
+            def _clear_recovery_snapshot(self, uuid):
+                deleted.append(uuid)
+        ns["_offer_recovery_snapshots"](Fake())
+        self.assertEqual(deleted, [self.note_uuid])
+        self.assertEqual(note.content, "Saved")
+
     def test_missing_draft_returns_none(self):
         self.assertIsNone(REC.read_draft(self.folder, self.note_uuid))
         self.assertEqual(REC.list_drafts(self.folder), [])
