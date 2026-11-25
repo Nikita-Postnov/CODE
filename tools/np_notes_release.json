@@ -2,7 +2,7 @@
   "schema": 1,
   "app": "NP Notes",
   "source_repository": "Nikita-Postnov/CODE",
-  "source_commit": "8c54b6d183d3b101187b5222a4b16d4d79f7b0c7",
+  "source_commit": "2dc8f64139231311f91def25d8b3ed0e4a89df4f",
   "source_directory": "Other_dev",
   "install_scope": [
     "notes_app.py",
@@ -23,11 +23,11 @@
     },
     {
       "path": "noteapp/app/dropdowns.py",
-      "git_blob_sha": "d342ca13b67644193bb0847aea8f6fe87627d2fc"
+      "git_blob_sha": "01a1b9822c7cece2a1c452159d6d8ed68cadfb15"
     },
     {
       "path": "noteapp/app/editor.py",
-      "git_blob_sha": "8cee630ebcac4366e67adbb7d5f9b83ea8cd3d1e"
+      "git_blob_sha": "c895e74ea8d0ed48e26f72c2ab8de437ffbe00e9"
     },
     {
       "path": "noteapp/app/images.py",
@@ -171,7 +171,7 @@
     },
     {
       "path": "noteapp/widgets/text_edit.py",
-      "git_blob_sha": "f411d1a8b54697f2889231d413cff1694f614415"
+      "git_blob_sha": "6210b8008e17254be46f2c4b2ae9ef8f9ff66ce9"
     },
     {
       "path": "notes_app.py",
