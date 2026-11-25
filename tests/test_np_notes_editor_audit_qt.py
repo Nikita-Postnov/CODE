@@ -13,9 +13,9 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "Other_dev"))
 
 try:
-    from PySide6.QtCore import Qt, QMimeData
+    from PySide6.QtCore import Qt, QMimeData, QPoint
     from PySide6.QtGui import (
-        QColor, QFont, QImage, QTextCursor, QTextListFormat,
+        QColor, QContextMenuEvent, QFont, QImage, QTextCursor, QTextListFormat,
         QTextBlockFormat, QTextCharFormat, QTextDocument,
     )
     from PySide6.QtTest import QTest
@@ -345,6 +345,20 @@ class EditorControlsAudit(unittest.TestCase):
         html = host.text_edit.toHtml().lower()
         self.assertNotIn("<table", html)
         self.assertIn("Above", host.text_edit.toPlainText())
+
+    def test_context_copy_commands_available_without_alphabetic_word(self):
+        host = self.new_host("!!! ───")
+        self.select(host, 0, len("!!! ───"))
+        actions = []
+
+        def collect(menu, *unused_args):
+            actions.extend(action.text() for action in menu.actions())
+
+        with patch("noteapp.widgets.text_edit.QMenu.exec", new=collect):
+            ev = QContextMenuEvent(QContextMenuEvent.Mouse, QPoint(5, 5))
+            host.text_edit.contextMenuEvent(ev)
+        self.assertIn("Copy (without formatting)", actions)
+        self.assertIn("Copy (with formatting)", actions)
 
     def test_plain_and_rich_copy_mime_sanitization(self):
         host = self.new_host("Copy rich")
