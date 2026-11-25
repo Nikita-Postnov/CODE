@@ -147,7 +147,26 @@ class GitHubTransport:
             raise
         if record.get("type") != "file" or not isinstance(record.get("sha"), str):
             raise SyncSecurityError("Unexpected remote file")
-        content = base64.b64decode(record["content"], validate=False)
+        if record.get("encoding") == "none":
+            # GitHub Contents API omits inline content for files >1 MiB.
+            blob_sha = record["sha"]
+            if not re.fullmatch(r"[a-f0-9]{40}", blob_sha):
+                raise SyncSecurityError("Invalid remote Git blob SHA")
+            request = urllib.request.Request(
+                self.url + "/git/blobs/" + blob_sha,
+                headers={"Accept": "application/vnd.github+json",
+                         "Authorization": "Bearer " + self.token,
+                         "X-GitHub-Api-Version": "2022-11-28"},
+            )
+            with self.opener(request, timeout=30) as response:
+                blob = json.load(response)
+            if blob.get("encoding") != "base64":
+                raise SyncSecurityError("Unsupported large file encoding")
+            content = base64.b64decode(blob["content"], validate=False)
+        else:
+            if record.get("encoding") != "base64":
+                raise SyncSecurityError("Unsupported remote content encoding")
+            content = base64.b64decode(record["content"], validate=False)
         if len(content) > MAX_BYTES * 2:
             raise SyncSecurityError("Remote file too large")
         return content, record["sha"]
