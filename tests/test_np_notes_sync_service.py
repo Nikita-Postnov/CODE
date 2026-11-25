@@ -60,7 +60,6 @@ class ServiceTests(unittest.TestCase):
 
     def test_first_upload_then_no_unnecessary_rewrite(self):
         self.service.saved(self.note_id)
-        self.assertTrue(self.service.worker.sync_once()) if False else None
         self.assertTrue(self.service._send(self.note_id))
         self.assertEqual(self.remote.writes, 1)
         self.assertTrue(self.service._send(self.note_id))
