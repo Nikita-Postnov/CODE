@@ -159,9 +159,9 @@ class HorizontalLineRegression(unittest.TestCase):
 
 
     def test_replacing_old_dot_does_not_add_blank_line_before_heading(self):
-        editor = self.new_editor("Above\\n.\\nHeading")
+        editor = self.new_editor("Above\n.\nHeading")
         cursor = editor.text_edit.textCursor()
-        cursor.setPosition(len("Above\\n"))
+        cursor.setPosition(len("Above\n"))
         editor.text_edit.setTextCursor(cursor)
         editor.line_button.click()
         lines = editor.text_edit.toPlainText().splitlines()
@@ -175,9 +175,9 @@ class HorizontalLineRegression(unittest.TestCase):
         self.assertEqual(copy.toPlainText(), editor.text_edit.toPlainText())
 
     def test_inserting_into_blank_paragraph_does_not_duplicate_blank_line(self):
-        editor = self.new_editor("Above\\n\\nHeading")
+        editor = self.new_editor("Above\n\nHeading")
         cursor = editor.text_edit.textCursor()
-        cursor.setPosition(len("Above\\n"))
+        cursor.setPosition(len("Above\n"))
         editor.text_edit.setTextCursor(cursor)
         editor.line_button.click()
         lines = editor.text_edit.toPlainText().splitlines()
@@ -200,7 +200,7 @@ class HorizontalLineRegression(unittest.TestCase):
 
     def test_repair_removes_only_one_old_blank_after_rule_and_keeps_heading(self):
         rule = "─" * 60
-        original = "Before\\n" + rule + "\\n\\nHeading\\nElse\\n\\nIntended blank"
+        original = "Before\n" + rule + "\n\nHeading\nElse\n\nIntended blank"
         editor = self.new_editor(original)
         before = editor.text_edit.toPlainText()
         self.assertEqual(before, original)
@@ -209,7 +209,7 @@ class HorizontalLineRegression(unittest.TestCase):
             editor.repair_button.click()
         self.assertEqual(question.call_count, 1)
         self.assertIn("Пустых строк после линий: 1", question.call_args.args[2])
-        expected = "Before\\n" + rule + "\\nHeading\\nElse\\n\\nIntended blank"
+        expected = "Before\n" + rule + "\nHeading\nElse\n\nIntended blank"
         self.assertEqual(editor.text_edit.toPlainText(), expected)
         copy = CustomTextEdit()
         copy.setHtml(editor.text_edit.toHtml())
