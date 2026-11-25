@@ -313,6 +313,10 @@ class EditorMixin:
 
     def _update_paragraph_spacing_controls(self) -> None:
         cursor = self.text_edit.textCursor()
+        # For a multi-paragraph selection, sample the first selected block;
+        # the active cursor may be at the trailing unselected boundary.
+        if cursor.hasSelection():
+            cursor.setPosition(cursor.selectionStart())
         fmt = cursor.blockFormat()
         line_type = fmt.lineHeightType()
         if line_type == QTextBlockFormat.ProportionalHeight:
