@@ -2,7 +2,7 @@
   "schema": 1,
   "app": "NP Notes",
   "source_repository": "Nikita-Postnov/CODE",
-  "source_commit": "de59ebdfa6f7b16327fe132e5b212559160dd509",
+  "source_commit": "7b52929bc6d4d4a29ad6f83232c707882bc18858",
   "source_directory": "Other_dev",
   "install_scope": [
     "notes_app.py",
@@ -15,7 +15,7 @@
     },
     {
       "path": "noteapp/app/__init__.py",
-      "git_blob_sha": "a880cd13d2026bb6c77385db90a227fc0225321a"
+      "git_blob_sha": "b87ae949894984b55d289573a4825373ae2672f9"
     },
     {
       "path": "noteapp/app/autosave.py",
@@ -59,7 +59,7 @@
     },
     {
       "path": "noteapp/app/settings.py",
-      "git_blob_sha": "9baf6dc6d4a0872c261e9b8b47af925ac2df4656"
+      "git_blob_sha": "9164eee800aa680b6c197821f5e2db4dd64b9e8f"
     },
     {
       "path": "noteapp/app/templates.py",
@@ -87,7 +87,7 @@
     },
     {
       "path": "noteapp/encrypted_sync.py",
-      "git_blob_sha": "6963497e3f9a6b375ec8182428dd7506dca86a03"
+      "git_blob_sha": "2a6e56880d417f9b76f5ccd72790efcbfdf65142"
     },
     {
       "path": "noteapp/generators.py",
@@ -111,7 +111,7 @@
     },
     {
       "path": "noteapp/offline_sync.py",
-      "git_blob_sha": "19febdfe2b2b904b782da3bc3bf9218de930afd8"
+      "git_blob_sha": "84285fef021e9e4ebec0d779c55da99a9e03c4d4"
     },
     {
       "path": "noteapp/recovery.py",
@@ -127,7 +127,7 @@
     },
     {
       "path": "noteapp/sync_service.py",
-      "git_blob_sha": "7605d1913940a1e21647d003fb16997133a2d354"
+      "git_blob_sha": "66685e90405f7b01b1b2193e7fda5cbc4073b691"
     },
     {
       "path": "noteapp/sync_snapshot.py",
