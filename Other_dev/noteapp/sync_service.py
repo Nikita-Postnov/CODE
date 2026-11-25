@@ -127,10 +127,11 @@ class EncryptedOutboundService:
         note_id = str(UUID(note_id))
         if self._folder_in_trash(note_id) is None:
             raise ValueError("Cannot acknowledge nonexistent Trash move")
-        with self._operation_lock:
-            if self._find_folder(note_id) is not None:
-                raise ValueError("Note still active")
-            self.queue.discard(note_id)
+        if self._find_folder(note_id) is not None:
+            raise ValueError("Note still active")
+        # The SQLite queue and ledger have their own locks. Do not block the
+        # GUI on an in-flight GitHub request merely to cancel an old upload.
+        self.queue.discard(note_id)
 
     def is_remotely_deleted(self, note_id):
         return self._deletion_status(str(UUID(note_id))) in (
@@ -147,37 +148,34 @@ class EncryptedOutboundService:
     def prepare_permanent_delete(self, note_id):
         """Write intent before removing a local Trash folder (crash-safe)."""
         note_id = str(UUID(note_id))
-        with self._operation_lock:
-            if self._folder_in_trash(note_id) is None:
-                raise ValueError("Permanent deletion requires local Trash entry")
-            if self._find_folder(note_id) is not None:
-                raise ValueError("Active note with same UUID exists")
-            if self._deletion_status(note_id) not in (None, "prepared"):
-                raise ValueError("Deletion already recorded")
-            self._set_deletion_status(note_id, "prepared")
+        if self._folder_in_trash(note_id) is None:
+            raise ValueError("Permanent deletion requires local Trash entry")
+        if self._find_folder(note_id) is not None:
+            raise ValueError("Active note with same UUID exists")
+        # A remote-deleted note may still have a recoverable local Trash copy.
+        # Allow the owner to delete that copy without resurrecting the UUID.
+        self._set_deletion_status(note_id, "prepared")
         return True
 
     def commit_permanent_delete(self, note_id):
         """Only enqueue a remote deletion AFTER local physical deletion."""
         note_id = str(UUID(note_id))
-        with self._operation_lock:
-            if self._find_folder(note_id) is not None or self._folder_in_trash(note_id) is not None:
-                raise ValueError("Note is still present on disk")
-            if self._deletion_status(note_id) not in ("prepared", "pending"):
-                raise ValueError("Unprepared permanent deletion")
-            self._set_deletion_status(note_id, "pending")
-            self.queue.mark_changed(note_id)
+        if self._find_folder(note_id) is not None or self._folder_in_trash(note_id) is not None:
+            raise ValueError("Note is still present on disk")
+        if self._deletion_status(note_id) not in ("prepared", "pending"):
+            raise ValueError("Unprepared permanent deletion")
+        self._set_deletion_status(note_id, "pending")
+        self.queue.mark_changed(note_id)
         return True
 
     def cancel_prepared_delete(self, note_id):
         """Allowed only while the Trash copy still exists."""
         note_id = str(UUID(note_id))
-        with self._operation_lock:
-            if self._folder_in_trash(note_id) is None:
-                raise ValueError("Cannot cancel deletion after files disappeared")
-            with self._lock, self._connect() as db:
-                db.execute("DELETE FROM deletions WHERE note_id=? AND status='prepared'",
-                           (note_id,))
+        if self._folder_in_trash(note_id) is None:
+            raise ValueError("Cannot cancel deletion after files disappeared")
+        with self._lock, self._connect() as db:
+            db.execute("DELETE FROM deletions WHERE note_id=? AND status='prepared'",
+                       (note_id,))
 
     def _reconcile_prepared_deletions(self):
         """Recover a crash between local removal and queue commit."""
