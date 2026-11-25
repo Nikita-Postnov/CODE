@@ -58,8 +58,19 @@ try {
             (Join-Path $launcher 'Runtime\pythonw.exe')
         ) | Where-Object { Test-Path $_ } | Select-Object -First 1
         if (-not $python) { throw 'No portable Python runtime found in Launcher\Runtime' }
-        $env:LAUNCHER_ROOT = $preview
-        Start-Process -FilePath $python -ArgumentList @((Join-Path $preview 'notes_app.py')) -WorkingDirectory $preview
+        $previousLauncherRoot = $env:LAUNCHER_ROOT
+        try {
+            $env:LAUNCHER_ROOT = $preview
+            Start-Process -FilePath $python -ArgumentList @((Join-Path $preview 'notes_app.py')) -WorkingDirectory $preview
+        }
+        finally {
+            if ($null -eq $previousLauncherRoot) {
+                Remove-Item Env:\LAUNCHER_ROOT -ErrorAction SilentlyContinue
+            }
+            else {
+                $env:LAUNCHER_ROOT = $previousLauncherRoot
+            }
+        }
         Write-Host 'Preview process launched with an isolated Data folder.'
     }
 }
