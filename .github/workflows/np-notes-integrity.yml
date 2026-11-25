@@ -14,6 +14,7 @@ on:
       - "tests/test_np_notes_recovery.py"
       - "tools/benchmark_np_notes_search.py"
       - "tools/benchmark_np_notes_qt_search.py"
+      - "tools/preview_np_notes_pr83.ps1"
       - ".github/workflows/np-notes-integrity.yml"
   pull_request:
     branches: [main]
@@ -28,6 +29,7 @@ on:
       - "tests/test_np_notes_recovery.py"
       - "tools/benchmark_np_notes_search.py"
       - "tools/benchmark_np_notes_qt_search.py"
+      - "tools/preview_np_notes_pr83.ps1"
       - ".github/workflows/np-notes-integrity.yml"
 
 jobs:
@@ -56,6 +58,19 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - name: Validate isolated preview PowerShell syntax
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path 'tools/preview_np_notes_pr83.ps1').Path,
+            [ref]$tokens, [ref]$errors
+          ) | Out-Null
+          if ($errors.Count -ne 0) {
+            $errors | Format-List | Out-String | Write-Host
+            throw "Preview script syntax is invalid"
+          }
       - name: Install Qt dependencies
         run: python -m pip install "PySide6>=6.7,<7"
       - name: Exercise Qt editor without real user data
