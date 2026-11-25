@@ -107,7 +107,7 @@ jobs:
             if (Test-Path $root) { Remove-Item $root -Recurse -Force }
             if (Test-Path $preview) { Remove-Item $preview -Recurse -Force }
           }
-      - name: Validate backup script syntax and verify backup on fake Data
+      - name: Validate Notes-only backup under Windows PowerShell 5.1
         shell: pwsh
         run: |
           $path = (Resolve-Path 'tools/backup_np_notes_data.ps1').Path
@@ -118,65 +118,46 @@ jobs:
           ) | Out-Null
           if ($errors.Count -gt 0) { throw ($errors | Out-String) }
           $root = Join-Path $env:RUNNER_TEMP ('np-notes-backup-test-' + [guid]::NewGuid().ToString('N'))
+          $source = Join-Path $root 'Data'
+          $backup = Join-Path $root 'Backup'
           try {
-            $source = Join-Path $root 'Data'
-            $backup = Join-Path $root 'Backup'
             New-Item -ItemType Directory -Force -Path (Join-Path $source 'Notes\sample') | Out-Null
+            New-Item -ItemType Directory -Force -Path (Join-Path $source 'LaptopCare') | Out-Null
             Set-Content -LiteralPath (Join-Path $source 'Notes\sample\note.json') -Value '{"text":"example"}' -Encoding UTF8
+            Set-Content -LiteralPath (Join-Path $source 'Notes\sample\attachment.log') -Value 'real user attachment' -Encoding UTF8
             Set-Content -LiteralPath (Join-Path $source 'settings.ini') -Value 'key=value' -Encoding UTF8
-            $log = Join-Path $source 'crash.log'
-            $faultLog = Join-Path $source 'crash_fault.log'
-            $indicatorLog = Join-Path $source 'language_indicator_error.log'
-            $attachmentLog = Join-Path $source 'Notes\sample\customer_attachment.log'
-            $careDir = Join-Path $source 'LaptopCare'
-            New-Item -ItemType Directory -Force -Path $careDir | Out-Null
-            $laptopLog = Join-Path $careDir 'laptopcare.log'
-            Set-Content -LiteralPath $log -Value 'diagnostic only' -Encoding UTF8
-            Set-Content -LiteralPath $faultLog -Value 'fault diagnostic only' -Encoding UTF8
-            Set-Content -LiteralPath $indicatorLog -Value 'runtime diagnostic' -Encoding UTF8
-            Set-Content -LiteralPath $attachmentLog -Value 'important attachment must survive' -Encoding UTF8
-            Set-Content -LiteralPath $laptopLog -Value 'locked laptop diagnostic' -Encoding UTF8
-            $locked = [IO.File]::Open($log, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
-            $lockedFault = [IO.File]::Open($faultLog, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
-            $lockedIndicator = [IO.File]::Open($indicatorLog, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
-            $lockedLaptop = [IO.File]::Open($laptopLog, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+            Set-Content -LiteralPath (Join-Path $source 'LaptopCare\laptopcare.log') -Value 'runtime log' -Encoding UTF8
+            Set-Content -LiteralPath (Join-Path $source 'crash_fault.log') -Value 'runtime log' -Encoding UTF8
+            $sqlite = Join-Path $source 'LaptopCare\procmon.sqlite'
+            Set-Content -LiteralPath $sqlite -Value 'live sqlite' -Encoding UTF8
+            $locked = [IO.File]::Open($sqlite, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
             try {
-              # User runs Windows PowerShell 5.1, not pwsh 7.
-              # Execute the real copy in powershell.exe to catch encoding issues.
               $result = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $path -SourceRoot $source -BackupRoot $backup
-              if ($LASTEXITCODE -ne 0) { throw "Windows PowerShell 5.1 backup failed: exit $LASTEXITCODE" }
+              if ($LASTEXITCODE -ne 0) { throw "PowerShell 5.1 backup failed: $LASTEXITCODE" }
             }
-            finally {
-              $locked.Dispose()
-              $lockedFault.Dispose()
-              $lockedIndicator.Dispose()
-              $lockedLaptop.Dispose()
+            finally { $locked.Dispose() }
+            if (-not (($result | Out-String) -match 'SCOPE=NP_NOTES_ONLY')) {
+              throw 'No Notes-only confirmation'
             }
-            if (-not (($result | Out-String) -match 'SKIPPED_DIAGNOSTIC_LOGS=4')) {
-              throw 'All four locked runtime logs must be reported as skipped'
+            foreach ($name in @('Notes\sample\note.json','Notes\sample\attachment.log','settings.ini')) {
+              $expected = (Get-FileHash -LiteralPath (Join-Path $source $name) -Algorithm SHA256).Hash
+              $actual = (Get-FileHash -LiteralPath (Join-Path $backup $name) -Algorithm SHA256).Hash
+              if ($expected -ne $actual) { throw "Invalid hash for $name" }
             }
-            foreach ($runtimeLog in @('crash.log','crash_fault.log','language_indicator_error.log','LaptopCare\laptopcare.log')) {
-              if (Test-Path -LiteralPath (Join-Path $backup $runtimeLog)) {
-                throw "Diagnostic runtime log must not be copied: $runtimeLog"
+            foreach ($name in @('LaptopCare\procmon.sqlite','LaptopCare\laptopcare.log','crash_fault.log')) {
+              if (Test-Path -LiteralPath (Join-Path $backup $name)) {
+                throw "Unrelated Launcher file copied: $name"
               }
             }
-            if (-not (Test-Path -LiteralPath (Join-Path $backup 'Notes\sample\customer_attachment.log'))) {
-              throw 'Nested .log attachment must be preserved'
-            }
             if (-not (Test-Path -LiteralPath (Join-Path $backup 'SHA256-manifest.json'))) {
-              throw 'Missing backup manifest'
-            }
-            foreach ($name in @('Notes\sample\note.json', 'settings.ini', 'Notes\sample\customer_attachment.log')) {
-              $srcHash = (Get-FileHash -LiteralPath (Join-Path $source $name) -Algorithm SHA256).Hash
-              $dstHash = (Get-FileHash -LiteralPath (Join-Path $backup $name) -Algorithm SHA256).Hash
-              if ($srcHash -ne $dstHash) { throw "Hash mismatch: $name" }
+              throw 'Missing SHA256 manifest'
             }
             $failed = $false
             try { & $path -SourceRoot $source -BackupRoot $backup } catch { $failed = $true }
-            if (-not $failed) { throw 'Existing backup must never be overwritten' }
+            if (-not $failed) { throw 'Script overwrote existing backup' }
           }
           finally {
-            if (Test-Path $root) { Remove-Item $root -Recurse -Force }
+            if (Test-Path $root) { Remove-Item -LiteralPath $root -Recurse -Force }
           }
       - name: Install Qt dependencies
         run: python -m pip install "PySide6>=6.7,<7"
