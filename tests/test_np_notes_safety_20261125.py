@@ -274,6 +274,20 @@ class ExitSafetyTests(unittest.TestCase):
 
 
 class NotesOrganizationTests(unittest.TestCase):
+    def test_recent_view_is_limited_to_15_and_read_only(self):
+        source = (ROOT / "app" / "__init__.py").read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        cls = next(node for node in tree.body
+                   if isinstance(node, ast.ClassDef) and node.name == "NotesApp")
+        method = next(node for node in cls.body
+                      if isinstance(node, ast.FunctionDef) and node.name == "show_recent_notes")
+        method_source = ast.get_source_segment(source, method)
+        self.assertIn("[:15]", method_source)
+        self.assertIn("reverse=True", method_source)
+        self.assertIn("self._timestamp_sort_key(note)", method_source)
+        self.assertNotIn("save_note_to_file(", method_source)
+        self.assertIn("recent_button.clicked.connect(self.show_recent_notes)", source)
+
     def test_untagged_view_is_non_destructive(self):
         source = (ROOT / "app" / "__init__.py").read_text(encoding="utf-8")
         tree = ast.parse(source)
