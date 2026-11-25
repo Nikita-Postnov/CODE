@@ -13,7 +13,7 @@ from datetime import datetime
 from pathlib import Path
 from uuid import UUID
 from .encrypted_sync import unseal
-from .sync_snapshot import unpack_to_memory, UnsafeSnapshot
+from .sync_snapshot import unpack_to_memory, restore_attachment_links, UnsafeSnapshot
 
 
 class IncomingConflict(RuntimeError):
@@ -66,6 +66,10 @@ def import_new_note(notes_root: Path, state_dir: Path, note_id: str,
     if not target_root.is_dir() or target_root.is_symlink():
         raise IncomingConflict("Notes root is unsafe")
     target = target_root / _folder_name(note, note_id)
+    note = dict(note)
+    note["content"] = restore_attachment_links(
+        note.get("content"), target, attachments
+    )
     if target.exists() or target.is_symlink():
         raise IncomingConflict("Target note folder already exists")
     stage_root = Path(state_dir) / "incoming_staging"
