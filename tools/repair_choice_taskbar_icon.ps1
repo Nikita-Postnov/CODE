@@ -33,8 +33,8 @@ function New-ChoiceIcon([string]$Output) {
         $g.DrawEllipse($pen, 17, 17, 222, 222)
         $brush.Dispose()
         $brush = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::White)
-        $font = New-Object System.Drawing.Font('Segoe UI', 142, [System.Drawing.FontStyle]::Bold, [System.Drawing.GraphicsUnit]::Pixel)
-        $layout = New-Object System.Drawing.RectangleF(20, 18, 220, 225)
+        $font = [System.Drawing.Font]::new('Segoe UI', [single]142, [System.Drawing.FontStyle]::Bold, [System.Drawing.GraphicsUnit]::Pixel)
+        $layout = [System.Drawing.RectangleF]::new(20, 18, 220, 225)
         $format = New-Object System.Drawing.StringFormat
         try {
             $format.Alignment = [System.Drawing.StringAlignment]::Center
