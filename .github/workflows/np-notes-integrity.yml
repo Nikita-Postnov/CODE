@@ -75,6 +75,34 @@ jobs:
             $errors | Format-List | Out-String | Write-Host
             throw "Preview script syntax is invalid"
           }
+      - name: Reopen existing isolated preview without touching test notes
+        shell: pwsh
+        run: |
+          $commit = 'ab12345678901234567890123456789012345678'
+          $root = Join-Path $env:RUNNER_TEMP ('np-notes-preview-reopen-' + [guid]::NewGuid().ToString('N'))
+          $launcher = Join-Path $root 'Launcher'
+          $preview = Join-Path $env:TEMP ('NP_Notes_PR83_' + $commit.Substring(0,12))
+          try {
+            New-Item -ItemType Directory -Path $launcher -Force | Out-Null
+            New-Item -ItemType File -Path (Join-Path $launcher 'Choice.pyw') | Out-Null
+            New-Item -ItemType Directory -Path (Join-Path $preview 'Data') -Force | Out-Null
+            New-Item -ItemType Directory -Path (Join-Path $preview 'noteapp\app') -Force | Out-Null
+            New-Item -ItemType File -Path (Join-Path $preview 'notes_app.py') | Out-Null
+            New-Item -ItemType File -Path (Join-Path $preview 'noteapp\app\__init__.py') | Out-Null
+            Set-Content -LiteralPath (Join-Path $preview 'PREVIEW_ONLY.txt') -Value "NP Notes isolated preview of $commit"
+            $testNote = Join-Path $preview 'Data\note-test.json'
+            Set-Content -LiteralPath $testNote -Value '{"test":"preserve"}'
+            $before = (Get-FileHash -LiteralPath $testNote -Algorithm SHA256).Hash
+            $output = & './tools/preview_np_notes_pr83.ps1' -LauncherRoot $launcher -CommitSha $commit
+            if (-not ($output -match 'PREVIEW_REUSED=')) { throw 'Existing preview was not reused' }
+            if ((Get-FileHash -LiteralPath $testNote -Algorithm SHA256).Hash -ne $before) {
+              throw 'Existing isolated note was changed'
+            }
+          }
+          finally {
+            if (Test-Path $root) { Remove-Item $root -Recurse -Force }
+            if (Test-Path $preview) { Remove-Item $preview -Recurse -Force }
+          }
       - name: Validate backup script syntax and verify backup on fake Data
         shell: pwsh
         run: |
