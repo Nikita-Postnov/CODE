@@ -26,6 +26,9 @@ from PySide6.QtGui import (
     QTextCharFormat,
     QTextCursor,
     QTextListFormat,
+    QTextLength,
+    QTextTableFormat,
+    QTextTableCellFormat,
 )
 from PySide6.QtWidgets import (
     QColorDialog,
@@ -451,22 +454,42 @@ class EditorMixin:
         self.text_edit.setFocus()
 
     def insert_horizontal_line(self) -> None:
-        """Insert a full-width Qt rich-text horizontal rule as its own block.
+        """Insert a visible, full-width divider independent of Qt's HR parser.
 
-        Qt's QTextDocument HTML subset supports <hr> and its width/size
-        attributes, but not all browser CSS border/margin declarations.
-        Keep the rule separate from adjacent paragraphs so it survives
-        serialization and reopening instead of becoming a tiny mark.
+        QTextEdit inherits horizontal-rule properties across paragraphs, and
+        the browser-style <hr> can be invisible with an application stylesheet.
+        A borderless, one-cell, shaded Qt table survives toHtml()/setHtml()
+        and scales when the editor width changes. No user text is deleted.
         """
         cursor = self.text_edit.textCursor()
         cursor.beginEditBlock()
         try:
-            # Never replace the user's selected text with a separator.
             if cursor.hasSelection():
                 cursor.setPosition(cursor.selectionEnd())
-            if cursor.positionInBlock() != 0:
+            if cursor.positionInBlock():
                 cursor.insertBlock()
-            cursor.insertHtml('<hr width="100%" size="2" />')
+            table_format = QTextTableFormat()
+            table_format.setWidth(QTextLength(QTextLength.PercentageLength, 100))
+            table_format.setBorder(0)
+            table_format.setCellPadding(0)
+            table_format.setCellSpacing(0)
+            table = cursor.insertTable(1, 1, table_format)
+            cell = table.cellAt(0, 0)
+            cell_format = cell.format().toTableCellFormat()
+            cell_format.setBackground(QColor("#989898"))
+            cell.setFormat(cell_format)
+            rule_cursor = cell.firstCursorPosition()
+            tiny = QTextCharFormat()
+            tiny.setFontPointSize(1)
+            rule_cursor.insertText("\u00a0", tiny)
+
+            # Exit the divider so typing afterwards does not enter the cell.
+            cursor = table.lastCursorPosition()
+            if not cursor.movePosition(QTextCursor.NextBlock):
+                cursor.movePosition(QTextCursor.End)
+            if cursor.currentTable() is not None:
+                cursor.movePosition(QTextCursor.End)
+                cursor.insertBlock()
         finally:
             cursor.endEditBlock()
         self.text_edit.setTextCursor(cursor)
