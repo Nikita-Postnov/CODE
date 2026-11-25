@@ -210,7 +210,15 @@ class EncryptedOutboundService:
 
 
 def configure_from_environment(state_directory: Path, notes_root: Path):
-    """No partial activation; environment variables contain no default secrets."""
+    """DPAPI protected configuration first; legacy environment only fallback."""
+    from .sync_credentials import load_dpapi_credentials
+    config = load_dpapi_credentials(state_directory)
+    if config:
+        return EncryptedOutboundService(
+            state_directory, notes_root, config["owner"], config["repository"],
+            config["token"], config["passphrase"],
+            branch=config.get("branch", "main"),
+        )
     owner = os.environ.get("NP_NOTES_SYNC_OWNER")
     repo = os.environ.get("NP_NOTES_SYNC_REPOSITORY")
     token = os.environ.get("NP_NOTES_SYNC_TOKEN")
