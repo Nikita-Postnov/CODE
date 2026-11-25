@@ -268,6 +268,77 @@ class EditorMixin:
         self.font_size_spin.blockSignals(True)
         self.font_size_spin.setValue(size)
         self.font_size_spin.blockSignals(False)
+        self._update_paragraph_spacing_controls()
+
+    # QTextBlockFormat supports paragraph-level spacing in native Qt HTML.
+    # Keep these settings in each affected block instead of QSettings, so
+    # they survive note save/reopen and encrypted cross-device sync.
+    LINE_SPACING_CHOICES = (1.0, 1.15, 1.5, 2.0)
+    PARAGRAPH_AFTER_CHOICES = (0, 4, 8, 12)
+
+    def set_paragraph_line_spacing(self, multiplier: float) -> None:
+        value = float(multiplier)
+        if value not in self.LINE_SPACING_CHOICES:
+            raise ValueError("Unsupported line spacing")
+        cursor = self.text_edit.textCursor()
+        delta = QTextBlockFormat()
+        delta.setLineHeight(round(value * 100), QTextBlockFormat.ProportionalHeight)
+        cursor.beginEditBlock()
+        try:
+            cursor.mergeBlockFormat(delta)
+        finally:
+            cursor.endEditBlock()
+        self.text_edit.setTextCursor(cursor)
+        self._set_unsaved(True)
+        self.update_font_controls()
+
+    def set_paragraph_after_spacing(self, points: int) -> None:
+        value = int(points)
+        if value not in self.PARAGRAPH_AFTER_CHOICES:
+            raise ValueError("Unsupported paragraph spacing")
+        cursor = self.text_edit.textCursor()
+        delta = QTextBlockFormat()
+        # QTextDocument/Qt uses real-valued layout units; convert pt to px
+        # at the document's current DPI for correct visual measurements.
+        dpi = self.text_edit.logicalDpiY()
+        delta.setBottomMargin(float(value) * dpi / 72.0)
+        cursor.beginEditBlock()
+        try:
+            cursor.mergeBlockFormat(delta)
+        finally:
+            cursor.endEditBlock()
+        self.text_edit.setTextCursor(cursor)
+        self._set_unsaved(True)
+        self.update_font_controls()
+
+    def _update_paragraph_spacing_controls(self) -> None:
+        cursor = self.text_edit.textCursor()
+        fmt = cursor.blockFormat()
+        line_type = fmt.lineHeightType()
+        if line_type == QTextBlockFormat.ProportionalHeight:
+            line_ratio = fmt.lineHeight() / 100.0
+        else:
+            line_ratio = 1.0
+        if hasattr(self, "line_spacing_combo"):
+            combo = self.line_spacing_combo
+            index = min(
+                range(combo.count()),
+                key=lambda i: abs(float(combo.itemData(i)) - line_ratio),
+            )
+            combo.blockSignals(True)
+            combo.setCurrentIndex(index)
+            combo.blockSignals(False)
+        if hasattr(self, "paragraph_after_combo"):
+            combo = self.paragraph_after_combo
+            dpi = max(1, self.text_edit.logicalDpiY())
+            margin_pt = fmt.bottomMargin() * 72.0 / dpi
+            index = min(
+                range(combo.count()),
+                key=lambda i: abs(float(combo.itemData(i)) - margin_pt),
+            )
+            combo.blockSignals(True)
+            combo.setCurrentIndex(index)
+            combo.blockSignals(False)
 
     def get_current_formatting(self):
         cursor = self.text_edit.textCursor()
