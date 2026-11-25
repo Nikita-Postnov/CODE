@@ -141,6 +141,30 @@ class DesktopWidgetTests(unittest.TestCase):
 
 
 class DesktopWidgetSettingsTests(unittest.TestCase):
+    def test_opacity_setting_is_clamped_and_saved(self):
+        source = (ROOT / "widgets" / "desktop_notes.py").read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        cls = next(node for node in tree.body
+                   if isinstance(node, ast.ClassDef) and node.name == "DesktopNotesWidget")
+        method = next(node for node in cls.body
+                      if isinstance(node, ast.FunctionDef) and node.name == "set_widget_opacity")
+        module = ast.Module(body=[method], type_ignores=[])
+        ast.fix_missing_locations(module)
+        ns = {}
+        exec(compile(module, "<opacity>", "exec"), ns)
+        class Fake:
+            def setWindowOpacity(self, value):
+                self.opacity = value
+            def _save_pos(self):
+                self.saved = True
+        obj = Fake()
+        ns["set_widget_opacity"](obj, 0.1)
+        self.assertEqual(obj.opacity, 0.6)
+        ns["set_widget_opacity"](obj, 3.0)
+        self.assertEqual(obj.opacity, 1.0)
+        self.assertTrue(obj.saved)
+        self.assertIn('s.setValue("opacity",', source)
+
     def test_topmost_setting_is_persisted_with_default_enabled(self):
         code = (ROOT / "widgets" / "desktop_notes.py").read_text(encoding="utf-8")
         self.assertIn('s.value("always_on_top", "true")', code)
