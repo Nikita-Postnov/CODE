@@ -61,6 +61,9 @@ class RecoveryMixin:
         """Ask before applying old unsaved HTML. Rejecting removes only the draft."""
         if os.name != "nt" or not getattr(self, "notes", None):
             return
+        if getattr(self, "_recovery_offered_once", False):
+            return
+        self._recovery_offered_once = True
         lookup = {note.uuid: note for note in self.notes}
         try:
             candidates = list_drafts(RECOVERY_DIR)
