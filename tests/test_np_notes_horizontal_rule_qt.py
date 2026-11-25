@@ -144,5 +144,47 @@ class HorizontalRuleTest(unittest.TestCase):
         self.assertIn("after", html)
         self.assertEqual(html.count("<table"), 1)
 
+
+    def test_legacy_isolated_dot_is_replaced_only_when_user_targets_it(self):
+        editor = _Editor()
+        editor.text_edit.setPlainText("Above\n.\nBelow\n.")
+        cursor = editor.text_edit.textCursor()
+        cursor.setPosition(len("Above\n"))
+        editor.text_edit.setTextCursor(cursor)
+        editor.insert_horizontal_line()
+        html = editor.text_edit.toHtml().lower()
+        self.assertEqual(html.count("<table"), 1)
+        self.assertIn("above", html)
+        self.assertIn("below", html)
+        # The other standalone dot is untouched.
+        self.assertTrue(editor.text_edit.toPlainText().rstrip().endswith("."))
+        self.assertNotIn("above\n.\nbelow", editor.text_edit.toPlainText().lower())
+
+    def test_nonisolated_dots_and_no_implicit_migration(self):
+        editor = _Editor()
+        editor.text_edit.setPlainText("One. Two\n.\nThree")
+        cursor = editor.text_edit.textCursor()
+        cursor.setPosition(2)
+        editor.text_edit.setTextCursor(cursor)
+        editor.insert_horizontal_line()
+        html = editor.text_edit.toHtml().lower()
+        self.assertEqual(html.count("<table"), 1)
+        self.assertIn("one. two", html)
+        self.assertIn("<p>.</p>", html.replace(' style=" margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;"', ''))
+
+    def test_legacy_dot_replacement_survives_save_and_reopen(self):
+        editor = _Editor()
+        editor.text_edit.setPlainText("Before\n.\nAfter")
+        cursor = editor.text_edit.textCursor()
+        cursor.setPosition(len("Before\n"))
+        editor.text_edit.setTextCursor(cursor)
+        editor.insert_horizontal_line()
+        html = editor.text_edit.toHtml()
+        reopened = QTextEdit()
+        reopened.setHtml(html)
+        self.assertIn("<table", reopened.toHtml().lower())
+        self.assertIn("before", reopened.toHtml().lower())
+        self.assertIn("after", reopened.toHtml().lower())
+
 if __name__ == "__main__":
     unittest.main()
