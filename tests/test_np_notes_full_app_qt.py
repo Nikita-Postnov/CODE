@@ -12,7 +12,7 @@ from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QSettings
+from PySide6.QtCore import QSettings, QCoreApplication, QEvent
 from PySide6.QtWidgets import QApplication
 
 APP_ROOT = Path(__file__).resolve().parents[1] / "Other_dev"
@@ -47,9 +47,29 @@ class FullAppFirstRunSmoke(unittest.TestCase):
         # isolated Python process exits. GitHub Actions removes temporary Data
         # in the following step, after Windows releases the file handles.
 
+    def tearDown(self):
+        window = getattr(self, "window", None)
+        if window is None:
+            return
+        loader = getattr(window, "_background_loader", None)
+        if loader is not None and loader.isRunning():
+            loader.wait(5000)
+        for attr in ("autosave_timer", "_autosave_timer",
+                     "_recovery_snapshot_timer", "reminder_timer",
+                     "_timer", "_save_debouncer", "_layout_counter_timer"):
+            timer = getattr(window, attr, None)
+            if timer is not None:
+                timer.stop()
+        window._unregister_global_hotkeys()
+        window.hide()
+        window.deleteLater()
+        self.app.processEvents()
+        QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+        self.app.processEvents()
+
     def test_empty_data_then_create_first_note(self):
         window = self.NotesApp()
-        self.addCleanup(window.hide)
+        self.window = window
         window.show()
         self.app.processEvents()
         self.assertTrue(window.central_widget.isVisible())
