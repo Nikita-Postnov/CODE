@@ -93,8 +93,12 @@ jobs:
             $testNote = Join-Path $preview 'Data\note-test.json'
             Set-Content -LiteralPath $testNote -Value '{"test":"preserve"}'
             $before = (Get-FileHash -LiteralPath $testNote -Algorithm SHA256).Hash
-            $output = & './tools/preview_np_notes_pr83.ps1' -LauncherRoot $launcher -CommitSha $commit
-            if (-not (($output | Out-String) -match 'PREVIEW_REUSED=')) { throw 'Existing preview was not reused' }
+            # Preview uses Write-Host; validate its exit status and the
+            # unchanged files instead of capturing success text as pipeline output.
+            & './tools/preview_np_notes_pr83.ps1' -LauncherRoot $launcher -CommitSha $commit
+            if (-not (Test-Path -LiteralPath (Join-Path $preview 'PREVIEW_ONLY.txt'))) {
+              throw 'Existing preview marker disappeared'
+            }
             if ((Get-FileHash -LiteralPath $testNote -Algorithm SHA256).Hash -ne $before) {
               throw 'Existing isolated note was changed'
             }
