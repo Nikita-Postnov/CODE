@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "Other_dev"))
 from noteapp.github_sync import (
     SyncEngine, SyncError, Offline, GitHubStore, atomic_bytes,
     decrypt_snapshot, encrypt_snapshot, enabled_config, snapshot_from_folder,
-    unpack_snapshot, run_configured_sync,
+    unpack_snapshot, run_configured_sync, portable_note_folder,
 )
 
 PASSWORD = "test-passphrase-at-least-sixteen-characters"
@@ -74,7 +74,8 @@ class GithubSyncTests(unittest.TestCase):
         folder = device / "Notes" / ("Folder_" + self.note_uuid)
         folder.mkdir(parents=True, exist_ok=True)
         note = {"uuid": self.note_uuid, "title": title, "content": content,
-                "password_manager": secret, "password_manager_visible": True}
+                "password_manager": secret, "password_manager_visible": True,
+                "timestamp": "2026-11-25T10:00:00"}
         (folder / "note.json").write_text(json.dumps(note), encoding="utf-8")
         if attachment:
             (folder / "image.png").write_bytes(bytes([0x89, 80, 78, 71, 13, 10]) + b"SYNTHETIC")
@@ -125,7 +126,7 @@ class GithubSyncTests(unittest.TestCase):
         self.assertEqual(self.engine(self.device_a).run().uploaded, 1)
         outcome = self.engine(self.device_b).run()
         self.assertEqual(outcome.downloaded, 1)
-        folder = self.device_b / "Notes" / ("Sync_" + self.note_uuid)
+        folder = self.device_b / "Notes" / portable_note_folder({"uuid": self.note_uuid, "title": "Example", "timestamp": "2026-11-25T10:00:00"})
         self.assertTrue((folder / "image.png").exists())
         note = json.loads((folder / "note.json").read_text(encoding="utf-8"))
         self.assertEqual(note["content"], "hello")
@@ -141,13 +142,13 @@ class GithubSyncTests(unittest.TestCase):
         self.engine(self.device_a).run()
         result = self.engine(self.device_b).run()
         self.assertEqual(result.downloaded, 1)
-        self.assertEqual(json.loads((self.device_b / "Notes" / ("Sync_" + self.note_uuid) / "note.json").read_text())["content"], "remote-change")
+        self.assertEqual(json.loads((self.device_b / "Notes" / portable_note_folder({"uuid": self.note_uuid, "title": "Example", "timestamp": "2026-11-25T10:00:00"}) / "note.json").read_text())["content"], "remote-change")
 
     def test_concurrent_edits_preserve_both_and_record_conflict(self):
         a = self.note(self.device_a)
         self.engine(self.device_a).run()
         self.engine(self.device_b).run()
-        b = self.device_b / "Notes" / ("Sync_" + self.note_uuid)
+        b = self.device_b / "Notes" / portable_note_folder({"uuid": self.note_uuid, "title": "Example", "timestamp": "2026-11-25T10:00:00"})
         for folder, value in ((a, "version-A"), (b, "version-B")):
             note = json.loads((folder / "note.json").read_text())
             note["content"] = value
