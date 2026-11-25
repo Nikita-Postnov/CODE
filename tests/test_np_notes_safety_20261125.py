@@ -100,5 +100,54 @@ class DataCompatibilityTests(unittest.TestCase):
         self.assertIn("if selected in modes:", text)
 
 
+
+class DesktopWidgetTests(unittest.TestCase):
+    def test_copy_widget_note_without_decoration(self):
+        source = (ROOT / "widgets" / "desktop_notes.py").read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        cls = next(n for n in tree.body
+                   if isinstance(n, ast.ClassDef) and n.name == "DesktopNotesWidget")
+        method = next(n for n in cls.body
+                      if isinstance(n, ast.FunctionDef) and n.name == "copy_note_text")
+        # Извлекаем только метод: тест не требует Qt и не показывает GUI.
+        module = ast.Module(body=[method], type_ignores=[])
+        ast.fix_missing_locations(module)
+        class Clipboard:
+            value = None
+            def setText(self, value):
+                self.value = value
+        clipboard = Clipboard()
+        class QApplication:
+            @staticmethod
+            def clipboard():
+                return clipboard
+        namespace = {"QApplication": QApplication, "QListWidgetItem": object}
+        exec(compile(module, "<widget-copy>", "exec"), namespace)
+        copy_text = namespace["copy_note_text"]
+        class Item:
+            def __init__(self, text, src):
+                self.value, self.src = text, src
+            def text(self):
+                return self.value
+            def data(self, role):
+                return self.src
+        class Qt:
+            UserRole = 1
+        namespace["Qt"] = Qt
+        copy_text(None, Item("📝 Important", "app"))
+        self.assertEqual(clipboard.value, "Important")
+        copy_text(None, Item("📌 Personal", "widget"))
+        self.assertEqual(clipboard.value, "Personal")
+
+
+class SearchPerformanceTests(unittest.TestCase):
+    def test_global_search_short_circuits_metadata(self):
+        code = (ROOT / "app" / "search.py").read_text(encoding="utf-8")
+        self.assertIn('mode == "Везде" and (title_match or reminder_match', code)
+        self.assertIn("return matches_tag_filter", code)
+
+
+
+
 if __name__ == "__main__":
     unittest.main()
