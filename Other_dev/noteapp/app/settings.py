@@ -231,6 +231,15 @@ class SettingsMixin:
             detail = f" · Конфликтов: {conflicts}" if conflicts else ""
             if incoming:
                 detail += f" · Ожидают применения: {incoming}"
+            pending_deletes_root = service.state_directory / "pending_remote_deletions"
+            remote_deletions = (
+                sum(1 for _ in pending_deletes_root.glob("*.delete"))
+                if pending_deletes_root.is_dir() else 0
+            )
+            if remote_deletions:
+                detail += f" · Ожидают переноса в корзину: {remote_deletions}"
+                if service.worker.state == "synchronized":
+                    states["synchronized"] = "Ожидание безопасного переноса в корзину"
             failure = getattr(service.worker, "last_failure", None)
             if failure and service.worker.state == "retry_pending":
                 detail += f" · Причина: {failure}"
