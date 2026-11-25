@@ -71,6 +71,25 @@ class OfflineSyncTests(unittest.TestCase):
             self.queue.mark_changed("fake-1")
         self.assertEqual(self.queue.pending(), [("fake-1", 5)])
 
+    def test_conflict_does_not_block_other_notes_or_receives(self):
+        self.queue.mark_changed("conflicted")
+        self.queue.mark_changed("healthy")
+        sent = []
+        received = []
+        def sender(note_id):
+            sent.append(note_id)
+            if note_id == "conflicted":
+                raise RuntimeError("simulated concurrent edit")
+            return True
+        worker = module.OfflineSyncWorker(
+            self.queue, lambda: True, sender,
+            receive_encrypted=lambda: received.append(True) or True,
+        )
+        self.assertFalse(worker.sync_once())
+        self.assertEqual(self.queue.pending(), [("conflicted", 1)])
+        self.assertIn("healthy", sent)
+        self.assertEqual(received, [True])
+
     def test_invalid_identifiers(self):
         for item in ("", "../etc", "folder/name", "folder\\name", ".", ".."):
             with self.subTest(item=item), self.assertRaises(ValueError):
