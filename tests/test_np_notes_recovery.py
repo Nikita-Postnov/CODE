@@ -82,6 +82,35 @@ class DraftSecurityTests(unittest.TestCase):
         ns["save_note_to_file"](fake, target)
         self.assertEqual(fake.cleared, [])
 
+    def test_edit_event_schedules_protected_snapshot(self):
+        source = FILE.parent / "app" / "recovery.py"
+        tree = ast.parse(source.read_text(encoding="utf-8"))
+        cls = next(node for node in tree.body if isinstance(node, ast.ClassDef)
+                   and node.name == "RecoveryMixin")
+        method = next(node for node in cls.body if isinstance(node, ast.FunctionDef)
+                      and node.name == "_schedule_recovery_snapshot")
+        module = ast.Module(body=[method], type_ignores=[])
+        ast.fix_missing_locations(module)
+        from types import SimpleNamespace
+        namespace = {"os": SimpleNamespace(name="nt")}
+        exec(compile(module, "<snapshot-event>", "exec"), namespace)
+        class Timer:
+            delay = None
+            def start(self, ms):
+                self.delay = ms
+        class Note:
+            uuid = "note-test"
+        class Fake:
+            current_note = Note()
+            _is_switching_note = False
+            _recovery_snapshot_timer = Timer()
+            def _setup_recovery_snapshot_timer(self):
+                pass
+        obj = Fake()
+        namespace["_schedule_recovery_snapshot"](obj)
+        self.assertEqual(obj._recovery_snapshot_note_uuid, "note-test")
+        self.assertEqual(obj._recovery_snapshot_timer.delay, 150)
+
     def test_snapshot_refuses_mismatched_note_uuid(self):
         file = FILE.parent / "app" / "recovery.py"
         tree = ast.parse(file.read_text(encoding="utf-8"))
