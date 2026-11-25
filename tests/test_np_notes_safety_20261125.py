@@ -273,6 +273,52 @@ class ExitSafetyTests(unittest.TestCase):
         self.assertIn("search_focus_shortcut.activated.connect(self.search_bar.setFocus)", source)
 
 
+class CloseWindowSafetyTests(unittest.TestCase):
+    def test_failed_save_keeps_window_open_instead_of_hiding_in_tray(self):
+        source = (ROOT / "app" / "__init__.py").read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        cls = next(node for node in tree.body
+                   if isinstance(node, ast.ClassDef) and node.name == "NotesApp")
+        method = next(node for node in cls.body
+                      if isinstance(node, ast.FunctionDef) and node.name == "closeEvent")
+        module = ast.Module(body=[method], type_ignores=[])
+        ast.fix_missing_locations(module)
+        warnings = []
+        class Box:
+            @staticmethod
+            def warning(*args):
+                warnings.append(args)
+        namespace = {
+            "QCloseEvent": object,
+            "QMessageBox": Box,
+            "logging": type("Log", (), {"exception": staticmethod(lambda *a: None)}),
+        }
+        exec(compile(module, "<close-safety>", "exec"), namespace)
+        class Event:
+            ignored = False
+            def ignore(self):
+                self.ignored = True
+        class Fake:
+            hidden = False
+            dirty = False
+            def save_settings(self):
+                pass
+            def save_note_quiet(self, *, force):
+                raise OSError("simulated disk full")
+            def save_all_notes_to_disk(self):
+                raise AssertionError("No second save after error")
+            def _set_unsaved(self, flag):
+                self.dirty = flag
+            def hide(self):
+                self.hidden = True
+        owner = Fake()
+        evt = Event()
+        namespace["closeEvent"](owner, evt)
+        self.assertTrue(evt.ignored)
+        self.assertTrue(owner.dirty)
+        self.assertFalse(owner.hidden)
+        self.assertEqual(len(warnings), 1)
+
 class EmptyFirstRunTests(unittest.TestCase):
     def test_initial_window_has_visible_create_note_action(self):
         source = (ROOT / "app" / "__init__.py").read_text(encoding="utf-8")
