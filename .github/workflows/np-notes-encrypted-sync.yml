@@ -1,0 +1,44 @@
+name: NP Notes encrypted sync safety
+
+on:
+  push:
+    branches:
+      - feat/np-notes-encrypted-github-sync-20261125
+    paths:
+      - "Other_dev/noteapp/github_sync.py"
+      - "Other_dev/noteapp/sync_secrets.py"
+      - "tools/configure_np_notes_sync.py"
+      - "docs/np-notes-encrypted-github-sync.md"
+      - "Other_dev/noteapp/app/sync.py"
+      - "Other_dev/noteapp/app/__init__.py"
+      - "tests/test_np_notes_github_sync.py"
+      - ".github/workflows/np-notes-encrypted-sync.yml"
+  pull_request:
+    paths:
+      - "Other_dev/noteapp/github_sync.py"
+      - "Other_dev/noteapp/sync_secrets.py"
+      - "tools/configure_np_notes_sync.py"
+      - "docs/np-notes-encrypted-github-sync.md"
+      - "Other_dev/noteapp/app/sync.py"
+      - "Other_dev/noteapp/app/__init__.py"
+      - "tests/test_np_notes_github_sync.py"
+      - ".github/workflows/np-notes-encrypted-sync.yml"
+
+jobs:
+  synthetic-offline:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install encryption dependency (test only)
+        run: python -m pip install "cryptography>=43,<47"
+      - name: Compile sync modules
+        run: python -m compileall -q Other_dev/noteapp/github_sync.py Other_dev/noteapp/app/sync.py Other_dev/noteapp/sync_secrets.py tools/configure_np_notes_sync.py
+      - name: Test encrypted sync on isolated synthetic files
+        run: python -m unittest -v tests.test_np_notes_github_sync
