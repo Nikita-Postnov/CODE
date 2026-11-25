@@ -119,6 +119,7 @@ from .plugins import PluginsMixin
 from .reminders import RemindersMixin
 from .tray import TrayMixin
 from .autosave import AutosaveMixin
+from .recovery import RecoveryMixin
 from .templates import TemplatesMixin
 from .settings import SettingsMixin
 from .search import SearchMixin
@@ -151,7 +152,7 @@ def init_app_environment() -> None:
     logging.info("=== APP START ===")
 
 
-class NotesApp(NotePersistenceMixin, PluginsMixin, RemindersMixin, TrayMixin, AutosaveMixin, TemplatesMixin, SettingsMixin, SearchMixin, DropdownsMixin, ImagesMixin, EditorMixin, LayoutMixin, QMainWindow):
+class NotesApp(NotePersistenceMixin, PluginsMixin, RemindersMixin, TrayMixin, AutosaveMixin, RecoveryMixin, TemplatesMixin, SettingsMixin, SearchMixin, DropdownsMixin, ImagesMixin, EditorMixin, LayoutMixin, QMainWindow):
     TRASH_DIR: Path = NOTES_DIR / "Trash"
     window_hidden = Signal()
 
@@ -185,6 +186,7 @@ class NotesApp(NotePersistenceMixin, PluginsMixin, RemindersMixin, TrayMixin, Au
         self._last_selection: tuple[int, int] | None = None
         self.init_ui()
         self.init_all_components()
+        self._setup_recovery_snapshot_timer()
         self.attachments_watcher = None
         self._attachments_snapshot: dict[str, set[str]] = {}
         QTimer.singleShot(200, self.load_plugins)
@@ -300,6 +302,7 @@ class NotesApp(NotePersistenceMixin, PluginsMixin, RemindersMixin, TrayMixin, Au
         if not hasattr(self, "reminder_timer") or self.reminder_timer is None:
             self.setup_reminder_timer()
         QTimer.singleShot(0, self.check_reminders)
+        QTimer.singleShot(300, self._offer_recovery_snapshots)
 
 
     def _install_dialog_probe(self) -> None:
@@ -330,6 +333,7 @@ class NotesApp(NotePersistenceMixin, PluginsMixin, RemindersMixin, TrayMixin, Au
 
         self._edit_session_note_uuid = self.current_note.uuid
         self.update_current_note_content()
+        self._schedule_recovery_snapshot()
 
         if getattr(self, "autosave_enabled", False):
             try:
