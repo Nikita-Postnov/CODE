@@ -187,6 +187,8 @@ def unpack_snapshot(payload: bytes, note_uuid: str) -> tuple[dict, dict[str, byt
         members = archive.infolist()
         if len(members) > MAX_NOTE_FILES + 1:
             raise SyncError("Too many remote entries")
+        if sum(item.file_size for item in members) > MAX_SNAPSHOT:
+            raise SyncError("Uncompressed remote data exceeds safety limit")
         for item in members:
             name = item.filename
             if name != "note.json" and not name.startswith("attachments/"):
