@@ -139,8 +139,9 @@ class GithubSyncTests(unittest.TestCase):
         note["content"] = '<a href="' + (original / "image.png").resolve().as_uri() + '">File</a>'
         note_path.write_text(json.dumps(note))
         local_snapshot = snapshot_from_folder(original)[1]
-        self.assertIn(b"npnotes-attachment:", local_snapshot)
-        self.assertNotIn(str(self.device_a).encode(), local_snapshot)
+        portable_note, _ = unpack_snapshot(local_snapshot, self.note_uuid)
+        self.assertIn("npnotes-attachment:", portable_note["content"])
+        self.assertNotIn(str(self.device_a), portable_note["content"])
         self.assertEqual(self.engine(self.device_a).run().uploaded, 1)
         self.assertEqual(self.engine(self.device_b).run().downloaded, 1)
         target = self.device_b / "Notes" / portable_note_folder({
