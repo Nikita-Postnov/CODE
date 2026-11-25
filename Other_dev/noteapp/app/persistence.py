@@ -316,7 +316,10 @@ class NotePersistenceMixin:
         self.save_note_to_specific_folder(note, NOTES_DIR)
         # Удаляем черновик только ПОСЛЕ успешной записи основной заметки.
         clear = getattr(self, "_clear_recovery_snapshot", None)
-        if callable(clear):
+        active = getattr(self, "current_note", None)
+        # Saving another note (e.g. after a reminder) must not erase its
+        # unsaved crash draft from a previous session or another process.
+        if callable(clear) and active is not None and active.uuid == note.uuid:
             clear(note.uuid)
 
     def save_all_notes_to_disk(self) -> None:
