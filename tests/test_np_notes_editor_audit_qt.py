@@ -399,9 +399,9 @@ class EditorControlsAudit(unittest.TestCase):
 
     def test_bullet_numbered_and_checklist_enter_continuation(self):
         for marker, callback, expected in (
-            ("bullet", "insert_bullet_list", "• Item\\n• "),
-            ("number", "insert_numbered_list", "1. Item\\n2. "),
-            ("checklist", "insert_checkbox", "☐ Item\\n☐ "),
+            ("bullet", "insert_bullet_list", "• Item\n• "),
+            ("number", "insert_numbered_list", "1. Item\n2. "),
+            ("checklist", "insert_checkbox", "☐ Item\n☐ "),
         ):
             with self.subTest(marker=marker):
                 host = self.new_host("")
