@@ -115,6 +115,40 @@ class ServiceTests(unittest.TestCase):
         conflicts = list((second_root / "state" / "remote_conflicts").rglob("*.enc"))
         self.assertEqual(len(conflicts), 1)
 
+    def test_conflict_can_be_restored_as_non_destructive_copy(self):
+        from noteapp.incoming_sync import restore_conflict_as_copy
+        self.service._send(self.note_id)
+        second_root = Path(self.temp.name) / "conflict_device"
+        second_notes = second_root / "Notes"
+        second_notes.mkdir(parents=True)
+        device_b = EncryptedOutboundService(
+            second_root / "state", second_notes, "fake", "fake",
+            "fake-token", "synthetic long secret phrase",
+        )
+        device_b.transport = self.remote
+        self.assertTrue(device_b._receive())
+        originals = list(second_notes.glob("*/note.json"))
+        self.assertEqual(len(originals), 1)
+
+        self._save("edited remotely on device A")
+        self.service._send(self.note_id)
+        self.assertTrue(device_b._receive())
+        conflicts = list((second_root / "state" / "remote_conflicts").rglob("*.enc"))
+        self.assertEqual(len(conflicts), 1)
+        restored = restore_conflict_as_copy(
+            second_notes, second_root / "state", self.note_id,
+            conflicts[0].stem, "synthetic long secret phrase"
+        )
+        self.assertTrue(restored.is_dir())
+        copied = json.loads((restored / "note.json").read_text(encoding="utf-8"))
+        original = json.loads(originals[0].read_text(encoding="utf-8"))
+        self.assertEqual(copied["content"], "edited remotely on device A")
+        self.assertNotEqual(copied["uuid"], self.note_id)
+        self.assertEqual(original["content"], "v1")
+        self.assertEqual(original["uuid"], self.note_id)
+        self.assertTrue(conflicts[0].is_file())
+        self.assertEqual(self.remote.writes, 2)
+
     def test_does_not_read_sibling_data(self):
         outside = Path(self.temp.name) / "OtherApp"
         outside.mkdir()
