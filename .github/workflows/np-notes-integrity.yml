@@ -123,6 +123,8 @@ jobs:
       - name: Verify activation Python import under Windows PowerShell 5.1
         shell: pwsh
         run: |
+          python -m pip install "cryptography>=42,<47"
+          if ($LASTEXITCODE -ne 0) { throw 'Encryption dependency install failed' }
           $result = & powershell.exe -NoProfile -ExecutionPolicy Bypass -Command 'python -c "import cryptography"; if ($LASTEXITCODE -ne 0) { exit 1 }'
           if ($LASTEXITCODE -ne 0) { throw 'Windows PowerShell 5.1 python import failed' }
           Write-Output 'ACTIVATION_PYTHON_IMPORT=PASS'
