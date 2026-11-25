@@ -119,6 +119,73 @@ class DraftSecurityTests(unittest.TestCase):
         self.assertEqual(deleted, [self.note_uuid])
         self.assertEqual(note.content, "Saved")
 
+    @unittest.skipUnless(os.name == "nt", "Recovery prompt runs on Windows")
+    def test_recovery_acceptance_saves_only_selected_existing_note(self):
+        import logging
+        from types import SimpleNamespace
+        source = FILE.parent / "app" / "recovery.py"
+        tree = ast.parse(source.read_text(encoding="utf-8"))
+        cls = next(node for node in tree.body
+                   if isinstance(node, ast.ClassDef) and node.name == "RecoveryMixin")
+        method = next(node for node in cls.body
+                      if isinstance(node, ast.FunctionDef) and node.name == "_offer_recovery_snapshots")
+        module = ast.Module(body=[method], type_ignores=[])
+        ast.fix_missing_locations(module)
+        note = SimpleNamespace(uuid=self.note_uuid, title="Example", content="Saved")
+        removed = []
+        class MessageBox:
+            Yes, No, Cancel = 1, 2, 4
+            @classmethod
+            def question(cls, *args):
+                return cls.Yes
+            @classmethod
+            def warning(cls, *args):
+                raise AssertionError("Unexpected recovery warning")
+        class Item:
+            def data(self, role):
+                return note
+        class List:
+            def count(self):
+                return 1
+            def item(self, index):
+                return Item()
+            def setCurrentItem(self, item):
+                pass
+        class Edit:
+            html = None
+            def setHtml(self, html):
+                self.html = html
+        ns = {
+            "os": os, "logging": logging, "RECOVERY_DIR": self.folder,
+            "list_drafts": lambda directory: [self.note_uuid],
+            "read_draft": lambda directory, uuid: {"html": "Unsaved"},
+            "QMessageBox": MessageBox,
+            "Qt": SimpleNamespace(UserRole=32),
+        }
+        exec(compile(module, "<recovery-dialog-accept>", "exec"), ns)
+        class Fake:
+            notes = [note]
+            current_note = None
+            notes_list = List()
+            text_edit = Edit()
+            def isWindowModified(self):
+                return False
+            def _set_unsaved(self, dirty):
+                self.dirty = dirty
+            def load_note(self, item):
+                self.current_note = note
+            def save_note_quiet(self, *, force):
+                if not force:
+                    raise AssertionError("Recovery save must be explicit")
+                note.content = self.text_edit.html
+            def _clear_recovery_snapshot(self, uuid):
+                removed.append(uuid)
+        fake = Fake()
+        ns["_offer_recovery_snapshots"](fake)
+        self.assertEqual(note.content, "Unsaved")
+        self.assertTrue(fake.dirty)
+        self.assertEqual(removed, [self.note_uuid])
+
     def test_missing_draft_returns_none(self):
         self.assertIsNone(REC.read_draft(self.folder, self.note_uuid))
         self.assertEqual(REC.list_drafts(self.folder), [])
