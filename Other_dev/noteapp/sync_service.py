@@ -210,7 +210,9 @@ class EncryptedOutboundService:
 
 
 def configure_from_environment(state_directory: Path, notes_root: Path):
-    """DPAPI protected configuration first; legacy environment only fallback."""
+    """Fail closed: credentials alone never enable real note transfer."""
+    if os.environ.get("NP_NOTES_SYNC_ENABLE") != "1":
+        return None
     from .sync_credentials import load_dpapi_credentials
     config = load_dpapi_credentials(state_directory)
     if config:
