@@ -7,7 +7,7 @@ from pathlib import Path
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication, QTextEdit, QWidget, QLabel
-from PySide6.QtGui import QTextCursor
+from PySide6.QtGui import QTextCursor, QTextDocument
 from PySide6.QtCore import QDateTime, Qt
 
 APP_DIR = Path(__file__).resolve().parents[1] / "Other_dev" / "noteapp" / "app"
@@ -185,6 +185,45 @@ class EditorQtSmokeTests(unittest.TestCase):
     def setUp(self):
         self.edit = QTextEdit()
         self.addCleanup(self.edit.close)
+
+    def test_checklist_works_with_notesapp_history_when_qt_undo_is_disabled(self):
+        from types import SimpleNamespace, MethodType
+        self.edit.setUndoRedoEnabled(False)
+        self.edit.setPlainText("☐ Задача")
+        cursor = self.edit.textCursor()
+        cursor.movePosition(QTextCursor.Start)
+        self.edit.setTextCursor(cursor)
+        note = SimpleNamespace(history=[], history_index=-1)
+        class Owner:
+            current_note = note
+            text_edit = self.edit
+            def update_history_list(self):
+                pass
+            def update_history_list_selection(self):
+                pass
+            def _set_html_preserve_view(self, html):
+                self.text_edit.setHtml(html)
+            def insert_checkbox(self):
+                raise AssertionError("Checkbox already exists")
+        owner = Owner()
+        source = (APP_DIR / "__init__.py").read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        cls = next(n for n in tree.body if isinstance(n, ast.ClassDef)
+                   and n.name == "NotesApp")
+        methods = [n for n in cls.body if isinstance(n, ast.FunctionDef)
+                   and n.name in {"record_state_for_undo", "undo"}]
+        namespace = {"QTextDocument": QTextDocument, "MAX_HISTORY": 50}
+        module = ast.Module(body=methods, type_ignores=[])
+        ast.fix_missing_locations(module)
+        exec(compile(module, "<notesapp-undo>", "exec"), namespace)
+        owner.record_state_for_undo = MethodType(namespace["record_state_for_undo"], owner)
+        owner.undo = MethodType(namespace["undo"], owner)
+        toggle = extract_editor_method("toggle_checkbox_at_cursor")
+        toggle(owner)
+        self.assertEqual(self.edit.toPlainText(), "☑ Задача")
+        self.assertEqual(len(note.history), 2)
+        owner.undo()
+        self.assertEqual(self.edit.toPlainText(), "☐ Задача")
 
     def test_checklist_toggle_and_undo(self):
         self.edit.setPlainText("☐ Проверить")
