@@ -115,28 +115,35 @@ class OfflineSyncWorker:
         self._thread: threading.Thread | None = None
 
     def sync_once(self):
-        if not self.online():
+        try:
+            available = self.online()
+        except Exception:
+            available = False
+        if not available:
             self.state = "waiting_for_network"
             return False
         self.state = "synchronizing"
-        try:
-            for item_id, revision in self.queue.pending():
+        failures = False
+        for item_id, revision in self.queue.pending():
+            try:
                 if not self.online():
                     self.state = "waiting_for_network"
                     return False
-                if self.send_encrypted(item_id) is not True:
-                    self.state = "retry_pending"
-                    return False
-                self.queue.acknowledge(item_id, revision)
-            if self.receive_encrypted is not None:
+                if self.send_encrypted(item_id) is True:
+                    self.queue.acknowledge(item_id, revision)
+                else:
+                    failures = True
+            except Exception:
+                # One bad note or conflict cannot block every other note.
+                failures = True
+        if self.receive_encrypted is not None:
+            try:
                 if self.receive_encrypted() is not True:
-                    self.state = "retry_pending"
-                    return False
-        except Exception:
-            self.state = "retry_pending"
-            return False
-        self.state = "synchronized"
-        return True
+                    failures = True
+            except Exception:
+                failures = True
+        self.state = "retry_pending" if failures else "synchronized"
+        return not failures
 
     def _run(self):
         while not self._stop.is_set():
