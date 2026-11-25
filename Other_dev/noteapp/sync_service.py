@@ -11,6 +11,9 @@ import hashlib
 import json
 import sqlite3
 import threading
+import os as _sync_os
+import shutil
+from uuid import uuid4
 from contextlib import contextmanager
 from pathlib import Path
 from uuid import UUID
@@ -36,6 +39,8 @@ class EncryptedOutboundService:
         self._db_path = self.state_directory / "remote_revisions.sqlite3"
         self._init_db()
         self.received_count = 0
+        # Deletions are durable, explicit user actions. Mere Trash moves are not
+        # GitHub deletions. Older clients must be upgraded before using this.
         self.worker = OfflineSyncWorker(
             self.queue, self._online, self._send, receive_encrypted=self._receive
         )
@@ -55,6 +60,10 @@ class EncryptedOutboundService:
                           (note_id TEXT PRIMARY KEY, blob_sha TEXT NOT NULL)""")
             db.execute("""CREATE TABLE IF NOT EXISTS local_content
                           (note_id TEXT PRIMARY KEY, content_sha256 TEXT NOT NULL)""")
+            db.execute("""CREATE TABLE IF NOT EXISTS deletions
+                          (note_id TEXT PRIMARY KEY,
+                           status TEXT NOT NULL CHECK(
+                             status IN ('prepared','pending','done','remote')))""")
 
     def _digest(self, note_id):
         with self._lock, self._connect() as db:
@@ -80,6 +89,197 @@ class EncryptedOutboundService:
             db.execute("""INSERT INTO remote_revisions(note_id,blob_sha) VALUES (?,?)
                          ON CONFLICT(note_id) DO UPDATE SET blob_sha=excluded.blob_sha""",
                        (note_id, sha))
+
+    def _deletion_status(self, note_id):
+        with self._lock, self._connect() as db:
+            row = db.execute("SELECT status FROM deletions WHERE note_id=?",
+                             (note_id,)).fetchone()
+            return row[0] if row else None
+
+    def _set_deletion_status(self, note_id, status):
+        if status not in ("prepared", "pending", "done", "remote"):
+            raise ValueError("Invalid deletion status")
+        note_id = str(UUID(note_id))
+        with self._lock, self._connect() as db:
+            db.execute("""INSERT INTO deletions(note_id,status) VALUES (?,?)
+                          ON CONFLICT(note_id) DO UPDATE SET status=excluded.status""",
+                       (note_id, status))
+
+    def _folder_in_trash(self, note_id):
+        root = self.repository_root / "Trash"
+        if not root.is_dir() or root.is_symlink():
+            return None
+        for folder in root.iterdir():
+            if not folder.is_dir() or folder.is_symlink():
+                continue
+            meta = folder / "note.json"
+            if meta.is_symlink() or not meta.is_file():
+                continue
+            try:
+                if meta.stat().st_size > 15 * 1024 * 1024:
+                    continue
+                if json.loads(meta.read_bytes()).get("uuid") == note_id:
+                    return folder
+            except (OSError, ValueError, UnicodeDecodeError, AttributeError):
+                continue
+        return None
+
+    def moved_to_trash(self, note_id):
+        """Cancel queued upload only AFTER the local Trash move is complete."""
+        note_id = str(UUID(note_id))
+        if self._folder_in_trash(note_id) is None:
+            raise ValueError("Cannot acknowledge nonexistent Trash move")
+        with self._operation_lock:
+            if self._find_folder(note_id) is not None:
+                raise ValueError("Note still active")
+            self.queue.discard(note_id)
+
+    def restored_from_trash(self, note_id):
+        """A tombstoned UUID cannot be silently resurrected in the cloud."""
+        note_id = str(UUID(note_id))
+        if self._deletion_status(note_id) is not None:
+            raise ValueError("Deleted note requires restoration as a new UUID")
+        self.saved(note_id)
+
+    def prepare_permanent_delete(self, note_id):
+        """Write intent before removing a local Trash folder (crash-safe)."""
+        note_id = str(UUID(note_id))
+        with self._operation_lock:
+            if self._folder_in_trash(note_id) is None:
+                raise ValueError("Permanent deletion requires local Trash entry")
+            if self._find_folder(note_id) is not None:
+                raise ValueError("Active note with same UUID exists")
+            if self._deletion_status(note_id) not in (None, "prepared"):
+                raise ValueError("Deletion already recorded")
+            self._set_deletion_status(note_id, "prepared")
+        return True
+
+    def commit_permanent_delete(self, note_id):
+        """Only enqueue a remote deletion AFTER local physical deletion."""
+        note_id = str(UUID(note_id))
+        with self._operation_lock:
+            if self._find_folder(note_id) is not None or self._folder_in_trash(note_id) is not None:
+                raise ValueError("Note is still present on disk")
+            if self._deletion_status(note_id) not in ("prepared", "pending"):
+                raise ValueError("Unprepared permanent deletion")
+            self._set_deletion_status(note_id, "pending")
+            self.queue.mark_changed(note_id)
+        return True
+
+    def cancel_prepared_delete(self, note_id):
+        """Allowed only while the Trash copy still exists."""
+        note_id = str(UUID(note_id))
+        with self._operation_lock:
+            if self._folder_in_trash(note_id) is None:
+                raise ValueError("Cannot cancel deletion after files disappeared")
+            with self._lock, self._connect() as db:
+                db.execute("DELETE FROM deletions WHERE note_id=? AND status='prepared'",
+                           (note_id,))
+
+    def _reconcile_prepared_deletions(self):
+        """Recover a crash between local removal and queue commit."""
+        with self._lock, self._connect() as db:
+            ids = [row[0] for row in db.execute(
+                "SELECT note_id FROM deletions WHERE status='prepared'")]
+        for note_id in ids:
+            if self._find_folder(note_id) is None and self._folder_in_trash(note_id) is None:
+                self._set_deletion_status(note_id, "pending")
+                self.queue.mark_changed(note_id)
+
+    def _decode_tombstone(self, note_id, encrypted):
+        try:
+            record = json.loads(unseal(encrypted, self.passphrase, note_id))
+            if record != {"v": 1, "uuid": note_id}:
+                raise ValueError("Invalid deletion marker")
+        except Exception as exc:
+            raise SyncConflict("Invalid authenticated deletion marker") from exc
+
+    def _send_permanent_delete(self, note_id):
+        self.transport.assert_private()
+        encrypted, remote_sha = self.transport.read(note_id)
+        known = self._known_sha(note_id)
+        # Never delete an unknown or concurrently changed remote revision.
+        if remote_sha is not None and known != remote_sha:
+            raise SyncConflict("Remote note not acknowledged for deletion")
+        marker, _ = self.transport.read_tombstone(note_id)
+        if marker is not None:
+            self._decode_tombstone(note_id, marker)
+        else:
+            payload = json.dumps({"v": 1, "uuid": note_id}, separators=(",", ":")).encode()
+            try:
+                self.transport.write_tombstone(
+                    note_id, seal(payload, self.passphrase, note_id)
+                )
+            except SyncConflict:
+                marker, _ = self.transport.read_tombstone(note_id)
+                if marker is None:
+                    raise
+                self._decode_tombstone(note_id, marker)
+        if remote_sha is not None:
+            self.transport.delete_note(note_id, remote_sha)
+        # Do not acknowledge until GitHub confirms the note is absent.
+        if self.transport.read(note_id)[1] is not None:
+            raise SyncConflict("Remote note still exists after deletion")
+        self._set_deletion_status(note_id, "done")
+        return True
+
+    def _receive_tombstones(self):
+        tombstones = set(self.transport.list_tombstone_ids())
+        for note_id in tombstones:
+            encrypted, _ = self.transport.read_tombstone(note_id)
+            if encrypted is None:
+                continue
+            self._decode_tombstone(note_id, encrypted)
+            status = self._deletion_status(note_id)
+            if status not in ("pending", "done"):
+                self._set_deletion_status(note_id, "remote")
+            folder = self._find_folder(note_id)
+            if folder is not None:
+                # Worker never moves files while UI is reading them. GUI will
+                # move this note to Trash only when it is safe to do so.
+                target = self.state_directory / "pending_remote_deletions"
+                target.mkdir(parents=True, exist_ok=True)
+                marker = target / (note_id + ".delete")
+                if not marker.exists():
+                    marker.write_bytes(b"NPNotes remote deletion v1")
+        return tombstones
+
+    def apply_staged_remote_deletions(self, protected_ids=()):
+        """GUI-thread, reversible soft-delete of notes deleted in GitHub.
+
+        No local note is permanently destroyed. The active note is deferred.
+        """
+        if not self._operation_lock.acquire(blocking=False):
+            return []
+        removed = []
+        try:
+            root = self.state_directory / "pending_remote_deletions"
+            if not root.is_dir():
+                return removed
+            blocked = set(protected_ids)
+            for marker in sorted(root.glob("*.delete")):
+                if marker.is_symlink():
+                    continue
+                note_id = marker.stem
+                if note_id in blocked or self._deletion_status(note_id) != "remote":
+                    continue
+                folder = self._find_folder(note_id)
+                if folder is not None:
+                    trash = self.repository_root / "Trash"
+                    trash.mkdir(parents=True, exist_ok=True)
+                    if trash.is_symlink():
+                        continue
+                    destination = trash / folder.name
+                    if destination.exists() or destination.is_symlink():
+                        # Preserve both local copies and retain the marker.
+                        continue
+                    shutil.move(str(folder), str(destination))
+                self.queue.discard(note_id)
+                marker.unlink()
+                removed.append(note_id)
+        finally:
+            self._operation_lock.release()
+        return removed
 
     def _find_folder(self, note_id):
         """The actual NP Notes folder names contain titles, not just UUIDs."""
@@ -125,6 +325,19 @@ class EncryptedOutboundService:
             return self._send_unlocked(note_id)
 
     def _send_unlocked(self, note_id):
+        status = self._deletion_status(note_id)
+        if status == "pending":
+            return self._send_permanent_delete(note_id)
+        if status in ("prepared", "done", "remote"):
+            return True
+        if self._folder_in_trash(note_id) is not None:
+            # The user moved the note to local Trash, not permanently deleted.
+            return True
+        marker, _ = self.transport.read_tombstone(note_id)
+        if marker is not None:
+            self._decode_tombstone(note_id, marker)
+            self._set_deletion_status(note_id, "remote")
+            return True
         folder = self._find_folder(note_id)
         if folder is None:
             raise UnsafeSnapshot("Local note deleted or not found")
@@ -159,7 +372,10 @@ class EncryptedOutboundService:
     def _receive_unlocked(self):
         """Import absent notes only; quarantine all divergent remote revisions."""
         self.transport.assert_private()
+        remote_deleted = self._receive_tombstones()
         for note_id in self.transport.list_note_ids():
+            if note_id in remote_deleted or self._folder_in_trash(note_id) is not None:
+                continue
             encrypted, sha = self.transport.read(note_id)
             if encrypted is None or sha is None:
                 continue
@@ -310,6 +526,7 @@ class EncryptedOutboundService:
                 continue
 
     def start(self):
+        self._reconcile_prepared_deletions()
         self.enqueue_existing()
         self.worker.start()
 
