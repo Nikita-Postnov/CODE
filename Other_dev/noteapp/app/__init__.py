@@ -265,18 +265,20 @@ class NotesApp(NotePersistenceMixin, PluginsMixin, RemindersMixin, TrayMixin, Au
             )
 
 
+    @staticmethod
+    def _merge_preloaded_notes(loaded: list[Note], existing: list[Note]) -> list[Note]:
+        """Текущие объекты заметок приоритетнее устаревшего фонового снимка."""
+        merged = {note.uuid: note for note in loaded}
+        merged.update({note.uuid: note for note in existing})
+        return list(merged.values())
+
     def _apply_preloaded_notes(self, notes: list[Note]) -> None:
         # Снимок читается в другом потоке. Пользователь может успеть создать
         # или изменить заметку до его завершения; такой объект нельзя
         # затирать более старой копией из фонового результата.
-        loaded = list(notes or [])
-        existing = list(getattr(self, "notes", []) or [])
-        if existing:
-            merged = {note.uuid: note for note in loaded}
-            merged.update({note.uuid: note for note in existing})
-            self.notes = list(merged.values())
-        else:
-            self.notes = loaded
+        self.notes = self._merge_preloaded_notes(
+            list(notes or []), list(getattr(self, "notes", []) or [])
+        )
         if not self.notes:
             self.notes_list.clear()
             self._update_editor_visibility()
