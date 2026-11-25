@@ -242,6 +242,16 @@ class NotesApp(NotePersistenceMixin, PluginsMixin, RemindersMixin, TrayMixin, Au
             active = getattr(self, "current_note", None)
             blocked = [active.uuid] if active is not None else []
             try:
+                removed = service.apply_staged_remote_deletions(blocked)
+                if removed:
+                    removed_ids = set(removed)
+                    self.notes = [
+                        note for note in self.notes
+                        if note.uuid not in removed_ids
+                    ]
+                    for note_id in removed:
+                        self._remove_uuid_from_notes_order(note_id)
+                    self.refresh_notes_list()
                 updated = service.apply_staged_remote_updates(blocked)
                 replacement = {}
                 for note_id, folder in updated:
@@ -1360,6 +1370,13 @@ class NotesApp(NotePersistenceMixin, PluginsMixin, RemindersMixin, TrayMixin, Au
             raise FileExistsError("В корзине уже есть заметка с тем же идентификатором")
         if note_dir.exists():
             shutil.move(note_dir, trash_dir)
+        sync_service = getattr(self, "_np_notes_sync", None)
+        if sync_service is not None and trash_dir.exists():
+            try:
+                sync_service.moved_to_trash(note.uuid)
+            except Exception:
+                # The worker also ignores queued UUIDs found in local Trash.
+                logging.exception("Unable to cancel obsolete NP Notes upload")
 
         try:
             self._remove_uuid_from_notes_order(getattr(note, "uuid", "") or "")
@@ -2023,8 +2040,23 @@ class NotesApp(NotePersistenceMixin, PluginsMixin, RemindersMixin, TrayMixin, Au
         note_dir = os.path.join(
             NOTES_DIR, safe_folder_name(note.title, note.uuid, note.timestamp)
         )
+        sync_service = getattr(self, "_np_notes_sync", None)
+        if sync_service is not None and sync_service.is_remotely_deleted(note.uuid):
+            QMessageBox.warning(
+                self, "Удалено на другом устройстве",
+                "Эта заметка окончательно удалена из GitHub на другом устройстве. "
+                "Восстановление с прежним идентификатором заблокировано, "
+                "чтобы не вернуть удалённую заметку в облако. "
+                "Локальная копия остаётся в корзине."
+            )
+            return
         if os.path.exists(trash_note_dir):
             shutil.move(trash_note_dir, note_dir)
+        if sync_service is not None and os.path.isdir(note_dir):
+            try:
+                sync_service.restored_from_trash(note.uuid)
+            except Exception:
+                logging.exception("Unable to queue restored NP Notes folder")
         self.load_notes_from_disk()
         try:
             restored_uuid = getattr(note, "uuid", "") or ""
@@ -2047,43 +2079,131 @@ class NotesApp(NotePersistenceMixin, PluginsMixin, RemindersMixin, TrayMixin, Au
                 break
         self.show_toast("Заметка восстановлена")
 
+    def _delete_trash_folder_with_sync(self, folder: Path, note_id: str) -> None:
+        """Permanent Trash deletion: durable intent before removal, remote later.
+
+        Never delete from GitHub on the GUI thread. Offline retry is durable.
+        Only the requested Trash entry is deleted, never another Choice app's data.
+        """
+        from uuid import UUID
+
+        canonical_id = str(UUID(note_id))
+        if canonical_id != note_id:
+            raise ValueError("Invalid note identity")
+        folder = Path(folder)
+        if (folder.is_symlink() or not folder.is_dir()
+                or folder.parent.resolve() != self.TRASH_DIR.resolve()):
+            raise ValueError("Unsafe Trash entry")
+        metadata = folder / "note.json"
+        if metadata.is_symlink() or not metadata.is_file():
+            raise ValueError("Missing Trash note.json")
+        record = json.loads(metadata.read_bytes())
+        if not isinstance(record, dict) or record.get("uuid") != canonical_id:
+            raise ValueError("Trash entry UUID mismatch")
+        service = getattr(self, "_np_notes_sync", None)
+        activation = DATA_DIR / "NPNotesSync" / "sync_enabled.json"
+        if service is None and activation.is_file():
+            # Cloud sync may be starting (one-second Qt timer) or failed to
+            # initialize. Never permanently erase a note without a durable
+            # remote deletion intent when cloud sync is explicitly enabled.
+            try:
+                enabled = json.loads(activation.read_text(encoding="utf-8")) == {
+                    "version": 1, "enabled": True
+                }
+            except (OSError, ValueError, UnicodeDecodeError):
+                enabled = True  # Fail closed for an unreadable activation marker.
+            if enabled:
+                raise RuntimeError("Wait for GitHub sync initialization")
+        if service is not None:
+            service.prepare_permanent_delete(note_id)
+        try:
+            self._detach_attachments_watcher([qt_path(folder)])
+            shutil.rmtree(folder)
+        except Exception:
+            if service is not None and folder.exists():
+                try:
+                    service.cancel_prepared_delete(note_id)
+                except Exception:
+                    logging.exception("NP Notes prepared deletion recovery unavailable")
+            raise
+        if service is not None:
+            # A failed queue commit does NOT erase the prepared intention.
+            # service.start() recovers it after restart if the folder is gone.
+            service.commit_permanent_delete(note_id)
+
     def delete_note_permanently(self) -> None:
         selected_items = self.notes_list.selectedItems()
         if not selected_items:
             return
         reply = QMessageBox.question(
-            self,
-            "Удалить навсегда",
-            "Удалить выбранную заметку безвозвратно?",
+            self, "Удалить навсегда",
+            "Удалить выбранную заметку безвозвратно? "
+            "Зашифрованная копия также будет удалена из GitHub после синхронизации.",
             QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
         )
-        if reply == QMessageBox.Yes:
-            item = selected_items[0]
-            note = item.data(Qt.UserRole)
-            trash_note_dir = os.path.join(
-                self.TRASH_DIR,
-                safe_folder_name(note.title, note.uuid, note.timestamp),
+        if reply != QMessageBox.Yes:
+            return
+        note = selected_items[0].data(Qt.UserRole)
+        trash_note_dir = self.TRASH_DIR / safe_folder_name(
+            note.title, note.uuid, note.timestamp
+        )
+        try:
+            self._delete_trash_folder_with_sync(trash_note_dir, note.uuid)
+        except Exception:
+            logging.exception("Permanent NP Notes Trash deletion failed")
+            QMessageBox.warning(
+                self, "Ошибка удаления",
+                "Удаление не завершено. Проверьте резервную копию и состояние "
+                "синхронизации; повторное удаление не выполнялось."
             )
-            if os.path.exists(trash_note_dir):
-                self._detach_attachments_watcher([trash_note_dir])
-                shutil.rmtree(trash_note_dir)
-            self.refresh_notes_list()
-            self.show_toast("Заметка удалена навсегда")
+            return
+        self.refresh_notes_list()
+        self.show_toast("Удалено локально; удаление из GitHub поставлено в очередь")
 
     def empty_trash(self) -> None:
-        if os.path.exists(self.TRASH_DIR):
-            reply = QMessageBox.question(
-                self,
-                "Очистить корзину",
-                "Удалить все заметки из корзины безвозвратно?",
-                QMessageBox.Yes | QMessageBox.No,
+        from uuid import UUID
+        if not self.TRASH_DIR.is_dir():
+            return
+        reply = QMessageBox.question(
+            self, "Очистить корзину",
+            "Окончательно удалить все заметки из корзины? "
+            "Их зашифрованные копии будут удалены из GitHub.",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            return
+        try:
+            entries = []
+            for folder in sorted(self.TRASH_DIR.iterdir()):
+                if folder.is_symlink() or not folder.is_dir():
+                    raise ValueError("Unsafe Trash entry")
+                metadata = folder / "note.json"
+                if metadata.is_symlink() or not metadata.is_file():
+                    raise ValueError("Missing Trash metadata")
+                record = json.loads(metadata.read_bytes())
+                if not isinstance(record, dict):
+                    raise ValueError("Invalid Trash metadata")
+                note_id = str(UUID(record["uuid"]))
+                if note_id != record["uuid"]:
+                    raise ValueError("Invalid Trash note UUID")
+                entries.append((folder, note_id))
+            if len({identifier for _, identifier in entries}) != len(entries):
+                raise ValueError("Duplicate UUID in Trash")
+            for folder, note_id in entries:
+                self._delete_trash_folder_with_sync(folder, note_id)
+        except Exception:
+            logging.exception("NP Notes Trash cleanup interrupted")
+            QMessageBox.warning(
+                self, "Очистка остановлена",
+                "Часть корзины могла быть удалена локально. Успешные удаления "
+                "сохранены в очереди GitHub; оставшиеся файлы не тронуты."
             )
-            if reply == QMessageBox.Yes:
-                for folder in os.listdir(self.TRASH_DIR):
-                    folder_path = os.path.join(self.TRASH_DIR, folder)
-                    shutil.rmtree(folder_path)
-                self.refresh_notes_list()
-                self.show_toast("Корзина очищена")
+            self.refresh_notes_list()
+            return
+        self.refresh_notes_list()
+        self.show_toast("Корзина очищена; удаление из GitHub поставлено в очередь")
 
     def load_note(self, item: QListWidgetItem | None) -> None:
         if item is None:

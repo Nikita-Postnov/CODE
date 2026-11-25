@@ -80,6 +80,17 @@ class OfflineSyncQueue:
             )
             return cur.rowcount == 1
 
+    def discard(self, item_id: str):
+        """Cancel an obsolete upload after a note has moved to local Trash.
+
+        Only used after the folder transition is durable; no remote mutation.
+        """
+        self._validate_item(item_id)
+        with self._lock, self._connect() as db:
+            return db.execute(
+                "DELETE FROM pending WHERE item_id=?", (item_id,)
+            ).rowcount
+
     def count(self):
         with self._lock, self._connect() as db:
             return db.execute("SELECT COUNT(*) FROM pending").fetchone()[0]

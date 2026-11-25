@@ -14,7 +14,29 @@ from noteapp.sync_service import EncryptedOutboundService, SyncConflict
 class FakeTransport:
     def __init__(self):
         self.remote = {}
+        self.tombstones = {}
         self.writes = 0
+
+    def list_tombstone_ids(self):
+        return list(self.tombstones)
+
+    def read_tombstone(self, note_id):
+        return self.tombstones.get(note_id, (None, None))
+
+    def write_tombstone(self, note_id, sealed):
+        if note_id in self.tombstones:
+            raise SyncConflict("simulated tombstone conflict")
+        sha = ("%040x" % (self.writes + 1))
+        self.tombstones[note_id] = (sealed, sha)
+        return sha
+
+    def delete_note(self, note_id, expected_sha):
+        if note_id not in self.remote:
+            return True
+        if self.remote[note_id][1] != expected_sha:
+            raise SyncConflict("simulated stale deletion SHA")
+        del self.remote[note_id]
+        return True
 
     def assert_private(self):
         return True

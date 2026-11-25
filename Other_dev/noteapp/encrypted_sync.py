@@ -152,7 +152,41 @@ class GitHubTransport:
         return sorted(set(note_ids))
 
     def read(self, note_id: str):
-        path = "encrypted/" + _note_id(note_id) + ".json"
+        return self._read_remote_file("encrypted", note_id)
+
+    def read_tombstone(self, note_id: str):
+        """Read a durable deletion marker; it contains encrypted metadata only."""
+        return self._read_remote_file("tombstones", note_id)
+
+    def list_tombstone_ids(self):
+        """List UUIDs with remote deletion markers (never return note content)."""
+        try:
+            entries = self._call("tombstones")
+        except urllib.error.HTTPError as exc:
+            if exc.code == 404:
+                return []
+            raise
+        if not isinstance(entries, list):
+            raise SyncSecurityError("Tombstone directory is not a file listing")
+        ids = []
+        for entry in entries:
+            if not isinstance(entry, dict) or entry.get("type") != "file":
+                continue
+            name = entry.get("name")
+            if not isinstance(name, str) or not name.endswith(".json"):
+                continue
+            candidate = name[:-5]
+            try:
+                _note_id(candidate)
+            except SyncSecurityError:
+                continue
+            ids.append(candidate)
+        return sorted(set(ids))
+
+    def _read_remote_file(self, directory: str, note_id: str):
+        if directory not in ("encrypted", "tombstones"):
+            raise SyncSecurityError("Unsupported remote directory")
+        path = directory + "/" + _note_id(note_id) + ".json"
         try:
             record = self._call(path)
         except urllib.error.HTTPError as exc:
@@ -202,3 +236,43 @@ class GitHubTransport:
                 raise SyncConflict("Remote revision changed; retain local revision") from exc
             raise
         return result["content"]["sha"]
+
+    def write_tombstone(self, note_id: str, sealed: bytes):
+        """Create-only encrypted deletion marker; never overwrite an existing marker."""
+        if not isinstance(sealed, bytes) or len(sealed) > MAX_BYTES * 2:
+            raise SyncSecurityError("Invalid encrypted tombstone")
+        record = {
+            "message": "Record permanent NP Notes deletion",
+            "branch": self.branch,
+            "content": base64.b64encode(sealed).decode(),
+        }
+        try:
+            result = self._call("tombstones/" + _note_id(note_id) + ".json", "PUT", record)
+        except urllib.error.HTTPError as exc:
+            if exc.code in (409, 412, 422):
+                raise SyncConflict("Concurrent tombstone update") from exc
+            raise
+        return result["content"]["sha"]
+
+    def delete_note(self, note_id: str, expected_sha: str):
+        """Remove only the exact encrypted GitHub blob observed by caller.
+
+        Deletion markers are separate and must be committed before this call.
+        Git retains historical commits, even after deleting a file from HEAD.
+        """
+        if not isinstance(expected_sha, str) or not re.fullmatch(r"[a-f0-9]{40}", expected_sha):
+            raise SyncSecurityError("Expected blob SHA is required for deletion")
+        record = {
+            "message": "Permanently delete encrypted NP Notes snapshot",
+            "branch": self.branch,
+            "sha": expected_sha,
+        }
+        try:
+            self._call("encrypted/" + _note_id(note_id) + ".json", "DELETE", record)
+        except urllib.error.HTTPError as exc:
+            if exc.code == 404:
+                return True
+            if exc.code in (409, 412, 422):
+                raise SyncConflict("Remote note changed before deletion") from exc
+            raise
+        return True
