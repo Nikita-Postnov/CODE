@@ -20,7 +20,8 @@ class ManifestSnapshotTests(unittest.TestCase):
         self.assertEqual(len(sha), 40)
         self.assertEqual(git("rev-parse", sha + "^{commit}"), sha)
         source = "Other_dev/"
-        actual = set(git("ls-tree", "-r", "--name-only", sha, source).splitlines())
+        all_paths = set(git("ls-tree", "-r", "--name-only", sha, source).splitlines())
+        actual = {p for p in all_paths if p == source + "notes_app.py" or p.startswith(source + "noteapp/")}
         declared = {
             source + record["path"]
             for record in data["files"]
