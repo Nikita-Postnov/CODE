@@ -1349,11 +1349,12 @@ class NotesApp(NotePersistenceMixin, PluginsMixin, RemindersMixin, TrayMixin, Au
         if note.history_index < len(note.history) - 1:
             note.history = note.history[: note.history_index + 1]
         current_html = self.text_edit.toHtml()
-        current_plain = self.text_edit.toPlainText()
         if note.history:
-            doc = QTextDocument()
-            doc.setHtml(note.history[-1])
-            if doc.toPlainText() == current_plain:
+            # Сравнение одного только текста теряло изменения форматирования
+            # (полужирный, курсив, таблицы) из собственной истории Undo.
+            previous = QTextDocument()
+            previous.setHtml(note.history[-1])
+            if previous.toHtml() == current_html:
                 return
         # При достижении лимита удаляем только старейшие версии.
         # Полный сброс истории терял возможность отменить последние правки.
