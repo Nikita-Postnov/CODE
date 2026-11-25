@@ -273,6 +273,33 @@ class ExitSafetyTests(unittest.TestCase):
         self.assertIn("search_focus_shortcut.activated.connect(self.search_bar.setFocus)", source)
 
 
+class EmptyFirstRunTests(unittest.TestCase):
+    def test_initial_window_has_visible_create_note_action(self):
+        source = (ROOT / "app" / "__init__.py").read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        cls = next(node for node in tree.body
+                   if isinstance(node, ast.ClassDef) and node.name == "NotesApp")
+        init_ui = next(node for node in cls.body
+                       if isinstance(node, ast.FunctionDef) and node.name == "init_ui")
+        body = ast.get_source_segment(source, init_ui)
+        self.assertIn('self.empty_notes_create_button.clicked.connect(self.new_note)', body)
+        self.assertIn('self.resize(1080, 720)', body)
+        self.assertIn('editor_layout_combined.addWidget(self.empty_notes_page, 1)', body)
+
+    def test_editor_visibility_tracks_empty_page(self):
+        source = (ROOT / "app" / "__init__.py").read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        cls = next(node for node in tree.body
+                   if isinstance(node, ast.ClassDef) and node.name == "NotesApp")
+        update = next(node for node in cls.body if isinstance(node, ast.FunctionDef)
+                      and node.name == "_update_editor_visibility")
+        method = ast.get_source_segment(source, update)
+        self.assertIn('self.empty_notes_page.setVisible(not has)', method)
+        apply = next(node for node in cls.body if isinstance(node, ast.FunctionDef)
+                     and node.name == "_apply_preloaded_notes")
+        self.assertIn("self._update_editor_visibility()", ast.get_source_segment(source, apply))
+
+
 class NotesOrganizationTests(unittest.TestCase):
     def test_recent_view_is_limited_to_15_and_read_only(self):
         source = (ROOT / "app" / "__init__.py").read_text(encoding="utf-8")
