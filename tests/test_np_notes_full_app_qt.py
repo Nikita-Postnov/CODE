@@ -50,6 +50,13 @@ def gui_worker(root: Path) -> None:
     app.processEvents()
     assert window.current_note is not None, "First note was not created"
     assert window.text_edit.isVisible(), "Editor did not appear"
+    # No large blank area between tags and text editor (regression screenshot).
+    assert window.tags_label.height() < 65, (
+        "Tags row stretched and pushed text editor to bottom"
+    )
+    assert window.text_edit.height() >= window.central_widget.height() // 3, (
+        "Text editor is not receiving the available vertical space"
+    )
     assert not window.empty_notes_page.isVisible(), "Welcome screen still visible"
     assert window.current_note.title == "Проверка первого запуска"
     assert window.notes_list.count() == 1
