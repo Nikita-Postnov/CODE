@@ -175,6 +175,7 @@ class SettingsMixin:
         dialog = QDialog(self)
         dialog.setWindowFlag(Qt.WindowStaysOnTopHint, True)
         dialog.setWindowTitle("Настройки")
+        dialog.setMinimumWidth(670)
         layout = QFormLayout(dialog)
         theme_combo = QComboBox(dialog)
         theme_combo.addItems(["Светлая", "Тёмная"])
@@ -237,10 +238,13 @@ class SettingsMixin:
                 probe_error = getattr(service, "last_probe_error", None)
                 if probe_error:
                     detail += f" · Причина: {probe_error}"
-            sync_label.setText(
+            status_text = (
                 f"{states.get(service.worker.state, 'Ожидание')} "
-                f"· В очереди: {pending}{detail} · Каждые 5 минут"
+                f"· В очереди: {pending} · Каждые 5 минут"
+                f"{detail.replace(' · Причина:', chr(10) + 'Причина:')}"
             )
+            sync_label.setText(status_text)
+            sync_label.setToolTip(status_text)
 
         refresh_sync_status()
         sync_status_timer = QTimer(dialog)
