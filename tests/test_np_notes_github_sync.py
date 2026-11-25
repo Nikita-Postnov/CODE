@@ -132,6 +132,24 @@ class GithubSyncTests(unittest.TestCase):
         self.assertEqual(note["content"], "hello")
         self.assertNotIn("password_manager", note)
 
+    def test_attachment_links_are_portable_across_devices(self):
+        original = self.note(self.device_a)
+        note_path = original / "note.json"
+        note = json.loads(note_path.read_text())
+        note["content"] = '<a href="' + (original / "image.png").resolve().as_uri() + '">File</a>'
+        note_path.write_text(json.dumps(note))
+        local_snapshot = snapshot_from_folder(original)[1]
+        self.assertIn(b"npnotes-attachment:", local_snapshot)
+        self.assertNotIn(str(self.device_a).encode(), local_snapshot)
+        self.assertEqual(self.engine(self.device_a).run().uploaded, 1)
+        self.assertEqual(self.engine(self.device_b).run().downloaded, 1)
+        target = self.device_b / "Notes" / portable_note_folder({
+            "uuid": self.note_uuid, "title": "Example", "timestamp": "2026-11-25T10:00:00"})
+        incoming = json.loads((target / "note.json").read_text())
+        self.assertIn((target / "image.png").resolve().as_uri(), incoming["content"])
+        self.assertEqual(snapshot_from_folder(target)[1], local_snapshot)
+        self.assertEqual(self.engine(self.device_b).run().uploaded, 0)
+
     def test_remote_update_never_erases_existing_local_secret(self):
         a = self.note(self.device_a)
         self.engine(self.device_a).run()
