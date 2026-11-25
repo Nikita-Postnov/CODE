@@ -2101,6 +2101,19 @@ class NotesApp(NotePersistenceMixin, PluginsMixin, RemindersMixin, TrayMixin, Au
         if not isinstance(record, dict) or record.get("uuid") != canonical_id:
             raise ValueError("Trash entry UUID mismatch")
         service = getattr(self, "_np_notes_sync", None)
+        activation = DATA_DIR / "NPNotesSync" / "sync_enabled.json"
+        if service is None and activation.is_file():
+            # Cloud sync may be starting (one-second Qt timer) or failed to
+            # initialize. Never permanently erase a note without a durable
+            # remote deletion intent when cloud sync is explicitly enabled.
+            try:
+                enabled = json.loads(activation.read_text(encoding="utf-8")) == {
+                    "version": 1, "enabled": True
+                }
+            except (OSError, ValueError, UnicodeDecodeError):
+                enabled = True  # Fail closed for an unreadable activation marker.
+            if enabled:
+                raise RuntimeError("Wait for GitHub sync initialization")
         if service is not None:
             service.prepare_permanent_delete(note_id)
         try:
