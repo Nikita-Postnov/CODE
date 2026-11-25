@@ -263,7 +263,9 @@ class SyncResult:
 
 
 class SyncEngine:
-    def __init__(self, notes: Path, state_dir: Path, store: GitHubStore, passphrase: str):
+    def __init__(self, notes: Path, state_dir: Path, store: GitHubStore, passphrase: str,
+                 *, stage_downloads: bool = False):
+        self.stage_downloads = stage_downloads
         self.notes = Path(notes)
         self.state_dir = Path(state_dir)
         self.store = store
@@ -305,6 +307,66 @@ class SyncEngine:
         target = self.conflict_dir / (u + "-" + hashlib.sha256(remote).hexdigest()[:16] + ".npn")
         if not target.exists():
             atomic_bytes(target, remote)
+
+    def _stage(self, u: str, encrypted: bytes, sha: str, expected_digest: str | None):
+        """Persist ciphertext only. Actual Notes modifications happen on Qt GUI thread."""
+        inbox = self.state_dir / "inbox"
+        inbox.mkdir(parents=True, exist_ok=True)
+        atomic_bytes(inbox / (u + ".npn"), encrypted)
+        atomic_bytes(inbox / (u + ".json"), json_bytes(
+            {"sha": sha, "expected_digest": expected_digest}))
+
+    def apply_pending(self, *, protected_uuid: str | None = None) -> tuple[str, ...]:
+        """Main-thread reconciliation. Never touch the selected editor note."""
+        inbox = self.state_dir / "inbox"
+        if not inbox.is_dir():
+            return ()
+        imported = []
+        for metadata in sorted(inbox.glob("*.json")):
+            try:
+                u = valid_uuid(metadata.stem)
+                if u == protected_uuid:
+                    continue
+                info = json.loads(metadata.read_text(encoding="utf-8"))
+                sha = info.get("sha")
+                expected = info.get("expected_digest")
+                if not isinstance(sha, str) or not re.fullmatch(r"[0-9a-f]{40}", sha):
+                    raise SyncError("Invalid staged remote SHA")
+                if expected is not None and (
+                    not isinstance(expected, str) or not re.fullmatch(r"[0-9a-f]{64}", expected)
+                ):
+                    raise SyncError("Invalid staged local fingerprint")
+                source = inbox / (u + ".npn")
+                encrypted = source.read_bytes()
+                clear = decrypt_snapshot(encrypted, self.passphrase, self.store.repo, u)
+                unpack_snapshot(clear, u)
+                local = self._local()
+                entry = local.get(u)
+                if (entry[2] if entry else None) != expected:
+                    self._conflict(u, encrypted)
+                    metadata.unlink(missing_ok=True)
+                    source.unlink(missing_ok=True)
+                    continue
+                try:
+                    self._import(u, clear, entry[0] if entry else None, expected)
+                except Conflict:
+                    self._conflict(u, encrypted)
+                    metadata.unlink(missing_ok=True)
+                    source.unlink(missing_ok=True)
+                    continue
+                updated = self._local().get(u)
+                if updated is None:
+                    raise SyncError("Imported note missing")
+                state = self._state()
+                state[u] = {"sha": sha, "digest": updated[2]}
+                self._save_state(state)
+                source.unlink(missing_ok=True)
+                metadata.unlink(missing_ok=True)
+                imported.append(u)
+            except (OSError, ValueError, KeyError, SyncError):
+                # Invalid or inaccessible staged content must never damage Notes.
+                continue
+        return tuple(imported)
 
     def _import(self, u: str, clear: bytes, folder: Path | None, expected_digest: str | None):
         note, attachments = unpack_snapshot(clear, u)
@@ -395,6 +457,10 @@ class SyncEngine:
                 elif protected_uuid == u:
                     # UI currently has this note selected; defer to later cycle.
                     continue
+                elif self.stage_downloads:
+                    self._stage(u, encrypted, sha, entry[2] if entry else None)
+                    downloaded += 1
+                    continue
                 else:
                     try:
                         self._import(u, clear, entry[0] if entry else None, entry[2] if entry else None)
@@ -437,7 +503,8 @@ def enabled_config(data_dir: Path) -> dict | None:
     return cfg
 
 
-def run_configured_sync(data_dir: Path, *, protected_uuid: str | None = None) -> SyncResult:
+def run_configured_sync(data_dir: Path, *, protected_uuid: str | None = None,
+                        stage_downloads: bool = False) -> SyncResult:
     cfg = enabled_config(data_dir)
     if cfg is None:
         return SyncResult("disabled")
@@ -451,6 +518,24 @@ def run_configured_sync(data_dir: Path, *, protected_uuid: str | None = None) ->
     if not token or len(secret) < 16:
         return SyncResult("needs_credentials")
     store = GitHubStore(cfg["repository"], token)
-    return SyncEngine(Path(data_dir) / "Notes", Path(data_dir) / "NoteSync", store, secret).run(
-        protected_uuid=protected_uuid
-    )
+    return SyncEngine(Path(data_dir) / "Notes", Path(data_dir) / "NoteSync", store, secret,
+                      stage_downloads=stage_downloads).run(protected_uuid=protected_uuid)
+
+
+def apply_configured_pending(data_dir: Path, *, protected_uuid: str | None = None) -> tuple[str, ...]:
+    """Called ONLY on GUI thread; decrypted content is never staged on disk."""
+    cfg = enabled_config(data_dir)
+    if cfg is None:
+        return ()
+    token = os.environ.get("NP_NOTES_GITHUB_TOKEN", "")
+    secret = os.environ.get("NP_NOTES_SYNC_PASSPHRASE", "")
+    if not token or len(secret) < 16:
+        from .sync_secrets import load_credentials
+        creds = load_credentials(Path(data_dir) / "NoteSync")
+        if creds:
+            token, secret = creds
+    if not token or len(secret) < 16:
+        return ()
+    store = GitHubStore(cfg["repository"], token)
+    engine = SyncEngine(Path(data_dir) / "Notes", Path(data_dir) / "NoteSync", store, secret)
+    return engine.apply_pending(protected_uuid=protected_uuid)
