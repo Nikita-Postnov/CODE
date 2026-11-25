@@ -10,6 +10,7 @@ on:
       - "tests/test_np_notes_hardening.py"
       - "tests/test_np_notes_safety_20261125.py"
       - "tests/test_np_notes_qt_smoke.py"
+      - "tests/test_np_notes_full_app_qt.py"
       - "tests/test_np_notes_search_benchmark.py"
       - "tests/test_np_notes_recovery.py"
       - "tools/benchmark_np_notes_search.py"
@@ -25,6 +26,7 @@ on:
       - "tests/test_np_notes_hardening.py"
       - "tests/test_np_notes_safety_20261125.py"
       - "tests/test_np_notes_qt_smoke.py"
+      - "tests/test_np_notes_full_app_qt.py"
       - "tests/test_np_notes_search_benchmark.py"
       - "tests/test_np_notes_recovery.py"
       - "tools/benchmark_np_notes_search.py"
@@ -77,6 +79,10 @@ jobs:
         env:
           QT_QPA_PLATFORM: offscreen
         run: python -m unittest -v tests.test_np_notes_qt_smoke
+      - name: Smoke test complete NotesApp on isolated empty Data
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python -m unittest -v tests.test_np_notes_full_app_qt
       - name: Benchmark synthetic QTextDocument search
         env:
           QT_QPA_PLATFORM: offscreen
