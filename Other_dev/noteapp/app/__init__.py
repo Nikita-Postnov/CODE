@@ -598,7 +598,7 @@ class NotesApp(NotePersistenceMixin, PluginsMixin, RemindersMixin, TrayMixin, Au
         # Сохранение на диск работает отдельно; историю Undo группируем
         # после паузы ввода, а не создаём версию каждые 400 мс.
         self._save_debouncer.setInterval(1400)
-        self._save_debouncer.timeout.connect(self.update_current_note_content)
+        self._save_debouncer.timeout.connect(self._flush_debounced_history)
         self.text_edit.textChanged.connect(self._save_debouncer.start)
         self.text_edit.cursorPositionChanged.connect(self.update_font_controls)
         self.text_edit.setReadOnly(True)
@@ -4000,6 +4000,25 @@ class NotesApp(NotePersistenceMixin, PluginsMixin, RemindersMixin, TrayMixin, Au
             pass
         self.window_hidden.emit()
 
+
+    def _flush_debounced_history(self) -> None:
+        """Фиксирует сгруппированную версию и сохраняет её на диск."""
+        note = getattr(self, "current_note", None)
+        if note is None or getattr(self, "_is_switching_note", False):
+            return
+        session = getattr(self, "_edit_session_note_uuid", None)
+        if session and session != note.uuid:
+            return
+        self.update_current_note_content()
+        try:
+            self.save_note_to_file(note)
+            self._set_unsaved(False)
+        except Exception:
+            logging.exception("Не удалось сохранить сгруппированную версию заметки")
+            self._set_unsaved(True)
+            retry = getattr(self, "_autosave_timer", None)
+            if retry is not None:
+                retry.start(5000)
 
     def update_current_note_content(self):
         if not hasattr(self, "current_note") or self.current_note is None:
