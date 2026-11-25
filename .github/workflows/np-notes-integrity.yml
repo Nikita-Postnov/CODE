@@ -128,13 +128,18 @@ jobs:
             $faultLog = Join-Path $source 'crash_fault.log'
             $indicatorLog = Join-Path $source 'language_indicator_error.log'
             $attachmentLog = Join-Path $source 'Notes\sample\customer_attachment.log'
+            $careDir = Join-Path $source 'LaptopCare'
+            New-Item -ItemType Directory -Force -Path $careDir | Out-Null
+            $laptopLog = Join-Path $careDir 'laptopcare.log'
             Set-Content -LiteralPath $log -Value 'diagnostic only' -Encoding UTF8
             Set-Content -LiteralPath $faultLog -Value 'fault diagnostic only' -Encoding UTF8
             Set-Content -LiteralPath $indicatorLog -Value 'runtime diagnostic' -Encoding UTF8
             Set-Content -LiteralPath $attachmentLog -Value 'important attachment must survive' -Encoding UTF8
+            Set-Content -LiteralPath $laptopLog -Value 'locked laptop diagnostic' -Encoding UTF8
             $locked = [IO.File]::Open($log, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
             $lockedFault = [IO.File]::Open($faultLog, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
             $lockedIndicator = [IO.File]::Open($indicatorLog, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+            $lockedLaptop = [IO.File]::Open($laptopLog, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
             try {
               $result = & $path -SourceRoot $source -BackupRoot $backup
             }
@@ -142,11 +147,12 @@ jobs:
               $locked.Dispose()
               $lockedFault.Dispose()
               $lockedIndicator.Dispose()
+              $lockedLaptop.Dispose()
             }
-            if (-not (($result | Out-String) -match 'SKIPPED_DIAGNOSTIC_LOGS=3')) {
-              throw 'All three locked runtime logs must be reported as skipped'
+            if (-not (($result | Out-String) -match 'SKIPPED_DIAGNOSTIC_LOGS=4')) {
+              throw 'All four locked runtime logs must be reported as skipped'
             }
-            foreach ($runtimeLog in @('crash.log','crash_fault.log','language_indicator_error.log')) {
+            foreach ($runtimeLog in @('crash.log','crash_fault.log','language_indicator_error.log','LaptopCare\laptopcare.log')) {
               if (Test-Path -LiteralPath (Join-Path $backup $runtimeLog)) {
                 throw "Diagnostic runtime log must not be copied: $runtimeLog"
               }
