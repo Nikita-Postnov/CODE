@@ -19,6 +19,8 @@ on:
       - "tests/test_np_notes_sync_service.py"
       - "tests/test_np_notes_incoming_sync.py"
       - "tests/test_np_notes_sync_privacy.py"
+      - "tests/test_np_notes_sync_credentials.py"
+      - "tools/configure_np_notes_encrypted_sync.ps1"
       - "tools/benchmark_np_notes_search.py"
       - "tools/benchmark_np_notes_qt_search.py"
       - "tools/preview_np_notes_pr83.ps1"
@@ -44,6 +46,8 @@ on:
       - "tests/test_np_notes_sync_service.py"
       - "tests/test_np_notes_incoming_sync.py"
       - "tests/test_np_notes_sync_privacy.py"
+      - "tests/test_np_notes_sync_credentials.py"
+      - "tools/configure_np_notes_encrypted_sync.ps1"
       - "tools/benchmark_np_notes_search.py"
       - "tools/benchmark_np_notes_qt_search.py"
       - "tools/preview_np_notes_pr83.ps1"
@@ -69,7 +73,7 @@ jobs:
       - name: Install encryption dependency
         run: python -m pip install "cryptography>=42,<47"
       - name: Validate backups, portability, autosave, plugins, attachments
-        run: python -m unittest -v tests.test_np_notes_integrity tests.test_np_notes_hardening tests.test_np_notes_safety_20261125 tests.test_np_notes_search_benchmark tests.test_np_notes_recovery tests.test_np_notes_offline_sync tests.test_np_notes_encrypted_sync tests.test_np_notes_sync_snapshot tests.test_np_notes_sync_service tests.test_np_notes_incoming_sync tests.test_np_notes_sync_privacy
+        run: python -m unittest -v tests.test_np_notes_integrity tests.test_np_notes_hardening tests.test_np_notes_safety_20261125 tests.test_np_notes_search_benchmark tests.test_np_notes_recovery tests.test_np_notes_offline_sync tests.test_np_notes_encrypted_sync tests.test_np_notes_sync_snapshot tests.test_np_notes_sync_service tests.test_np_notes_incoming_sync tests.test_np_notes_sync_privacy tests.test_np_notes_sync_credentials
       - name: Benchmark synthetic notes search (100 / 1000 / 10000)
         run: python tools/benchmark_np_notes_search.py --notes 100,1000,10000 --repeats 3
 
@@ -80,6 +84,16 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - name: Validate DPAPI setup PowerShell syntax
+        shell: pwsh
+        run: |
+          $errors = $null
+          $tokens = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path 'tools/configure_np_notes_encrypted_sync.ps1').Path,
+            [ref]$tokens, [ref]$errors
+          ) | Out-Null
+          if ($errors.Count -ne 0) { throw ($errors | Out-String) }
       - name: Validate isolated preview PowerShell syntax
         shell: pwsh
         run: |
