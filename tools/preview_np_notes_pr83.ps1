@@ -10,7 +10,7 @@ $repo = 'Nikita-Postnov/CODE'
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
 if (-not $CommitSha) {
-    $head = Invoke-RestMethod -Uri 'https://api.github.com/repos/Nikita-Postnov/CODE/branches/feat%2Fnoteapp-safe-improvements-20261125' -Headers @{ 'User-Agent' = 'NP-Notes-Preview' }
+    $head = Invoke-RestMethod -Uri 'https://api.github.com/repos/Nikita-Postnov/CODE/branches/feat/noteapp-safe-improvements-20261125' -Headers @{ 'User-Agent' = 'NP-Notes-Preview' }
     $CommitSha = [string]$head.commit.sha
 }
 if ($CommitSha -notmatch '^[0-9a-f]{40}$') {
