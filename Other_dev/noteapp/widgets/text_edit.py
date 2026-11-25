@@ -583,6 +583,16 @@ class CustomTextEdit(QTextEdit):
             )
         )
         menu.addAction(view_dict_action)
+        # Selection/copy commands must also be visible when right-clicking
+        # punctuation, emoji, numbers or a horizontal separator. Previously
+        # the early "no alphabetic word" return hid both commands.
+        menu.addSeparator()
+        copy_plain_action = QAction("Copy (without formatting)", self)
+        copy_plain_action.triggered.connect(self.copy_without_formatting)
+        copy_rich_action = QAction("Copy (with formatting)", self)
+        copy_rich_action.triggered.connect(self.copy_with_formatting)
+        menu.addAction(copy_plain_action)
+        menu.addAction(copy_rich_action)
         word_cursor = self.cursorForPosition(event.pos())
         word_cursor.select(QTextCursor.WordUnderCursor)
         raw_word = word_cursor.selectedText()
@@ -644,13 +654,6 @@ class CustomTextEdit(QTextEdit):
         user_candidates = _clean(user_candidates)
         spell_candidates = _clean(spell_candidates)
         doc_candidates = _clean(doc_candidates)
-        menu.addSeparator()
-        copy_plain_action = QAction("Copy (without formatting)", self)
-        copy_plain_action.triggered.connect(self.copy_without_formatting)
-        copy_rich_action = QAction("Copy (with formatting)", self)
-        copy_rich_action.triggered.connect(self.copy_with_formatting)
-        menu.addAction(copy_plain_action)
-        menu.addAction(copy_rich_action)
         menu.addSeparator()
         ignore_action = QAction("Ignore the word in the current note", self)
         ignore_action.triggered.connect(
