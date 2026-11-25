@@ -1656,10 +1656,24 @@ class NotesApp(NotePersistenceMixin, PluginsMixin, RemindersMixin, TrayMixin, Au
             )
             note.history = [""]
             note.history_index = 0
-            note_dir = os.path.join(
-                NOTES_DIR, safe_folder_name(title, note_uuid, ts_iso)
-            )
-            os.makedirs(note_dir, exist_ok=True)
+            # Прежде чем менять активную заметку, гарантируем сохранение
+            # предыдущей. При ошибке не очищаем редактор и не теряем ввод.
+            try:
+                if self.current_note is not None:
+                    self.save_note_quiet(force=True)
+                # Новая заметка должна существовать на диске ещё до того,
+                # как появится в списке: сбой сразу после создания безопасен.
+                self.save_note_to_file(note)
+            except Exception:
+                logging.exception("Не удалось создать или сохранить заметку")
+                self._set_unsaved(True)
+                QMessageBox.warning(
+                    self, "Не удалось создать заметку",
+                    "Данные предыдущей заметки не удалось сохранить или "
+                    "новую заметку не удалось записать на диск. "
+                    "Редактор оставлен без переключения."
+                )
+                return
             self.notes.append(note)
             self.current_note = note
             if hasattr(self, "spell_highlighter"):
