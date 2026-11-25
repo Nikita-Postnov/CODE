@@ -18,6 +18,7 @@ on:
       - "tools/preview_np_notes_pr83.ps1"
       - "tools/backup_np_notes_data.ps1"
       - "tools/preflight_np_notes_release.ps1"
+      - "tools/install_np_notes_code.ps1"
       - ".github/workflows/np-notes-integrity.yml"
   pull_request:
     branches: [main]
@@ -36,6 +37,7 @@ on:
       - "tools/preview_np_notes_pr83.ps1"
       - "tools/backup_np_notes_data.ps1"
       - "tools/preflight_np_notes_release.ps1"
+      - "tools/install_np_notes_code.ps1"
       - ".github/workflows/np-notes-integrity.yml"
 
 jobs:
@@ -181,6 +183,34 @@ jobs:
             }
             if ((Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash -ne $hash) {
               throw 'Preflight unexpectedly modified data'
+            }
+          }
+          finally {
+            if (Test-Path $sandbox) { Remove-Item -LiteralPath $sandbox -Recurse -Force }
+          }
+      - name: Code-only installer dry-run does not change shared Data
+        shell: pwsh
+        run: |
+          $script = (Resolve-Path 'tools/install_np_notes_code.ps1').Path
+          $sandbox = Join-Path $env:RUNNER_TEMP ('np-notes-installer-test-' + [guid]::NewGuid().ToString('N'))
+          try {
+            New-Item -ItemType Directory -Path (Join-Path $sandbox 'Data\Notes') -Force | Out-Null
+            New-Item -ItemType Directory -Path (Join-Path $sandbox 'noteapp\app') -Force | Out-Null
+            Set-Content -LiteralPath (Join-Path $sandbox 'notes_app.py') -Value 'original code'
+            Set-Content -LiteralPath (Join-Path $sandbox 'noteapp\app\__init__.py') -Value 'original package'
+            Set-Content -LiteralPath (Join-Path $sandbox 'Data\Notes\note.json') -Value '{"original":true}'
+            $notesHash = (Get-FileHash -LiteralPath (Join-Path $sandbox 'Data\Notes\note.json') -Algorithm SHA256).Hash
+            $codeHash = (Get-FileHash -LiteralPath (Join-Path $sandbox 'notes_app.py') -Algorithm SHA256).Hash
+            $result = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $script -LauncherRoot $sandbox
+            if ($LASTEXITCODE -ne 0) { throw 'Installer PowerShell 5.1 dry-run failed' }
+            if (-not (($result | Out-String) -match 'DEPLOY_MODE=DRY_RUN')) {
+              throw 'Installer did not run in dry-run mode'
+            }
+            if ((Get-FileHash -LiteralPath (Join-Path $sandbox 'Data\Notes\note.json') -Algorithm SHA256).Hash -ne $notesHash) {
+              throw 'Installer modified user data'
+            }
+            if ((Get-FileHash -LiteralPath (Join-Path $sandbox 'notes_app.py') -Algorithm SHA256).Hash -ne $codeHash) {
+              throw 'Installer modified program during dry-run'
             }
           }
           finally {
