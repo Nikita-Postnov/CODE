@@ -204,9 +204,12 @@ class HorizontalLineRegression(unittest.TestCase):
         editor = self.new_editor(original)
         before = editor.text_edit.toPlainText()
         self.assertEqual(before, original)
-        with patch("noteapp.app.editor.QMessageBox.question",
-                   return_value=QMessageBox.Yes) as question:
+        with patch("noteapp.app.editor.QMessageBox.information") as info, patch(
+            "noteapp.app.editor.QMessageBox.question",
+            return_value=QMessageBox.Yes
+        ) as question:
             editor.repair_button.click()
+        self.assertEqual(info.call_count, 0, "Old gap was not detected")
         self.assertEqual(question.call_count, 1)
         self.assertIn("Пустых строк после линий: 1", question.call_args.args[2])
         expected = "Before\n" + rule + "\nHeading\nElse\n\nIntended blank"
@@ -219,9 +222,12 @@ class HorizontalLineRegression(unittest.TestCase):
         rule = "─" * 60
         editor = self.new_editor("Before\\n" + rule + "\\n\\nHeading")
         original = editor.text_edit.toHtml()
-        with patch("noteapp.app.editor.QMessageBox.question",
-                   return_value=QMessageBox.No) as question:
+        with patch("noteapp.app.editor.QMessageBox.information") as info, patch(
+            "noteapp.app.editor.QMessageBox.question",
+            return_value=QMessageBox.No
+        ) as question:
             editor.repair_button.click()
+        self.assertEqual(info.call_count, 0, "Old gap was not detected")
         self.assertEqual(question.call_count, 1)
         self.assertEqual(editor.text_edit.toHtml(), original)
         self.assertEqual(editor.unsaved_calls, [])
