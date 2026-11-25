@@ -22,6 +22,7 @@ on:
       - "tests/test_np_notes_sync_credentials.py"
       - "tools/configure_np_notes_encrypted_sync.ps1"
       - "tools/check_np_notes_sync_ready.ps1"
+      - "tools/activate_np_notes_sync.ps1"
       - "tools/benchmark_np_notes_search.py"
       - "tools/benchmark_np_notes_qt_search.py"
       - "tools/preview_np_notes_pr83.ps1"
@@ -50,6 +51,7 @@ on:
       - "tests/test_np_notes_sync_credentials.py"
       - "tools/configure_np_notes_encrypted_sync.ps1"
       - "tools/check_np_notes_sync_ready.ps1"
+      - "tools/activate_np_notes_sync.ps1"
       - "tools/benchmark_np_notes_search.py"
       - "tools/benchmark_np_notes_qt_search.py"
       - "tools/preview_np_notes_pr83.ps1"
@@ -103,6 +105,16 @@ jobs:
           $tokens = $null
           [System.Management.Automation.Language.Parser]::ParseFile(
             (Resolve-Path 'tools/check_np_notes_sync_ready.ps1').Path,
+            [ref]$tokens, [ref]$errors
+          ) | Out-Null
+          if ($errors.Count -ne 0) { throw ($errors | Out-String) }
+      - name: Validate persistent sync activation PowerShell syntax
+        shell: pwsh
+        run: |
+          $errors = $null
+          $tokens = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path 'tools/activate_np_notes_sync.ps1').Path,
             [ref]$tokens, [ref]$errors
           ) | Out-Null
           if ($errors.Count -ne 0) { throw ($errors | Out-String) }
