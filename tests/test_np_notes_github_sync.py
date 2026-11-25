@@ -290,9 +290,16 @@ class GithubSyncTests(unittest.TestCase):
         self.assertIsNone(enabled_config(self.device_a))
         self.assertEqual(run_configured_sync(self.device_a).status, "disabled")
         cfg = self.device_a / "NoteSync" / "config.json"
-        atomic_bytes(cfg, json.dumps({"enabled": True, "interval_minutes": 5, "repository": REPO}).encode())
+        atomic_bytes(cfg, json.dumps({"enabled": True, "interval_minutes": 5, "repository": REPO, "attachments": True}).encode())
         with patch.dict(os.environ, {}, clear=True):
             self.assertEqual(run_configured_sync(self.device_a).status, "needs_credentials")
+
+    def test_disabled_attachment_policy_cannot_silently_export_files(self):
+        cfg = self.device_a / "NoteSync" / "config.json"
+        atomic_bytes(cfg, json.dumps({"enabled": True, "interval_minutes": 5,
+                                     "repository": REPO, "attachments": False}).encode())
+        with self.assertRaises(SyncError):
+            enabled_config(self.device_a)
 
     def test_offline_after_local_change_retries_later(self):
         folder = self.note(self.device_a)
