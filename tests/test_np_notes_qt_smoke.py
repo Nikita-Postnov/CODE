@@ -98,6 +98,40 @@ class UndoRetentionQtTests(unittest.TestCase):
     def setUpClass(cls):
         cls.app = QApplication.instance() or QApplication([])
 
+    def test_formatting_only_change_creates_undo_revision(self):
+        from types import SimpleNamespace
+        edit = QTextEdit()
+        self.addCleanup(edit.close)
+        edit.setPlainText("Форматирование")
+        original = edit.toHtml()
+        note = SimpleNamespace(history=[original], history_index=0)
+        class Owner:
+            current_note = note
+            text_edit = edit
+            def update_history_list(self):
+                pass
+            def update_history_list_selection(self):
+                pass
+        source = (APP_DIR / "__init__.py").read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        cls = next(n for n in tree.body if isinstance(n, ast.ClassDef)
+                   and n.name == "NotesApp")
+        method = next(n for n in cls.body if isinstance(n, ast.FunctionDef)
+                      and n.name == "record_state_for_undo")
+        namespace = {"MAX_HISTORY": 50}
+        module = ast.Module(body=[method], type_ignores=[])
+        ast.fix_missing_locations(module)
+        exec(compile(module, "<rich-undo>", "exec"), namespace)
+        cursor = edit.textCursor()
+        cursor.select(QTextCursor.Document)
+        edit.setTextCursor(cursor)
+        edit.setFontWeight(700)
+        namespace["record_state_for_undo"](Owner())
+        self.assertEqual(len(note.history), 2)
+        namespace["record_state_for_undo"](Owner())
+        self.assertEqual(len(note.history), 2)
+        self.assertNotEqual(note.history[0], note.history[1])
+
     def test_history_overflow_keeps_recent_versions(self):
         from types import SimpleNamespace
         text = QTextEdit()
