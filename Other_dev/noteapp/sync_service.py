@@ -104,12 +104,20 @@ class EncryptedOutboundService:
         return matches[0] if matches else None
 
     def _online(self):
-        # Respect system HTTPS proxy/VPN settings without exposing a token.
-        import urllib.request
+        """Probe the *configured private repository*, not the GitHub API root.
+
+        A browser having internet access does not guarantee the configured
+        repository is reachable through Python's proxy/VPN. The actual
+        authenticated metadata endpoint is authoritative for sync readiness.
+        Never log the token or the HTTP request headers.
+        """
         try:
-            with urllib.request.urlopen("https://api.github.com/", timeout=4) as response:
-                return response.status == 200
-        except Exception:
+            return self.transport.assert_private() is True
+        except Exception as exc:
+            # A failed probe must not drop queued local changes. Keep only
+            # a sanitized error class for diagnostics; never include the
+            # exception text, which may contain URLs or proxy credentials.
+            self.last_probe_error = type(exc).__name__
             return False
 
     def _send(self, note_id):
