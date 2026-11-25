@@ -286,6 +286,26 @@ class EmptyFirstRunTests(unittest.TestCase):
         self.assertIn('self.resize(1080, 720)', body)
         self.assertIn('editor_layout_combined.addWidget(self.empty_notes_page, 1)', body)
 
+    def test_first_note_reveals_editor_after_welcome(self):
+        source = (ROOT / "app" / "__init__.py").read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        cls = next(node for node in tree.body
+                   if isinstance(node, ast.ClassDef) and node.name == "NotesApp")
+        creation = next(node for node in cls.body
+                        if isinstance(node, ast.FunctionDef) and node.name == "new_note")
+        body = ast.get_source_segment(source, creation)
+        self.assertIn("self.show_note_with_attachments(note)\n            self._update_editor_visibility()", body)
+
+    def test_crash_snapshot_is_wired_to_editor_signal(self):
+        source = (ROOT / "app" / "__init__.py").read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        cls = next(node for node in tree.body
+                   if isinstance(node, ast.ClassDef) and node.name == "NotesApp")
+        method = next(node for node in cls.body
+                      if isinstance(node, ast.FunctionDef) and node.name == "init_ui")
+        body = ast.get_source_segment(source, method)
+        self.assertIn("self.text_edit.textChanged.connect(self._schedule_recovery_snapshot)", body)
+
     def test_editor_visibility_tracks_empty_page(self):
         source = (ROOT / "app" / "__init__.py").read_text(encoding="utf-8")
         tree = ast.parse(source)
