@@ -1817,7 +1817,8 @@ class NotesApp(NotePersistenceMixin, PluginsMixin, RemindersMixin, TrayMixin, Au
             self.current_note.password_manager = self.password_manager_field.text()
             self.update_current_note_custom_fields()
             self.save_note_to_file(self.current_note)
-            self.record_state_for_undo()
+            # Quiet/autosave выполняется часто: версии истории формирует
+            # отдельный таймер после паузы печати, а не каждый disk flush.
             self._set_unsaved(False)
 
     def open_note_folder(self, note: Note) -> None:
@@ -2058,6 +2059,7 @@ class NotesApp(NotePersistenceMixin, PluginsMixin, RemindersMixin, TrayMixin, Au
                 note_folder = NOTES_DIR / safe_folder_name(
                     previous_note.title, previous_note.uuid, previous_note.timestamp)
                 self._save_payload_to_folder(note_folder, note_snapshot, keep_backups=10)
+                self.record_state_for_undo()
                 self._clear_recovery_snapshot(previous_note.uuid)
             self.current_note = note
             self.tags_label.setText(f"Теги: {', '.join(note.tags) if note and note.tags else 'нет'}")
