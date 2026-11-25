@@ -461,7 +461,7 @@ class SyncEngine:
                     os.fsync(stream.fileno())
         atomic_bytes(folder / "note.json", json_bytes(note))
 
-    def run(self, *, protected_uuid: str | None = None) -> SyncResult:
+    def run(self, *, protected_uuid: str | None = None, cancelled=None) -> SyncResult:
         """Fail closed on network errors. Never remove any local note or attachment."""
         try:
             self.store.check_private()
@@ -473,6 +473,8 @@ class SyncEngine:
         uploaded = downloaded = conflicts = 0
         ids = sorted(set(local) | set(remote))
         for u in ids:
+            if callable(cancelled) and cancelled():
+                return SyncResult("cancelled", uploaded, downloaded, conflicts)
             old = previous.get(u, {})
             entry = local.get(u)
             sha = remote.get(u)
@@ -563,7 +565,7 @@ def enabled_config(data_dir: Path) -> dict | None:
 
 
 def run_configured_sync(data_dir: Path, *, protected_uuid: str | None = None,
-                        stage_downloads: bool = False) -> SyncResult:
+                        stage_downloads: bool = False, cancelled=None) -> SyncResult:
     cfg = enabled_config(data_dir)
     if cfg is None:
         return SyncResult("disabled")
@@ -578,7 +580,7 @@ def run_configured_sync(data_dir: Path, *, protected_uuid: str | None = None,
         return SyncResult("needs_credentials")
     store = GitHubStore(cfg["repository"], token)
     return SyncEngine(Path(data_dir) / "Notes", Path(data_dir) / "NoteSync", store, secret,
-                      stage_downloads=stage_downloads).run(protected_uuid=protected_uuid)
+                      stage_downloads=stage_downloads).run(protected_uuid=protected_uuid, cancelled=cancelled)
 
 
 def apply_configured_pending(data_dir: Path, *, protected_uuid: str | None = None) -> tuple[str, ...]:
