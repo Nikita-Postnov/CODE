@@ -18,7 +18,8 @@ from uuid import UUID
 from .encrypted_sync import GitHubTransport, SyncConflict, seal, unseal
 from .offline_sync import OfflineSyncQueue, OfflineSyncWorker
 from .sync_snapshot import pack_note, UnsafeSnapshot
-from .incoming_sync import import_new_note, stage_conflict, restore_conflict_as_copy
+from .incoming_sync import import_new_note, stage_conflict, restore_conflict_as_copy, IncomingConflict
+from .incoming_apply import stage_pending_update, apply_clean_remote_revision
 
 
 class EncryptedOutboundService:
@@ -31,6 +32,7 @@ class EncryptedOutboundService:
         self.transport = GitHubTransport(owner, repo, token, branch=branch)
         self.queue = OfflineSyncQueue(self.state_directory)
         self._lock = threading.RLock()
+        self._operation_lock = threading.Lock()
         self._db_path = self.state_directory / "remote_revisions.sqlite3"
         self._init_db()
         self.received_count = 0
@@ -111,6 +113,10 @@ class EncryptedOutboundService:
             return False
 
     def _send(self, note_id):
+        with self._operation_lock:
+            return self._send_unlocked(note_id)
+
+    def _send_unlocked(self, note_id):
         folder = self._find_folder(note_id)
         if folder is None:
             raise UnsafeSnapshot("Local note deleted or not found")
@@ -139,6 +145,10 @@ class EncryptedOutboundService:
         return True
 
     def _receive(self):
+        with self._operation_lock:
+            return self._receive_unlocked()
+
+    def _receive_unlocked(self):
         """Import absent notes only; quarantine all divergent remote revisions."""
         self.transport.assert_private()
         for note_id in self.transport.list_note_ids():
@@ -159,6 +169,30 @@ class EncryptedOutboundService:
                             note_id, hashlib.sha256(local_plain).hexdigest()
                         )
                         continue
+                # Existing revisions can advance automatically ONLY when
+                # this disk snapshot equals the previously acknowledged one.
+                baseline = self._digest(note_id)
+                try:
+                    local_clean = (
+                        known is not None and baseline is not None
+                        and hashlib.sha256(pack_note(folder, note_id)).hexdigest()
+                            == baseline
+                    )
+                except (OSError, ValueError, UnsafeSnapshot):
+                    local_clean = False
+                if local_clean:
+                    pending = stage_pending_update(
+                        self.state_directory, note_id, sha, encrypted
+                    )
+                    # Never apply filesystem changes from the sync worker.
+                    for obsolete in pending.parent.glob("*.enc"):
+                        if obsolete != pending:
+                            obsolete.unlink(missing_ok=True)
+                else:
+                    stage_conflict(self.state_directory, note_id, sha, encrypted)
+                continue
+            if known is not None:
+                # A locally deleted existing note must not be resurrected.
                 stage_conflict(self.state_directory, note_id, sha, encrypted)
                 continue
             # Incoming new UUID: never overwrite any local folder.
@@ -174,6 +208,61 @@ class EncryptedOutboundService:
             )
             self.received_count += 1
         return True
+
+    def apply_staged_remote_updates(self, protected_ids=()):
+        """Apply clean revisions on the GUI thread; never modify open notes.
+
+        A busy worker makes this a quick no-op rather than blocking the UI.
+        Returns local paths for explicit in-memory model refresh.
+        """
+        if not self._operation_lock.acquire(blocking=False):
+            return []
+        changed = []
+        try:
+            root = self.state_directory / "pending_remote_updates"
+            if not root.is_dir():
+                return changed
+            blocked = set(protected_ids)
+            for staged in sorted(root.glob("*/*.enc")):
+                note_id, sha = staged.parent.name, staged.stem
+                if note_id in blocked or staged.is_symlink():
+                    continue
+                try:
+                    known = self._known_sha(note_id)
+                    if known == sha:
+                        staged.unlink(missing_ok=True)
+                        continue
+                    if known is None:
+                        raise IncomingConflict("No acknowledged baseline")
+                    folder = self._find_folder(note_id)
+                    if folder is None:
+                        raise IncomingConflict("Local note missing")
+                    encrypted = staged.read_bytes()
+                    updated = apply_clean_remote_revision(
+                        folder, self.state_directory, note_id, encrypted,
+                        self.passphrase, self._digest(note_id),
+                    )
+                    self._remember_sha(note_id, sha)
+                    self._remember_digest(
+                        note_id, hashlib.sha256(pack_note(updated, note_id)).hexdigest()
+                    )
+                    changed.append((note_id, updated))
+                    staged.unlink(missing_ok=True)
+                except Exception:
+                    # The staged version remains encrypted and recoverable.
+                    # Never hide unexpected data failures or drop user edits.
+                    try:
+                        if staged.exists():
+                            stage_conflict(
+                                self.state_directory, note_id, sha,
+                                staged.read_bytes()
+                            )
+                            staged.unlink(missing_ok=True)
+                    except Exception:
+                        pass
+            return changed
+        finally:
+            self._operation_lock.release()
 
     def restore_conflict_copy(self, note_id, sha):
         """User-requested restoration as a separate note, never an overwrite."""
