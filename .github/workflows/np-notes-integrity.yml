@@ -17,6 +17,7 @@ on:
       - "tests/test_np_notes_encrypted_sync.py"
       - "tests/test_np_notes_sync_snapshot.py"
       - "tests/test_np_notes_sync_service.py"
+      - "tests/test_np_notes_incoming_apply.py"
       - "tests/test_np_notes_incoming_sync.py"
       - "tests/test_np_notes_sync_privacy.py"
       - "tests/test_np_notes_sync_credentials.py"
@@ -46,6 +47,7 @@ on:
       - "tests/test_np_notes_encrypted_sync.py"
       - "tests/test_np_notes_sync_snapshot.py"
       - "tests/test_np_notes_sync_service.py"
+      - "tests/test_np_notes_incoming_apply.py"
       - "tests/test_np_notes_incoming_sync.py"
       - "tests/test_np_notes_sync_privacy.py"
       - "tests/test_np_notes_sync_credentials.py"
@@ -77,7 +79,7 @@ jobs:
       - name: Install encryption dependency
         run: python -m pip install "cryptography>=42,<47"
       - name: Validate backups, portability, autosave, plugins, attachments
-        run: python -m unittest -v tests.test_np_notes_integrity tests.test_np_notes_hardening tests.test_np_notes_safety_20261125 tests.test_np_notes_search_benchmark tests.test_np_notes_recovery tests.test_np_notes_offline_sync tests.test_np_notes_encrypted_sync tests.test_np_notes_sync_snapshot tests.test_np_notes_sync_service tests.test_np_notes_incoming_sync tests.test_np_notes_sync_privacy tests.test_np_notes_sync_credentials
+        run: python -m unittest -v tests.test_np_notes_integrity tests.test_np_notes_hardening tests.test_np_notes_safety_20261125 tests.test_np_notes_search_benchmark tests.test_np_notes_recovery tests.test_np_notes_offline_sync tests.test_np_notes_encrypted_sync tests.test_np_notes_sync_snapshot tests.test_np_notes_sync_service tests.test_np_notes_incoming_apply tests.test_np_notes_incoming_sync tests.test_np_notes_sync_privacy tests.test_np_notes_sync_credentials
       - name: Benchmark synthetic notes search (100 / 1000 / 10000)
         run: python tools/benchmark_np_notes_search.py --notes 100,1000,10000 --repeats 3
 
