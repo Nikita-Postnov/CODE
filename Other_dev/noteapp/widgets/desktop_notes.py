@@ -731,9 +731,24 @@ class DesktopNotesWidget(QWidget):
                 self, "Ошибка", f"Не удалось открыть приложение 'Заметки': {e}"
             )
 
+    def copy_note_text(self, item: QListWidgetItem) -> None:
+        """Копирование без изменения заметки и без служебной метки списка."""
+        if item is None:
+            return
+        text = item.text() or ""
+        source = item.data(Qt.UserRole + 2) or "widget"
+        if source == "app" and text.startswith("📝 "):
+            text = text[2:]
+        elif source == "widget" and text.startswith("📌 "):
+            text = text[2:]
+        QApplication.clipboard().setText(text)
+
     def show_context_menu(self, pos):
         item = self.notes_list.itemAt(pos)
         menu = QMenu(self)
+        if item is not None:
+            menu.addAction("Копировать текст", lambda: self.copy_note_text(item))
+            menu.addSeparator()
         if item is not None and (item.data(Qt.UserRole + 2) or "widget") == "app":
             menu.addAction(
                 "Открыть в «Заметках»", lambda: self.open_app_note_in_app(item)
