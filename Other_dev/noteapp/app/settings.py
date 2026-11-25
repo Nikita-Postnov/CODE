@@ -29,6 +29,9 @@ from PySide6.QtWidgets import (
     QFormLayout,
     QLabel,
     QSpinBox,
+    QPushButton,
+    QInputDialog,
+    QMessageBox,
     QStyleFactory,
 )
 
@@ -230,6 +233,60 @@ class SettingsMixin:
         sync_status_timer.timeout.connect(refresh_sync_status)
         sync_status_timer.start(2000)
         layout.addRow("GitHub-синхронизация:", sync_label)
+
+        conflict_button = QPushButton("Сохранить конфликт как отдельную заметку", dialog)
+        conflict_button.setToolTip(
+            "Не удаляет и не перезаписывает исходную заметку. "
+            "Создаёт копию удалённой версии с другим UUID."
+        )
+
+        def resolve_one_conflict():
+            service = getattr(self, "_np_notes_sync", None)
+            if service is None:
+                return
+            conflict_root = service.state_directory / "remote_conflicts"
+            options = {}
+            if conflict_root.is_dir():
+                for stored in conflict_root.glob("*/*.enc"):
+                    note_id, sha = stored.parent.name, stored.stem
+                    label = f"{note_id} · версия {sha[:12]}"
+                    options[label] = (note_id, sha)
+            if not options:
+                QMessageBox.information(dialog, "Конфликты", "Конфликтов нет.")
+                return
+            label, ok = QInputDialog.getItem(
+                dialog, "Восстановить версию",
+                "Выбери зашифрованную конфликтующую версию:",
+                list(options), 0, False,
+            )
+            if not ok or label not in options:
+                return
+            confirm = QMessageBox.question(
+                dialog, "Создать копию?",
+                "Конфликтующая версия станет отдельной заметкой. "
+                "Исходная заметка и зашифрованный конфликт сохранятся. "
+                "Продолжить?",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+            )
+            if confirm != QMessageBox.Yes:
+                return
+            try:
+                service.restore_conflict_copy(*options[label])
+            except Exception:
+                logging.exception("Unable to restore NP Notes encrypted conflict")
+                QMessageBox.warning(
+                    dialog, "Ошибка восстановления",
+                    "Не удалось создать копию. Исходная заметка не изменена."
+                )
+                return
+            QMessageBox.information(
+                dialog, "Восстановлено",
+                "Создана отдельная заметка с копией конфликтующей версии."
+            )
+            refresh_sync_status()
+
+        conflict_button.clicked.connect(resolve_one_conflict)
+        layout.addRow("Разрешение конфликтов:", conflict_button)
         buttons = QDialogButtonBox(
             QDialogButtonBox.Ok | QDialogButtonBox.Cancel, dialog
         )
