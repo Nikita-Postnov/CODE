@@ -102,14 +102,19 @@ class SearchMixin:
             matches_tag_filter = tag in [t.lower() for t in note.tags] if tag else True
             if not text:
                 return matches_tag_filter
-            note_tags_joined = " ".join([t for t in (note.tags or [])]).lower()
-            matches_search_by_tags = text in note_tags_joined if note_tags_joined else False
+            note_tags_joined = " ".join(str(t) for t in (note.tags or [])).casefold()
+            matches_search_by_tags = text in note_tags_joined
+            title_match = text in (note.title or "").casefold()
+            reminder_match = text in str(note.reminder or "").casefold()
             if mode == "Заголовок":
-                matches_search_main = text in (note.title or "").lower()
+                matches_search_main = title_match
             elif mode == "Напоминание":
-                matches_search_main = bool(note.reminder) and text in str(note.reminder).lower()
+                matches_search_main = reminder_match
+            elif mode == "Везде" and (title_match or reminder_match or matches_search_by_tags):
+                # Не конвертируем HTML в QTextDocument, если метаданные уже совпали.
+                return matches_tag_filter
             else:
-                # Не используем устаревший кэш для открытой заметки.
+                # Редактируемый документ всегда приоритетнее кэша.
                 if self.current_note and note.uuid == self.current_note.uuid:
                     content_plain = self.text_edit.toPlainText()
                 else:
@@ -120,9 +125,6 @@ class SearchMixin:
                         content_plain = doc.toPlainText()
                         note.content_txt = content_plain
                 matches_search_main = text in content_plain.casefold()
-                if mode == "Везде":
-                    matches_search_main = (matches_search_main
-                                           or text in (note.title or "").casefold())
             return matches_tag_filter and (matches_search_main or matches_search_by_tags)
         filtered = [n for n in self.notes if _matches(n)]
         fav_color = self.get_contrast_favorite_color()
