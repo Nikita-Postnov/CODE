@@ -140,6 +140,14 @@ class DesktopWidgetTests(unittest.TestCase):
         self.assertEqual(clipboard.value, "Personal")
 
 
+class DesktopWidgetSettingsTests(unittest.TestCase):
+    def test_topmost_setting_is_persisted_with_default_enabled(self):
+        code = (ROOT / "widgets" / "desktop_notes.py").read_text(encoding="utf-8")
+        self.assertIn('s.value("always_on_top", "true")', code)
+        self.assertIn('s.setValue("always_on_top",', code)
+        self.assertIn("topmost.toggled.connect(self.set_always_on_top)", code)
+
+
 class SearchPerformanceTests(unittest.TestCase):
     def test_global_search_short_circuits_metadata(self):
         code = (ROOT / "app" / "search.py").read_text(encoding="utf-8")
