@@ -157,6 +157,75 @@ class HorizontalLineRegression(unittest.TestCase):
         reopened.setHtml(editor.text_edit.toHtml())
         self.assertEqual(reopened.toPlainText(), plain)
 
+
+    def test_replacing_old_dot_does_not_add_blank_line_before_heading(self):
+        editor = self.new_editor("Above\\n.\\nHeading")
+        cursor = editor.text_edit.textCursor()
+        cursor.setPosition(len("Above\\n"))
+        editor.text_edit.setTextCursor(cursor)
+        editor.line_button.click()
+        lines = editor.text_edit.toPlainText().splitlines()
+        self.assertEqual(len(lines), 3, lines)
+        self.assertEqual(lines[0], "Above")
+        self.assertGreater(len(lines[1]), 40)
+        self.assertEqual(set(lines[1]), {"─"})
+        self.assertEqual(lines[2], "Heading")
+        copy = CustomTextEdit()
+        copy.setHtml(editor.text_edit.toHtml())
+        self.assertEqual(copy.toPlainText(), editor.text_edit.toPlainText())
+
+    def test_inserting_into_blank_paragraph_does_not_duplicate_blank_line(self):
+        editor = self.new_editor("Above\\n\\nHeading")
+        cursor = editor.text_edit.textCursor()
+        cursor.setPosition(len("Above\\n"))
+        editor.text_edit.setTextCursor(cursor)
+        editor.line_button.click()
+        lines = editor.text_edit.toPlainText().splitlines()
+        self.assertEqual(len(lines), 3, lines)
+        self.assertEqual(lines[0], "Above")
+        self.assertEqual(set(lines[1]), {"─"})
+        self.assertEqual(lines[2], "Heading")
+
+    def test_inserting_in_middle_preserves_suffix_without_empty_paragraph(self):
+        editor = self.new_editor("BeforeAfter")
+        cursor = editor.text_edit.textCursor()
+        cursor.setPosition(len("Before"))
+        editor.text_edit.setTextCursor(cursor)
+        editor.line_button.click()
+        lines = editor.text_edit.toPlainText().splitlines()
+        self.assertEqual(len(lines), 3, lines)
+        self.assertEqual(lines[0], "Before")
+        self.assertEqual(set(lines[1]), {"─"})
+        self.assertEqual(lines[2], "After")
+
+    def test_repair_removes_only_one_old_blank_after_rule_and_keeps_heading(self):
+        rule = "─" * 60
+        original = "Before\\n" + rule + "\\n\\nHeading\\nElse\\n\\nIntended blank"
+        editor = self.new_editor(original)
+        before = editor.text_edit.toPlainText()
+        self.assertEqual(before, original)
+        with patch("noteapp.app.editor.QMessageBox.question",
+                   return_value=QMessageBox.Yes) as question:
+            editor.repair_button.click()
+        self.assertEqual(question.call_count, 1)
+        self.assertIn("Пустых строк после линий: 1", question.call_args.args[2])
+        expected = "Before\\n" + rule + "\\nHeading\\nElse\\n\\nIntended blank"
+        self.assertEqual(editor.text_edit.toPlainText(), expected)
+        copy = CustomTextEdit()
+        copy.setHtml(editor.text_edit.toHtml())
+        self.assertEqual(copy.toPlainText(), expected)
+
+    def test_declining_repair_of_old_gap_preserves_document_exactly(self):
+        rule = "─" * 60
+        editor = self.new_editor("Before\\n" + rule + "\\n\\nHeading")
+        original = editor.text_edit.toHtml()
+        with patch("noteapp.app.editor.QMessageBox.question",
+                   return_value=QMessageBox.No) as question:
+            editor.repair_button.click()
+        self.assertEqual(question.call_count, 1)
+        self.assertEqual(editor.text_edit.toHtml(), original)
+        self.assertEqual(editor.unsaved_calls, [])
+
     def test_declining_repair_does_not_modify_text(self):
         editor = self.new_editor("Top\n.\nBottom")
         initial = editor.text_edit.toHtml()
