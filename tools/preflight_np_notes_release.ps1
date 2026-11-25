@@ -40,7 +40,8 @@ $processes = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
 Write-Output "NOTES_PROCESSES=$($processes.Count)"
 foreach ($process in $processes) {
     $exe = if ($process.ExecutablePath) { $process.ExecutablePath } else { '(unknown)' }
-    Write-Output "NOTES_PROCESS_PID=$($process.ProcessId);NAME=$($process.Name);EXE=$exe"
+    $argsText = if ($process.CommandLine) { $process.CommandLine } else { '(unavailable)' }
+    Write-Output "NOTES_PROCESS_PID=$($process.ProcessId);NAME=$($process.Name);EXE=$exe;COMMAND=$argsText"
 }
 Write-Output 'PROCESSES_NOT_TERMINATED=TRUE'
 Write-Output "DATA_NOT_MODIFIED=TRUE"
