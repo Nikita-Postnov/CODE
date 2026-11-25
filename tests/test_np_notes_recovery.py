@@ -203,6 +203,19 @@ class DraftSecurityTests(unittest.TestCase):
         self.assertIsNone(REC.read_draft(self.folder, self.note_uuid))
 
     @unittest.skipUnless(os.name == "nt", "DPAPI is Windows-only")
+    def test_atomic_draft_write_failure_retains_previous_ciphertext(self):
+        from unittest.mock import patch
+        existing = REC.save_draft(self.folder, self.note_uuid, "previous draft")
+        original_ciphertext = existing.read_bytes()
+        with patch.object(REC.os, "replace", side_effect=OSError("simulated failure")):
+            with self.assertRaises(OSError):
+                REC.save_draft(self.folder, self.note_uuid, "new draft")
+        self.assertEqual(existing.read_bytes(), original_ciphertext)
+        self.assertEqual(REC.read_draft(self.folder, self.note_uuid)["html"],
+                         "previous draft")
+        self.assertEqual(list(self.folder.glob(".draft_*.tmp")), [])
+
+    @unittest.skipUnless(os.name == "nt", "DPAPI is Windows-only")
     def test_invalid_ciphertext_is_not_treated_as_plaintext(self):
         path = REC.draft_path(self.folder, self.note_uuid)
         path.write_bytes(b"not-a-valid-DPAPI-blob")
