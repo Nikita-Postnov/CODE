@@ -148,6 +148,52 @@ class DesktopWidgetSettingsTests(unittest.TestCase):
         self.assertIn("topmost.toggled.connect(self.set_always_on_top)", code)
 
 
+class ExitSafetyTests(unittest.TestCase):
+    def test_failed_save_prevents_process_exit(self):
+        source = (ROOT / "app" / "__init__.py").read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        cls = next(n for n in tree.body
+                   if isinstance(n, ast.ClassDef) and n.name == "NotesApp")
+        method = next(n for n in cls.body
+                      if isinstance(n, ast.FunctionDef) and n.name == "exit_app")
+        module = ast.Module(body=[method], type_ignores=[])
+        ast.fix_missing_locations(module)
+        class QMessageBox:
+            calls = 0
+            @classmethod
+            def warning(cls, *args):
+                cls.calls += 1
+        class Logging:
+            @staticmethod
+            def exception(*args):
+                pass
+        class QApplication:
+            @staticmethod
+            def instance():
+                raise AssertionError("app.quit must not be reached")
+        namespace = {"QMessageBox": QMessageBox, "logging": Logging,
+                     "QApplication": QApplication}
+        exec(compile(module, "<exit-safety>", "exec"), namespace)
+        class Fake:
+            def __init__(self):
+                self.dirty = []
+            def save_note_quiet(self, **kwargs):
+                raise OSError("disk full")
+            def save_all_notes_to_disk(self):
+                raise AssertionError("should not be reached")
+            def _set_unsaved(self, value):
+                self.dirty.append(value)
+        fake = Fake()
+        namespace["exit_app"](fake)
+        self.assertEqual(fake.dirty, [True])
+        self.assertEqual(QMessageBox.calls, 1)
+
+    def test_search_keyboard_shortcut_configured(self):
+        source = (ROOT / "app" / "__init__.py").read_text(encoding="utf-8")
+        self.assertIn('QKeySequence("Ctrl+Shift+F")', source)
+        self.assertIn("search_focus_shortcut.activated.connect(self.search_bar.setFocus)", source)
+
+
 class NotesOrganizationTests(unittest.TestCase):
     def test_untagged_view_is_non_destructive(self):
         source = (ROOT / "app" / "__init__.py").read_text(encoding="utf-8")
