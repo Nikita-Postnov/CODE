@@ -7,6 +7,7 @@ No remote deletions, no overwriting concurrent edits, no password-manager export
 from __future__ import annotations
 
 import base64
+import datetime
 import hashlib
 import io
 import json
@@ -169,6 +170,18 @@ def unpack_snapshot(payload: bytes, note_uuid: str) -> tuple[dict, dict[str, byt
     if "password_manager" in note or "password_manager_visible" in note:
         raise SyncError("Remote snapshot contains excluded password-manager field")
     return note, {name[12:]: value for name, value in files.items()}
+
+
+def portable_note_folder(note: dict) -> str:
+    """Match NotesApp safe_folder_name for persisted ISO timestamps."""
+    u = valid_uuid(note["uuid"])
+    title = re.sub(r"[^\w\-_ ]", "_", note.get("title") or "")[:40].strip()
+    timestamp = note.get("timestamp")
+    try:
+        when = datetime.datetime.fromisoformat(timestamp) if isinstance(timestamp, str) else datetime.datetime.now()
+    except (ValueError, TypeError):
+        when = datetime.datetime.now()
+    return f"{title} от {when.strftime('%d.%m.%Y %H-%M')}, UUID({u[:8]})"
 
 
 class GitHubStore:
@@ -371,7 +384,7 @@ class SyncEngine:
     def _import(self, u: str, clear: bytes, folder: Path | None, expected_digest: str | None):
         note, attachments = unpack_snapshot(clear, u)
         if folder is None:
-            folder = self.notes / ("Sync_" + u)
+            folder = self.notes / portable_note_folder(note)
             if folder.exists():
                 raise Conflict("Import destination already exists")
         else:
