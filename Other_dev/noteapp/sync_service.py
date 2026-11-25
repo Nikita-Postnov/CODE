@@ -310,8 +310,17 @@ class EncryptedOutboundService:
 
 
 def configure_from_environment(state_directory: Path, notes_root: Path):
-    """Fail closed: credentials alone never enable real note transfer."""
-    if os.environ.get("NP_NOTES_SYNC_ENABLE") != "1":
+    """Fail closed until a deliberate, backed-up activation is present."""
+    marker = Path(state_directory) / "sync_enabled.json"
+    enabled = os.environ.get("NP_NOTES_SYNC_ENABLE") == "1"
+    if not enabled and marker.is_file() and not marker.is_symlink():
+        try:
+            enabled = json.loads(marker.read_text(encoding="utf-8")) == {
+                "version": 1, "enabled": True
+            }
+        except (OSError, ValueError, UnicodeDecodeError):
+            enabled = False
+    if not enabled:
         return None
     from .sync_credentials import load_dpapi_credentials
     config = load_dpapi_credentials(state_directory)
