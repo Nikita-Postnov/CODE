@@ -17,7 +17,7 @@ if ($Disable) {
     if (-not (Test-Path -LiteralPath $state -PathType Container)) {
         throw 'NP Notes sync state folder not found'
     }
-    '{"version":1,"enabled":false}' | Set-Content -LiteralPath $marker -Encoding UTF8
+    [IO.File]::WriteAllText($marker, '{"version":1,"enabled":false}', (New-Object Text.UTF8Encoding($false)))
     Write-Host 'SYNC_ENABLED=FALSE'
     Write-Host 'Restart NP Notes to stop an active worker'
     exit 0
@@ -63,7 +63,7 @@ if (-not (Test-Path -LiteralPath (Join-Path $backup 'SHA256-manifest.json') -Pat
 $payload = '{"version":1,"enabled":true}'
 $temporary = Join-Path $state ('.sync_enabled-' + [guid]::NewGuid().ToString('N') + '.tmp')
 try {
-    [IO.File]::WriteAllText($temporary, $payload, [Text.Encoding]::UTF8)
+    [IO.File]::WriteAllText($temporary, $payload, (New-Object Text.UTF8Encoding($false)))
     Move-Item -LiteralPath $temporary -Destination $marker -Force
 }
 finally {
