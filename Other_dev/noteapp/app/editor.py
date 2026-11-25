@@ -427,6 +427,23 @@ class EditorMixin:
                 self.text_edit.setTextCursor(cursor)
                 self.text_edit.setFocus()
 
+    def toggle_checkbox_at_cursor(self) -> None:
+        """Переключает ☐ / ☑ в текущем абзаце с поддержкой Undo."""
+        cursor = self.text_edit.textCursor()
+        block = cursor.block()
+        text = block.text()
+        if text.startswith("☐ ") or text.startswith("☑ "):
+            replacement = "☑" if text.startswith("☐ ") else "☐"
+            toggle = QTextCursor(block)
+            toggle.beginEditBlock()
+            toggle.setPosition(block.position())
+            toggle.setPosition(block.position() + 1, QTextCursor.KeepAnchor)
+            toggle.insertText(replacement)
+            toggle.endEditBlock()
+        else:
+            self.insert_checkbox()
+        self.text_edit.setFocus()
+
     def insert_horizontal_line(self) -> None:
         cursor = self.text_edit.textCursor()
         cursor.beginEditBlock()
