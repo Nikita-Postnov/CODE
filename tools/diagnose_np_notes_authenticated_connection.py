@@ -10,13 +10,12 @@ import sys
 import urllib.error
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "Other_dev"))
 
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--launcher-root", type=Path, required=True)
     options = parser.parse_args()
+    sys.path.insert(0, str(options.launcher_root))
     from noteapp.sync_credentials import load_dpapi_credentials
     from noteapp.encrypted_sync import GitHubTransport
 
