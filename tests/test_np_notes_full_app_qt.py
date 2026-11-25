@@ -8,6 +8,7 @@ Production Launcher/Data is never accessed.
 from __future__ import annotations
 
 import os
+import json
 import subprocess
 import sys
 import tempfile
@@ -52,7 +53,34 @@ def gui_worker(root: Path) -> None:
     assert not window.empty_notes_page.isVisible(), "Welcome screen still visible"
     assert window.current_note.title == "Проверка первого запуска"
     assert window.notes_list.count() == 1
-    assert (root / "Data" / "Notes").exists()
+    first_uuid = window.current_note.uuid
+    first_folder = window._note_folder_path(window.current_note, root / "Data" / "Notes")
+    assert (first_folder / "note.json").is_file(), "New note was not persisted immediately"
+    window.text_edit.setPlainText("Несохранённые правки перед переключением")
+    with patch("PySide6.QtWidgets.QInputDialog.getText",
+               return_value=("Вторая тестовая заметка", True)):
+        window.new_note()
+    app.processEvents()
+    assert window.current_note.title == "Вторая тестовая заметка"
+    assert len(window.notes) == 2
+    payload = json.loads((first_folder / "note.json").read_text(encoding="utf-8"))
+    assert payload["uuid"] == first_uuid
+    assert "Несохранённые правки перед переключением" in payload["content"]
+
+    current_uuid = window.current_note.uuid
+    original_save = window.save_note_to_file
+    def simulated_failure(note):
+        if note.title == "Проверка отказа записи":
+            raise OSError("simulated disk full")
+        return original_save(note)
+    with patch("PySide6.QtWidgets.QInputDialog.getText",
+               return_value=("Проверка отказа записи", True)), \\
+         patch("PySide6.QtWidgets.QMessageBox.warning") as warning, \\
+         patch.object(window, "save_note_to_file", side_effect=simulated_failure):
+        window.new_note()
+        assert warning.called, "Save failure must be reported"
+    assert window.current_note.uuid == current_uuid, "Editor switched despite disk failure"
+    assert len(window.notes) == 2, "Failed note was added to list"
 
     (root / "ready.flag").write_text("FIRST_RUN_GUI_OK", encoding="ascii")
     # Worker intentionally remains running; the controller stops this temporary
