@@ -93,6 +93,46 @@ def extract_notesapp_method(name):
     return namespace[name]
 
 
+class UndoRetentionQtTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QApplication.instance() or QApplication([])
+
+    def test_history_overflow_keeps_recent_versions(self):
+        from types import SimpleNamespace
+        text = QTextEdit()
+        self.addCleanup(text.close)
+        source = (APP_DIR / "__init__.py").read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        cls = next(n for n in tree.body if isinstance(n, ast.ClassDef)
+                   and n.name == "NotesApp")
+        method = next(n for n in cls.body if isinstance(n, ast.FunctionDef)
+                      and n.name == "record_state_for_undo")
+        namespace = {"QTextDocument": QTextDocument, "MAX_HISTORY": 4}
+        module = ast.Module(body=[method], type_ignores=[])
+        ast.fix_missing_locations(module)
+        exec(compile(module, "<undo-retention>", "exec"), namespace)
+        note = SimpleNamespace(history=[""], history_index=0)
+        class Owner:
+            current_note = note
+            text_edit = text
+            def update_history_list(self):
+                pass
+            def update_history_list_selection(self):
+                pass
+        obj = Owner()
+        for i in range(10):
+            text.setPlainText("Шаг " + str(i))
+            namespace["record_state_for_undo"](obj)
+        self.assertEqual(len(note.history), 4)
+        self.assertEqual(note.history_index, 3)
+        plain = []
+        for html in note.history:
+            doc = QTextDocument()
+            doc.setHtml(html)
+            plain.append(doc.toPlainText())
+        self.assertEqual(plain, ["Шаг 6", "Шаг 7", "Шаг 8", "Шаг 9"])
+
 class RecentNotesQtTests(unittest.TestCase):
     def test_recent_sort_uses_datetime_including_offsets(self):
         source = (APP_DIR / "__init__.py").read_text(encoding="utf-8")
