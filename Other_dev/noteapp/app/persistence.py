@@ -271,8 +271,17 @@ class NotePersistenceMixin:
             folder = note_path.parent
             backup_name = f"note_backup_{time.time_ns()}_{uuid.uuid4().hex[:8]}.json"
             backup_path = folder / backup_name
-            shutil.copy2(note_path, backup_path)
-            self._rotate_backups(folder, keep=keep)
+            temporary = backup_path.with_suffix(".tmp")
+            try:
+                # Неполная копия не должна попасть в список рабочих бэкапов.
+                with open(note_path, "rb") as original, open(temporary, "xb") as saved:
+                    shutil.copyfileobj(original, saved)
+                    saved.flush()
+                    os.fsync(saved.fileno())
+                os.replace(temporary, backup_path)
+                self._rotate_backups(folder, keep=keep)
+            finally:
+                temporary.unlink(missing_ok=True)
         except Exception:
             logging.exception("Failed to create backup for %s", qt_path(note_path))
 
