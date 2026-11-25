@@ -37,7 +37,7 @@ function IsOptionalDiagnosticLog($Item) {
     if ($Item.Name -notmatch '(?i)\.log(?:\.\d+)?$') { return $false }
     $relative = $Item.FullName.Substring($source.Length).TrimStart('\')
     $firstFolder = ($relative -split '\\', 2)[0]
-    if ($firstFolder -match '^(?i:Notes|Trash|Attachments|Archive|Backups|Recovery|Заметки|Корзина|Вложения|Архив)$') {
+    if ($firstFolder -match '^(?i:Notes|Trash|Attachments|Archive|Backups|Recovery|Passwords|Plugins)$') {
         return $false
     }
     return $true
