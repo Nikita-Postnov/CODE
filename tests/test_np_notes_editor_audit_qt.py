@@ -149,7 +149,11 @@ class EditorControlsAudit(unittest.TestCase):
         for i in range(4):
             a = host.text_edit.document().findBlockByNumber(i).blockFormat().alignment()
             b = clone.document().findBlockByNumber(i).blockFormat().alignment()
-            self.assertEqual(a & Qt.AlignHorizontal_Mask, b & Qt.AlignHorizontal_Mask)
+            # Qt may add AlignAbsolute during HTML import; this changes
+            # bidi semantics, not the visible horizontal alignment.
+            core = (Qt.AlignLeft, Qt.AlignRight, Qt.AlignHCenter, Qt.AlignJustify)
+            self.assertEqual(tuple(bool(a & bit) for bit in core),
+                             tuple(bool(b & bit) for bit in core))
 
     def test_headings_h1_h2_h3_and_roundtrip(self):
         host = self.new_host("Heading One\nHeading Two\nHeading Three")
@@ -295,6 +299,42 @@ class EditorControlsAudit(unittest.TestCase):
         host.clear_formatting()
         self.assertEqual(host.text_edit.toPlainText(), "Bold")
         self.roundtrip(host)
+
+    def test_clear_formatting_resets_new_paragraph_spacing(self):
+        host = self.new_host("Formatting")
+        self.select(host, 0, len("Formatting"))
+        host.toggle_bold()
+        host.set_paragraph_line_spacing(1.5)
+        host.set_paragraph_after_spacing(8)
+        self.assertAlmostEqual(
+            host.text_edit.textCursor().blockFormat().lineHeight(), 150
+        )
+        host.clear_formatting()
+        fmt = host.text_edit.textCursor().blockFormat()
+        self.assertAlmostEqual(fmt.bottomMargin(), 0)
+        self.assertTrue(
+            fmt.lineHeightType() != QTextBlockFormat.ProportionalHeight.value
+            or fmt.lineHeight() == 100
+        )
+        self.assertEqual(host.text_edit.toPlainText(), "Formatting")
+        self.roundtrip(host)
+
+    def test_delete_entire_table_leaves_neighboring_text(self):
+        host = self.new_host("Above")
+        c = host.text_edit.textCursor()
+        c.movePosition(QTextCursor.End)
+        host.text_edit.setTextCursor(c)
+        host.text_edit._insert_table(rows=2, cols=2)
+        frames = [f for f in host.text_edit.document().rootFrame().childFrames()
+                  if hasattr(f, "cellAt")]
+        self.assertEqual(len(frames), 1)
+        tbl = frames[0]
+        c = tbl.cellAt(0, 0).firstCursorPosition()
+        host.text_edit.setTextCursor(c)
+        host.text_edit._table_delete_table()
+        html = host.text_edit.toHtml().lower()
+        self.assertNotIn("<table", html)
+        self.assertIn("Above", host.text_edit.toPlainText())
 
     def test_plain_and_rich_copy_mime_sanitization(self):
         host = self.new_host("Copy rich")
