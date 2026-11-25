@@ -42,6 +42,8 @@ jobs:
         run: python -m compileall -q Other_dev/noteapp Other_dev/notes_app.py
       - name: Validate backups, portability, autosave, plugins, attachments
         run: python -m unittest -v tests.test_np_notes_integrity tests.test_np_notes_hardening tests.test_np_notes_safety_20261125 tests.test_np_notes_search_benchmark
+      - name: Benchmark synthetic notes search (100 / 1000 / 10000)
+        run: python tools/benchmark_np_notes_search.py --notes 100,1000,10000 --repeats 3
 
   qt-editor-smoke:
     runs-on: windows-latest
