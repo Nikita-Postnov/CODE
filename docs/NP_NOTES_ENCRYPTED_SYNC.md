@@ -1,6 +1,6 @@
 # NP Notes — encrypted offline-first GitHub sync
 
-Status: **draft / pre-release. Do not merge or deploy to real Data yet.**
+Status: **draft / pre-release. Real note synchronization remains disabled until explicit activation.**
 
 ## Intended behavior
 
@@ -36,6 +36,9 @@ The application reads these process environment variables on startup:
 - `NP_NOTES_SYNC_TOKEN`: fine-grained access token.
 - `NP_NOTES_SYNC_PASSPHRASE`: strong shared encryption passphrase (16+ chars).
 - `NP_NOTES_SYNC_BRANCH`: optional, defaults to `main`.
+- `NP_NOTES_SYNC_ENABLE=1`: **required explicit activation gate**; storing DPAPI credentials is never enough to activate real-note transfer.
+
+On Windows, use `tools/configure_np_notes_encrypted_sync.ps1` to store the token and passphrase with the current user's DPAPI. Never put secrets in commands or screenshots. `tools/test_np_notes_sync_live_synthetic.py` tests the encrypted private GitHub path using only synthetic note contents and deletes its test object from the current branch. `tools/check_np_notes_sync_ready.ps1` performs a local read-only preflight.
 
 If a required setting is missing, cloud transport does **not** start.
 Tokens/passphrases are not stored in the GitHub source repository.
@@ -48,8 +51,11 @@ environment variables.
 - The PR does not create a data repository, create tokens, enable production
   credentials, or migrate existing user data.
 - Concurrent edits are preserved but **not auto-merged**: the remote revision
-  remains encrypted in the conflict quarantine. Safe interactive resolution
-  is required before claiming complete two-way synchronization.
+  remains encrypted in the conflict quarantine. In the settings window, the
+  explicit **Сохранить конфликт как отдельную заметку** action imports a
+  selected remote revision with a new UUID, without changing either the
+  existing local note or the encrypted quarantine. Existing-note fast-forward
+  synchronization is not complete and must not be advertised as working.
 - A single Contents API snapshot is limited by the program's 24 MiB encoded
   snapshot budget. Oversized content is retained locally and stays pending.
 - No deletion is propagated to other devices yet. This prevents accidental
@@ -65,7 +71,7 @@ From the CODE repository root:
 
 ```shell
 python -m pip install -r Other_dev/noteapp/requirements-sync.txt
-python -m unittest -v tests.test_np_notes_offline_sync tests.test_np_notes_encrypted_sync tests.test_np_notes_sync_snapshot tests.test_np_notes_sync_service tests.test_np_notes_incoming_sync tests.test_np_notes_sync_privacy
+python -m unittest -v tests.test_np_notes_offline_sync tests.test_np_notes_encrypted_sync tests.test_np_notes_sync_snapshot tests.test_np_notes_sync_service tests.test_np_notes_incoming_sync tests.test_np_notes_sync_privacy tests.test_np_notes_sync_credentials
 ```
 
 These tests never read the real `Launcher/Data` directory.
