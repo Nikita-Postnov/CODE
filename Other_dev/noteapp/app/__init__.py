@@ -266,7 +266,17 @@ class NotesApp(NotePersistenceMixin, PluginsMixin, RemindersMixin, TrayMixin, Au
 
 
     def _apply_preloaded_notes(self, notes: list[Note]) -> None:
-        self.notes = notes or []
+        # Снимок читается в другом потоке. Пользователь может успеть создать
+        # или изменить заметку до его завершения; такой объект нельзя
+        # затирать более старой копией из фонового результата.
+        loaded = list(notes or [])
+        existing = list(getattr(self, "notes", []) or [])
+        if existing:
+            merged = {note.uuid: note for note in loaded}
+            merged.update({note.uuid: note for note in existing})
+            self.notes = list(merged.values())
+        else:
+            self.notes = loaded
         if not self.notes:
             self.notes_list.clear()
             self._update_editor_visibility()
