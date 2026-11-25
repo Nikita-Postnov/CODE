@@ -332,6 +332,47 @@ class FirstNoteDialogTests(unittest.TestCase):
         self.assertIn('dialog.setCancelButtonText("Отмена")', body)
 
 
+class UndoNavigationPersistenceTests(unittest.TestCase):
+    def test_undo_saves_without_replacing_redo_history(self):
+        from types import SimpleNamespace
+        source = (ROOT / "app" / "__init__.py").read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        cls = next(n for n in tree.body if isinstance(n, ast.ClassDef)
+                   and n.name == "NotesApp")
+        method = next(n for n in cls.body if isinstance(n, ast.FunctionDef)
+                      and n.name == "_persist_history_navigation")
+        ns = {"logging": __import__("logging")}
+        module = ast.Module(body=[method], type_ignores=[])
+        ast.fix_missing_locations(module)
+        exec(compile(module, "<undo-save>", "exec"), ns)
+        class Timer:
+            stopped = False
+            def stop(self):
+                self.stopped = True
+        class Edit:
+            def toHtml(self):
+                return "<p>previous version</p>"
+        note = SimpleNamespace(uuid="note", content="new", history=["before", "after"],
+                               history_index=0)
+        class Owner:
+            current_note = note
+            text_edit = Edit()
+            _save_debouncer = Timer()
+            dirty = None
+            saved = None
+            def _set_unsaved(self, flag):
+                self.dirty = flag
+            def save_note_to_file(self, note):
+                self.saved = note.content
+        owner = Owner()
+        ns["_persist_history_navigation"](owner)
+        self.assertEqual(owner.saved, "<p>previous version</p>")
+        self.assertTrue(owner._save_debouncer.stopped)
+        self.assertFalse(owner.dirty)
+        self.assertEqual(note.history, ["before", "after"])
+        self.assertEqual(note.history_index, 0)
+
+
 class DebouncedHistoryPersistenceTests(unittest.TestCase):
     def test_grouped_history_is_persisted_without_silent_data_loss(self):
         source = (ROOT / "app" / "__init__.py").read_text(encoding="utf-8")
