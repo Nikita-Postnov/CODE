@@ -2458,6 +2458,26 @@ class NotesApp(NotePersistenceMixin, PluginsMixin, RemindersMixin, TrayMixin, Au
             self.current_note.favorite = not self.current_note.favorite
             self.refresh_notes_list()
 
+    def show_recent_notes(self) -> None:
+        """Последние 15 заметок без изменения порядка или JSON на диске."""
+        self.notes_list.clear()
+        recent = sorted(
+            self.notes,
+            key=lambda note: self._timestamp_sort_key(note),
+            reverse=True,
+        )[:15]
+        for note in recent:
+            stamp = QDateTime.fromString(note.timestamp or "", Qt.ISODate)
+            display_date = stamp.toString("dd.MM.yyyy") if stamp.isValid() else ""
+            item = QListWidgetItem(
+                f"{note.title} — {display_date}" + (" 🔔" if note.reminder else "")
+            )
+            item.setData(Qt.UserRole, note)
+            item.setFont(QFont("Segoe UI Emoji", 10))
+            if note.favorite:
+                item.setForeground(self.get_contrast_favorite_color())
+            self.notes_list.addItem(item)
+
     def show_untagged_notes(self) -> None:
         """Виртуальная группа заметок без тегов — без изменения их хранения."""
         self.notes_list.clear()
@@ -2709,6 +2729,10 @@ class NotesApp(NotePersistenceMixin, PluginsMixin, RemindersMixin, TrayMixin, Au
         no_tags_button.setToolTip("Показать заметки без тегов (без изменения данных)")
         no_tags_button.clicked.connect(self.show_untagged_notes)
         flow_layout.addWidget(no_tags_button)
+        recent_button = QPushButton("Недавние")
+        recent_button.setToolTip("Последние 15 заметок по дате изменения")
+        recent_button.clicked.connect(self.show_recent_notes)
+        flow_layout.addWidget(recent_button)
         reset_button = QPushButton("Сбросить фильтр")
         reset_button.clicked.connect(self.refresh_notes_list)
         flow_layout.addWidget(reset_button)
