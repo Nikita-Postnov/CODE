@@ -8,13 +8,28 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication, QToolBar
 
-from choice_dev import FriendlyLauncher
+from choice_dev import FriendlyLauncher, choice_window_icon, choice_icon_paths, set_choice_windows_identity
 
 
 class ChoiceWindowSmokeTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.app = QApplication.instance() or QApplication([])
+
+    def test_choice_has_dedicated_icon_even_without_files(self):
+        with patch("choice_dev.choice_icon_paths", return_value=[]):
+            icon = choice_window_icon()
+        self.assertFalse(icon.isNull())
+        self.assertFalse(icon.pixmap(32, 32).isNull())
+
+    def test_installed_and_portable_icon_locations(self):
+        paths = [p.as_posix() for p in choice_icon_paths()]
+        self.assertTrue(any(p.lower().endswith("/data/choice.ico") for p in paths))
+        self.assertTrue(any(p.lower().endswith("/choice.ico") for p in paths))
+
+    def test_app_id_non_windows_does_not_modify_identity(self):
+        with patch("choice_dev.sys.platform", "linux"):
+            self.assertFalse(set_choice_windows_identity())
 
     def test_ui_builds_with_no_initial_selection(self):
         with tempfile.TemporaryDirectory() as directory:

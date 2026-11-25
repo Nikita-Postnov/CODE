@@ -11,7 +11,7 @@ import shlex
 import subprocess
 import time
 from PySide6.QtCore import Qt, QProcess, QProcessEnvironment, QSize, QTimer
-from PySide6.QtGui import QIcon, QFont, QKeySequence, QAction
+from PySide6.QtGui import QIcon, QPixmap, QPainter, QColor, QPen, QFont, QFont, QKeySequence, QAction
 from PySide6.QtWidgets import (
     QApplication,
     QMainWindow,
@@ -61,19 +61,72 @@ def detect_system_python() -> str:
         return sys.executable
     return "python.exe" if running_on_windows() else "python"
 
-def find_python_icon() -> QIcon:
-    try:
-        candidates = [
-            app_folder() / "files" / "Data" / "icon.ico",
-            app_folder() / "Data" / "icon.ico",
-        ]
-        for p in candidates:
-            if p.exists():
-                return QIcon(str(p))
-    except Exception:
-        pass
-    return QIcon()
+def set_choice_windows_identity() -> bool:
+    """Set a stable taskbar identity before QApplication is created.
 
+    The Python interpreter can be shared with other Launcher tools: do not
+    alter its executable, global shortcuts, or the identity of other apps.
+    """
+    if sys.platform != "win32":
+        return False
+    try:
+        import ctypes
+        return ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+            "NPCore.Choice.Launcher"
+        ) == 0
+    except (AttributeError, OSError, TypeError):
+        return False
+
+
+def choice_icon_paths() -> list[Path]:
+    """Support installed Choice.pyw, source tree, and portable launcher."""
+    here = Path(__file__).resolve().parent
+    candidates = [
+        here / "choice.ico",
+        here / "Data" / "choice.ico",
+        here.parent / "choice.ico",
+        here.parent / "Data" / "choice.ico",
+    ]
+    root = (os.environ.get("LAUNCHER_ROOT") or "").strip()
+    if root:
+        candidates.extend([Path(root) / "choice.ico", Path(root) / "Data" / "choice.ico"])
+    try:
+        meipass = getattr(sys, "_MEIPASS", None)
+        if meipass:
+            candidates.append(Path(meipass) / "choice.ico")
+    except (TypeError, ValueError):
+        pass
+    return candidates
+
+
+def choice_window_icon() -> QIcon:
+    for path in choice_icon_paths():
+        try:
+            if path.is_file():
+                icon = QIcon(str(path))
+                if not icon.isNull():
+                    return icon
+        except OSError:
+            continue
+    # Portable fresh installs must never fall back to the Python file icon.
+    image = QPixmap(128, 128)
+    image.fill(Qt.transparent)
+    painter = QPainter(image)
+    try:
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setBrush(QColor("#3A1664"))
+        painter.setPen(QPen(QColor("#B15BFF"), 5))
+        painter.drawRoundedRect(6, 6, 116, 116, 24, 24)
+        painter.setPen(QColor("#FFFFFF"))
+        painter.setFont(QFont("Segoe UI", 65, QFont.Bold))
+        painter.drawText(image.rect(), Qt.AlignCenter, "C")
+    finally:
+        painter.end()
+    return QIcon(image)
+
+
+def find_python_icon() -> QIcon:
+    return choice_window_icon()
 def list_python_files(root: Path, recursive: bool) -> list[Path]:
     if not root.exists() or not root.is_dir():
         return []
@@ -1036,6 +1089,7 @@ class FriendlyLauncher(QMainWindow):
             self._update_script_preview()
 
 def main() -> int:
+    set_choice_windows_identity()
     app = QApplication(sys.argv)
     try:
         app.setStyle("Fusion")
