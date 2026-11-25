@@ -298,5 +298,55 @@ class GithubSyncTests(unittest.TestCase):
         self.assertEqual(engine.run().uploaded, 1)
 
 
+class GitHubRestAdapterTests(unittest.TestCase):
+    def test_private_metadata_blob_and_encrypted_upload(self):
+        import base64
+        calls = []
+        note_id = str(uuid.uuid4())
+        binary = b"NPNS1" + b"x" * 42
+
+        class Response:
+            def __init__(self, payload):
+                self.payload = payload
+            def __enter__(self):
+                return self
+            def __exit__(self, *args):
+                return False
+            def read(self, limit=-1):
+                return json.dumps(self.payload).encode("utf-8")
+
+        def fake_http(request, timeout):
+            self.assertEqual(timeout, 12)
+            self.assertEqual(request.get_header("Authorization"), "Bearer SYNTHETIC_TOKEN")
+            calls.append((request.get_method(), request.full_url, request.data))
+            if request.full_url.endswith("/repos/private-test/notes"):
+                return Response({"private": True})
+            if request.full_url.endswith("/contents/notes"):
+                return Response([{"name": note_id + ".npn", "sha": "a" * 40, "type": "file"}])
+            if request.full_url.endswith("/git/blobs/" + "a" * 40):
+                return Response({"encoding": "base64", "content": base64.b64encode(binary).decode()})
+            if "/contents/notes/" in request.full_url and request.get_method() == "PUT":
+                body = json.loads(request.data)
+                self.assertEqual(base64.b64decode(body["content"]), binary)
+                self.assertEqual(body["sha"], "a" * 40)
+                return Response({"content": {"sha": "b" * 40}})
+            raise AssertionError("Unexpected URL: " + request.full_url)
+
+        store = GitHubStore(REPO, "SYNTHETIC_TOKEN", request=fake_http)
+        store.check_private()
+        self.assertEqual(store.list_notes()[note_id], "a" * 40)
+        self.assertEqual(store.download("a" * 40), binary)
+        self.assertEqual(store.upload(note_id, binary, "a" * 40), "b" * 40)
+        self.assertEqual([call[0] for call in calls], ["GET", "GET", "GET", "PUT"])
+
+    def test_offline_adapter_returns_offline_without_touching_files(self):
+        import urllib.error
+        def offline(request, timeout):
+            raise urllib.error.URLError("synthetic connection lost")
+        store = GitHubStore(REPO, "SYNTHETIC_TOKEN", request=offline)
+        with self.assertRaises(Offline):
+            store.check_private()
+
+
 if __name__ == "__main__":
     unittest.main()
