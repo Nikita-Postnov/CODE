@@ -77,7 +77,7 @@ class GithubSyncTests(unittest.TestCase):
                 "password_manager": secret, "password_manager_visible": True}
         (folder / "note.json").write_text(json.dumps(note), encoding="utf-8")
         if attachment:
-            (folder / "image.png").write_bytes(b"\\x89PNG\\x0d\\x0aSYNTHETIC")
+            (folder / "image.png").write_bytes(bytes([0x89, 80, 78, 71, 13, 10]) + b"SYNTHETIC")
         (folder / "note_cache.json").write_text('{"secret":"DO_NOT_EXPORT"}', encoding="utf-8")
         (folder / "note_backup_123.json").write_text('{"secret":"DO_NOT_EXPORT"}', encoding="utf-8")
         return folder
@@ -104,7 +104,7 @@ class GithubSyncTests(unittest.TestCase):
         note, files = unpack_snapshot(raw, uid)
         self.assertNotIn("password_manager", note)
         self.assertNotIn("password_manager_visible", note)
-        self.assertEqual(files["image.png"][:4], b"\\x89PNG")
+        self.assertEqual(files["image.png"][:4], bytes([0x89, 80, 78, 71]))
         self.assertNotIn(b"DO_NOT_EXPORT", raw)
 
     def test_offline_preserves_local_and_resumes_after_network_returns(self):
