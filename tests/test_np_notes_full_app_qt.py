@@ -44,7 +44,7 @@ def gui_worker(root: Path) -> None:
     assert not window.text_edit.isVisible(), "Editor visible with no active note"
     assert window.notes_list.count() == 0, "Isolated Data is not empty"
 
-    with patch("PySide6.QtWidgets.QInputDialog.getText",
+    with patch.object(window, "_prompt_new_note_title",
                return_value=("Проверка первого запуска", True)):
         window.new_note()
     app.processEvents()
@@ -57,7 +57,7 @@ def gui_worker(root: Path) -> None:
     first_folder = window._note_folder_path(window.current_note, root / "Data" / "Notes")
     assert (first_folder / "note.json").is_file(), "New note was not persisted immediately"
     window.text_edit.setPlainText("Несохранённые правки перед переключением")
-    with patch("PySide6.QtWidgets.QInputDialog.getText",
+    with patch.object(window, "_prompt_new_note_title",
                return_value=("Вторая тестовая заметка", True)):
         window.new_note()
     app.processEvents()
@@ -74,7 +74,7 @@ def gui_worker(root: Path) -> None:
             raise OSError("simulated disk full")
         return original_save(note)
     with (
-        patch("PySide6.QtWidgets.QInputDialog.getText",
+        patch.object(window, "_prompt_new_note_title",
               return_value=("Проверка отказа записи", True)),
         patch("PySide6.QtWidgets.QMessageBox.warning") as warning,
         patch.object(window, "save_note_to_file",
