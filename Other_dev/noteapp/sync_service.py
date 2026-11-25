@@ -103,6 +103,17 @@ class EncryptedOutboundService:
                           ON CONFLICT(note_id) DO UPDATE SET status=excluded.status""",
                        (note_id, status))
 
+    def _adopt_remote_deletion(self, note_id):
+        """Atomically honor a valid remote tombstone without overriding
+        an in-flight local permanent deletion (another device race).
+        """
+        note_id = str(UUID(note_id))
+        with self._lock, self._connect() as db:
+            db.execute("""INSERT INTO deletions(note_id,status) VALUES (?,'remote')
+                          ON CONFLICT(note_id) DO UPDATE SET status =
+                          CASE WHEN deletions.status IN ('pending','done')
+                               THEN deletions.status ELSE 'remote' END""", (note_id,))
+
     def _folder_in_trash(self, note_id):
         root = self.repository_root / "Trash"
         if not root.is_dir() or root.is_symlink():
@@ -162,7 +173,9 @@ class EncryptedOutboundService:
         note_id = str(UUID(note_id))
         if self._find_folder(note_id) is not None or self._folder_in_trash(note_id) is not None:
             raise ValueError("Note is still present on disk")
-        if self._deletion_status(note_id) not in ("prepared", "pending"):
+        if self._deletion_status(note_id) not in (
+            "prepared", "pending", "remote", "done"
+        ):
             raise ValueError("Unprepared permanent deletion")
         self._set_deletion_status(note_id, "pending")
         self.queue.mark_changed(note_id)
@@ -231,9 +244,7 @@ class EncryptedOutboundService:
             if encrypted is None:
                 continue
             self._decode_tombstone(note_id, encrypted)
-            status = self._deletion_status(note_id)
-            if status not in ("pending", "done"):
-                self._set_deletion_status(note_id, "remote")
+            self._adopt_remote_deletion(note_id)
             folder = self._find_folder(note_id)
             if folder is not None:
                 # Worker never moves files while UI is reading them. GUI will
@@ -332,12 +343,16 @@ class EncryptedOutboundService:
         if status in ("prepared", "done", "remote"):
             return True
         if self._folder_in_trash(note_id) is not None:
+            # A duplicated UUID in both active and Trash is ambiguous; fail
+            # rather than silently acknowledging an unsent active revision.
+            if self._find_folder(note_id) is not None:
+                raise UnsafeSnapshot("Duplicate active and Trash note UUID")
             # The user moved the note to local Trash, not permanently deleted.
             return True
         marker, _ = self.transport.read_tombstone(note_id)
         if marker is not None:
             self._decode_tombstone(note_id, marker)
-            self._set_deletion_status(note_id, "remote")
+            self._adopt_remote_deletion(note_id)
             return True
         folder = self._find_folder(note_id)
         if folder is None:
