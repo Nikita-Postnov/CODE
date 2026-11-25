@@ -172,6 +172,42 @@ class DesktopWidgetSettingsTests(unittest.TestCase):
         self.assertIn("topmost.toggled.connect(self.set_always_on_top)", code)
 
 
+class ConfidentialClipboardTests(unittest.TestCase):
+    def test_copy_secret_clears_only_if_clipboard_unchanged(self):
+        source = (ROOT / "app" / "images.py").read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        cls = next(node for node in tree.body
+                   if isinstance(node, ast.ClassDef) and node.name == "ImagesMixin")
+        method = next(node for node in cls.body
+                      if isinstance(node, ast.FunctionDef)
+                      and node.name == "_clear_private_clipboard_if_unchanged")
+        # The method is a staticmethod; no Qt import required for this test.
+        module = ast.Module(body=[method], type_ignores=[])
+        ast.fix_missing_locations(module)
+        class Clipboard:
+            value = "secret"
+            cleared = False
+            def text(self):
+                return self.value
+            def clear(self):
+                self.cleared = True
+                self.value = ""
+        clipboard = Clipboard()
+        class QApplication:
+            @staticmethod
+            def clipboard():
+                return clipboard
+        namespace = {"QApplication": QApplication}
+        exec(compile(module, "<secure-clipboard>", "exec"), namespace)
+        operation = namespace["_clear_private_clipboard_if_unchanged"]
+        operation("something else")
+        self.assertFalse(clipboard.cleared)
+        operation("secret")
+        self.assertTrue(clipboard.cleared)
+        self.assertIn("QTimer.singleShot(", source)
+        self.assertIn("30000,", source)
+
+
 class EditorChecklistTests(unittest.TestCase):
     def test_checklist_toggle_uses_edit_block_and_is_exposed_in_ui(self):
         editor = (ROOT / "app" / "editor.py").read_text(encoding="utf-8")
