@@ -11,9 +11,7 @@ import hashlib
 import json
 import sqlite3
 import threading
-import os as _sync_os
 import shutil
-from uuid import uuid4
 from contextlib import contextmanager
 from pathlib import Path
 from uuid import UUID
@@ -133,6 +131,11 @@ class EncryptedOutboundService:
             if self._find_folder(note_id) is not None:
                 raise ValueError("Note still active")
             self.queue.discard(note_id)
+
+    def is_remotely_deleted(self, note_id):
+        return self._deletion_status(str(UUID(note_id))) in (
+            "pending", "done", "remote"
+        )
 
     def restored_from_trash(self, note_id):
         """A tombstoned UUID cannot be silently resurrected in the cloud."""
