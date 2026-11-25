@@ -537,6 +537,16 @@ class CustomTextEdit(QTextEdit):
         if highlighter:
             highlighter.add_to_dictionary(word)
 
+    def _add_copy_format_actions(self, menu: QMenu) -> None:
+        """Available even when the selected text contains no letters."""
+        menu.addSeparator()
+        copy_plain_action = QAction("Copy (without formatting)", self)
+        copy_plain_action.triggered.connect(self.copy_without_formatting)
+        copy_rich_action = QAction("Copy (with formatting)", self)
+        copy_rich_action.triggered.connect(self.copy_with_formatting)
+        menu.addAction(copy_plain_action)
+        menu.addAction(copy_rich_action)
+
     def contextMenuEvent(self, event: QContextMenuEvent) -> None:
         menu = QMenu(self)
         menu.setStyleSheet(CUSTOM_MENU_STYLE)
@@ -583,16 +593,8 @@ class CustomTextEdit(QTextEdit):
             )
         )
         menu.addAction(view_dict_action)
-        # Selection/copy commands must also be visible when right-clicking
-        # punctuation, emoji, numbers or a horizontal separator. Previously
-        # the early "no alphabetic word" return hid both commands.
-        menu.addSeparator()
-        copy_plain_action = QAction("Copy (without formatting)", self)
-        copy_plain_action.triggered.connect(self.copy_without_formatting)
-        copy_rich_action = QAction("Copy (with formatting)", self)
-        copy_rich_action.triggered.connect(self.copy_with_formatting)
-        menu.addAction(copy_plain_action)
-        menu.addAction(copy_rich_action)
+        # Add commands before the "no alphabetic word" early return.
+        self._add_copy_format_actions(menu)
         word_cursor = self.cursorForPosition(event.pos())
         word_cursor.select(QTextCursor.WordUnderCursor)
         raw_word = word_cursor.selectedText()
