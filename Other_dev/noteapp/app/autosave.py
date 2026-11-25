@@ -7,7 +7,6 @@ update_current_note_custom_fields, _persist_dropdown_values_in_html) остаю�
 """
 
 import logging
-import traceback
 
 from PySide6.QtCore import QTimer
 
@@ -147,6 +146,12 @@ class AutosaveMixin:
                 self.current_note.content = html
                 self.save_note_to_file(self.current_note)
         except Exception:
-            traceback.print_exc()
+            # Не объявляем заметку сохранённой при ошибке диска или доступа.
+            logging.exception("Автосохранение не удалось; повтор через 5 секунд")
+            try:
+                self._set_unsaved(True)
+                self._autosave_timer.start(5000)
+            except Exception:
+                logging.exception("Не удалось запланировать повтор автосохранения")
         finally:
             self._autosave_in_progress = False

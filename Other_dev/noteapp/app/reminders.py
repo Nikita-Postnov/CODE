@@ -7,6 +7,7 @@ select_note, show_toast) остаются в NotesApp и доступны чер
 from PySide6.QtCore import QDateTime, QTimer, Qt
 from datetime import datetime, timedelta
 from calendar import monthrange
+from html import escape as escape_html
 from PySide6.QtWidgets import (
     QComboBox,
     QDateTimeEdit,
@@ -31,7 +32,8 @@ REPEAT_CODES = {
     "weekends": "weekends", "по выходным": "weekends",
     "weekly": "weekly", "каждую неделю": "weekly",
     "monthly": "monthly", "каждый месяц": "monthly",
-    "minutely": "minutely", "hourly": "hourly",
+    "minutely": "minutely", "каждую минуту": "minutely",
+    "hourly": "hourly", "каждый час": "hourly",
 }
 
 
@@ -48,8 +50,23 @@ def parse_reminder_datetime(value: str | None) -> datetime | None:
         return None
 
 
+def reminder_now_for_due(due: datetime, now: datetime | None = None) -> datetime:
+    """Возвращает текущее время, сопоставимое с датой напоминания.
+
+    Старые заметки используют локальные даты без timezone; ISO-строки
+    с Z или смещением сравниваем как aware, не пропуская напоминания.
+    """
+    if due.tzinfo is None:
+        return (now or datetime.now()).astimezone().replace(tzinfo=None) if (now is not None and now.tzinfo is not None) else (now or datetime.now())
+    current = now if now is not None else datetime.now().astimezone()
+    if current.tzinfo is None:
+        current = current.astimezone()
+    return current.astimezone(due.tzinfo)
+
+
 def next_reminder_datetime(due: datetime, now: datetime, repeat: str,
                            anchor_day: int | None = None) -> datetime | None:
+    now = reminder_now_for_due(due, now)
     repeat = normalize_reminder_repeat(repeat)
     if not repeat:
         return None
@@ -157,18 +174,20 @@ class RemindersMixin:
         return False
 
     def check_reminders(self):
-        now = datetime.now()
         changed = False
         for note in list(self.notes):
             due = parse_reminder_datetime(note.reminder)
-            if due is None or due.tzinfo is not None or due > now:
+            if due is None:
+                continue
+            now = reminder_now_for_due(due)
+            if due > now:
                 continue
             if self.show_reminder_dialog(note):
                 self.save_note_to_file(note)
                 changed = True
                 continue
             following = next_reminder_datetime(
-                due, datetime.now(), note.reminder_repeat,
+                due, reminder_now_for_due(due), note.reminder_repeat,
                 getattr(note, "reminder_anchor_day", None))
             note.reminder = following.isoformat(timespec="seconds") if following else None
             note.reminder_repeat = normalize_reminder_repeat(note.reminder_repeat) if following else None
@@ -192,7 +211,7 @@ class RemindersMixin:
         layout.addRow("Напоминание:", datetime_edit)
         repeat_combo = QComboBox()
         repeat_combo.addItems(
-            ["Однократно", "По будням", "Каждый день", "Каждую неделю", "Каждый месяц"]
+            ["Однократно", "По будням", "По выходным", "Каждый день", "Каждый час", "Каждую неделю", "Каждый месяц"]
         )
         layout.addRow("Повторять:", repeat_combo)
 
@@ -239,13 +258,16 @@ class RemindersMixin:
         options = [
             "Однократно",
             "По будням",
+            "По выходным",
             "Каждый день",
+            "Каждый час",
             "Каждую неделю",
             "Каждый месяц",
         ]
         repeat_combo.addItems(options)
         code = normalize_reminder_repeat(getattr(self.current_note, "reminder_repeat", None))
         labels = {"": "Однократно", "workdays": "По будням",
+                  "weekends": "По выходным", "hourly": "Каждый час",
                   "daily": "Каждый день", "weekly": "Каждую неделю",
                   "monthly": "Каждый месяц"}
         repeat_combo.setCurrentText(labels.get(code, "Однократно"))
@@ -286,8 +308,8 @@ class RemindersMixin:
         dlg.setWindowModality(Qt.NonModal)
         dlg.setMinimumWidth(300)
         layout = QVBoxLayout(dlg)
-        layout.addWidget(QLabel(f"Напоминание по заметке: <b>{note.title}</b>"))
-        layout.addWidget(QLabel(f"Время: {note.reminder}"))
+        layout.addWidget(QLabel(f"Напоминание по заметке: <b>{escape_html(note.title or '')}</b>"))
+        layout.addWidget(QLabel("Время: " + escape_html(str(note.reminder or ""))))
         btn = QPushButton("ОК")
         btn.clicked.connect(dlg.accept)
         layout.addWidget(btn)

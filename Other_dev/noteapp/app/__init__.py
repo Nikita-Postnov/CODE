@@ -119,6 +119,7 @@ from .plugins import PluginsMixin
 from .reminders import RemindersMixin
 from .tray import TrayMixin
 from .autosave import AutosaveMixin
+from .recovery import RecoveryMixin
 from .templates import TemplatesMixin
 from .settings import SettingsMixin
 from .search import SearchMixin
@@ -151,7 +152,7 @@ def init_app_environment() -> None:
     logging.info("=== APP START ===")
 
 
-class NotesApp(NotePersistenceMixin, PluginsMixin, RemindersMixin, TrayMixin, AutosaveMixin, TemplatesMixin, SettingsMixin, SearchMixin, DropdownsMixin, ImagesMixin, EditorMixin, LayoutMixin, QMainWindow):
+class NotesApp(NotePersistenceMixin, PluginsMixin, RemindersMixin, TrayMixin, AutosaveMixin, RecoveryMixin, TemplatesMixin, SettingsMixin, SearchMixin, DropdownsMixin, ImagesMixin, EditorMixin, LayoutMixin, QMainWindow):
     TRASH_DIR: Path = NOTES_DIR / "Trash"
     window_hidden = Signal()
 
@@ -185,6 +186,7 @@ class NotesApp(NotePersistenceMixin, PluginsMixin, RemindersMixin, TrayMixin, Au
         self._last_selection: tuple[int, int] | None = None
         self.init_ui()
         self.init_all_components()
+        self._setup_recovery_snapshot_timer()
         self.attachments_watcher = None
         self._attachments_snapshot: dict[str, set[str]] = {}
         QTimer.singleShot(200, self.load_plugins)
@@ -263,10 +265,25 @@ class NotesApp(NotePersistenceMixin, PluginsMixin, RemindersMixin, TrayMixin, Au
             )
 
 
+    @staticmethod
+    def _merge_preloaded_notes(loaded: list[Note], existing: list[Note]) -> list[Note]:
+        """Текущие объекты заметок приоритетнее устаревшего фонового снимка."""
+        merged = {note.uuid: note for note in loaded}
+        merged.update({note.uuid: note for note in existing})
+        return list(merged.values())
+
     def _apply_preloaded_notes(self, notes: list[Note]) -> None:
-        self.notes = notes or []
+        # Снимок читается в другом потоке. Пользователь может успеть создать
+        # или изменить заметку до его завершения; такой объект нельзя
+        # затирать более старой копией из фонового результата.
+        self.notes = self._merge_preloaded_notes(
+            list(notes or []), list(getattr(self, "notes", []) or [])
+        )
         if not self.notes:
             self.notes_list.clear()
+            self._update_editor_visibility()
+            self.update_tag_filter_items()
+            self.update_search_filter_items()
             return
         self.deduplicate_notes()
         self._apply_saved_notes_order()
@@ -300,6 +317,7 @@ class NotesApp(NotePersistenceMixin, PluginsMixin, RemindersMixin, TrayMixin, Au
         if not hasattr(self, "reminder_timer") or self.reminder_timer is None:
             self.setup_reminder_timer()
         QTimer.singleShot(0, self.check_reminders)
+        QTimer.singleShot(300, self._offer_recovery_snapshots)
 
 
     def _install_dialog_probe(self) -> None:
@@ -330,6 +348,7 @@ class NotesApp(NotePersistenceMixin, PluginsMixin, RemindersMixin, TrayMixin, Au
 
         self._edit_session_note_uuid = self.current_note.uuid
         self.update_current_note_content()
+        self._schedule_recovery_snapshot()
 
         if getattr(self, "autosave_enabled", False):
             try:
@@ -347,6 +366,21 @@ class NotesApp(NotePersistenceMixin, PluginsMixin, RemindersMixin, TrayMixin, Au
             self.debounce_timer.start()
 
     def exit_app(self) -> None:
+        # При обычном скрытии окна closeEvent может перехватить ошибку записи,
+        # но при реальном выходе нельзя закрывать процесс с несохранённой заметкой.
+        try:
+            self.save_note_quiet(force=True)
+            self.save_all_notes_to_disk()
+        except Exception as exc:
+            logging.exception("Не удалось сохранить заметки перед завершением")
+            self._set_unsaved(True)
+            QMessageBox.warning(
+                self, "Не удалось завершить работу",
+                "Заметки не удалось сохранить. Приложение продолжит работать, "
+                "чтобы вы могли исправить проблему и повторить попытку.\n\n"
+                + str(exc),
+            )
+            return
         try:
             if getattr(self, "tray_icon", None):
                 self.tray_icon.hide()
@@ -457,6 +491,7 @@ class NotesApp(NotePersistenceMixin, PluginsMixin, RemindersMixin, TrayMixin, Au
     def init_ui(self) -> None:
         self.setWindowTitle("Мои Заметки — [*]")
         self.setMinimumSize(600, 270)
+        self.resize(1080, 720)  # Для первого запуска; сохранённая геометрия имеет приоритет.
         self.setWindowIcon(QIcon(qt_path(ICON_PATH)))
         always_on_top = self.settings.value("ui/always_on_top", True, type=bool)
         self.setWindowFlag(Qt.WindowStaysOnTopHint, always_on_top)
@@ -539,6 +574,9 @@ class NotesApp(NotePersistenceMixin, PluginsMixin, RemindersMixin, TrayMixin, Au
         self._sc_import = QShortcut(QKeySequence("Ctrl+Shift+I"), self)
         self._sc_import.activated.connect(self.import_note)
         self.text_edit.textChanged.connect(self._schedule_autosave)
+        # В отличие от _on_text_changed, сигнал должен реально вызывать
+        # запись зашифрованного черновика до очередного автосохранения.
+        self.text_edit.textChanged.connect(self._schedule_recovery_snapshot)
 
         self._layout_counter_timer = QTimer(self)
         self._layout_counter_timer.setSingleShot(True)
@@ -557,8 +595,10 @@ class NotesApp(NotePersistenceMixin, PluginsMixin, RemindersMixin, TrayMixin, Au
         self.spell_highlighter.set_online_enabled(self.spell_online_enabled)
         self._save_debouncer = QTimer(self)
         self._save_debouncer.setSingleShot(True)
-        self._save_debouncer.setInterval(400)
-        self._save_debouncer.timeout.connect(self.update_current_note_content)
+        # Сохранение на диск работает отдельно; историю Undo группируем
+        # после паузы ввода, а не создаём версию каждые 400 мс.
+        self._save_debouncer.setInterval(1400)
+        self._save_debouncer.timeout.connect(self._flush_debounced_history)
         self.text_edit.textChanged.connect(self._save_debouncer.start)
         self.text_edit.cursorPositionChanged.connect(self.update_font_controls)
         self.text_edit.setReadOnly(True)
@@ -588,11 +628,40 @@ class NotesApp(NotePersistenceMixin, PluginsMixin, RemindersMixin, TrayMixin, Au
         )
         editor_combined = QWidget()
         editor_layout_combined = QVBoxLayout(editor_combined)
+        # Пустое хранилище — нормальное состояние изолированной установки:
+        # вместо серой пустоты показываем понятный первый шаг.
+        self.empty_notes_page = QWidget(editor_combined)
+        empty_layout = QVBoxLayout(self.empty_notes_page)
+        empty_layout.setContentsMargins(24, 24, 24, 24)
+        empty_layout.addStretch(1)
+        self.empty_notes_title = QLabel("Пока нет заметок", self.empty_notes_page)
+        self.empty_notes_title.setAlignment(Qt.AlignCenter)
+        self.empty_notes_title.setStyleSheet("font-size: 22px; font-weight: 600;")
+        empty_layout.addWidget(self.empty_notes_title)
+        self.empty_notes_hint = QLabel(
+            "Создайте первую заметку — редактор и инструменты появятся автоматически.",
+            self.empty_notes_page,
+        )
+        self.empty_notes_hint.setAlignment(Qt.AlignCenter)
+        self.empty_notes_hint.setWordWrap(True)
+        empty_layout.addWidget(self.empty_notes_hint)
+        self.empty_notes_create_button = QPushButton("＋ Создать заметку", self.empty_notes_page)
+        self.empty_notes_create_button.setMinimumHeight(36)
+        self.empty_notes_create_button.setMaximumWidth(240)
+        self.empty_notes_create_button.clicked.connect(self.new_note)
+        empty_layout.addWidget(self.empty_notes_create_button, 0, Qt.AlignHCenter)
+        empty_layout.addStretch(1)
+        editor_layout_combined.addWidget(self.empty_notes_page, 1)
         editor_layout_combined.addWidget(self.tags_label)
         editor_layout_combined.addWidget(self.text_edit)
         editor_layout_combined.addWidget(self.attachments_scroll)
-        editor_layout_combined.setStretch(1, 1)
-        editor_layout_combined.setStretch(2, 0)
+        # Назначаем растяжение виджетам, а не индексам: после вставки
+        # панели пользовательских полей позиции элементов сдвигаются.
+        # Иначе строка «Теги» занимает почти весь экран, а редактор
+        # оказывается прижат к нижней границе окна.
+        editor_layout_combined.setStretchFactor(self.empty_notes_page, 1)
+        editor_layout_combined.setStretchFactor(self.tags_label, 0)
+        editor_layout_combined.setStretchFactor(self.text_edit, 1)
         self.central_widget = QWidget()
         _cw_lay = QVBoxLayout(self.central_widget)
         _cw_lay.setContentsMargins(0, 0, 0, 0)
@@ -1280,18 +1349,19 @@ class NotesApp(NotePersistenceMixin, PluginsMixin, RemindersMixin, TrayMixin, Au
         if note.history_index < len(note.history) - 1:
             note.history = note.history[: note.history_index + 1]
         current_html = self.text_edit.toHtml()
-        current_plain = self.text_edit.toPlainText()
-        if note.history:
-            doc = QTextDocument()
-            doc.setHtml(note.history[-1])
-            if doc.toPlainText() == current_plain:
-                return
-        if len(note.history) >= MAX_HISTORY:
-            note.history = [current_html]
-            note.history_index = 0
-        else:
-            note.history.append(current_html)
-            note.history_index = len(note.history) - 1
+        # История хранит полную HTML-разметку. Сравнение только plain text
+        # пропускало изменения форматирования; нормализация через отдельный
+        # QTextDocument может добавить чужой default font, поэтому сверяем
+        # сохранённый HTML напрямую с HTML активного редактора.
+        if note.history and note.history[-1] == current_html:
+            return
+        # При достижении лимита удаляем только старейшие версии.
+        # Полный сброс истории терял возможность отменить последние правки.
+        note.history.append(current_html)
+        overflow = max(0, len(note.history) - MAX_HISTORY)
+        if overflow:
+            del note.history[:overflow]
+        note.history_index = len(note.history) - 1
         self.update_history_list()
         self.update_history_list_selection()
 
@@ -1307,6 +1377,27 @@ class NotesApp(NotePersistenceMixin, PluginsMixin, RemindersMixin, TrayMixin, Au
             self.history_list.addItem(item)
         self.history_list.scrollToBottom()
 
+    def _persist_history_navigation(self) -> None:
+        """Сохраняет Undo/Redo, не добавляя версию и не уничтожая Redo."""
+        note = getattr(self, "current_note", None)
+        if note is None:
+            return
+        timer = getattr(self, "_save_debouncer", None)
+        if timer is not None:
+            timer.stop()
+        note.content = self.text_edit.toHtml()
+        self._set_unsaved(True)
+        try:
+            self.save_note_to_file(note)
+        except Exception:
+            logging.exception("Не удалось сохранить результат Undo/Redo")
+            self._schedule_recovery_snapshot()
+            retry = getattr(self, "_autosave_timer", None)
+            if retry is not None:
+                retry.start(5000)
+        else:
+            self._set_unsaved(False)
+
     def undo(self) -> None:
         if not self.current_note:
             return
@@ -1318,6 +1409,7 @@ class NotesApp(NotePersistenceMixin, PluginsMixin, RemindersMixin, TrayMixin, Au
             )
             self.text_edit.blockSignals(False)
             self.update_history_list_selection()
+            self._persist_history_navigation()
 
     def redo(self) -> None:
         if not self.current_note:
@@ -1330,6 +1422,7 @@ class NotesApp(NotePersistenceMixin, PluginsMixin, RemindersMixin, TrayMixin, Au
             )
             self.text_edit.blockSignals(False)
             self.update_history_list_selection()
+            self._persist_history_navigation()
 
     def update_history_list_selection(self) -> None:
         if not self.current_note:
@@ -1429,20 +1522,46 @@ class NotesApp(NotePersistenceMixin, PluginsMixin, RemindersMixin, TrayMixin, Au
             edit.installEventFilter(self)
         if dlg.exec():
             new_title = dlg.textValue().strip()
-            if new_title and new_title != note.title:
-                old_dir = os.path.join(
-                    NOTES_DIR,
-                    safe_folder_name(note.title, note.uuid, note.timestamp),
+            if not new_title or new_title == note.title:
+                return
+            if any(n.uuid != note.uuid and n.title == new_title for n in self.notes):
+                QMessageBox.warning(
+                    self, "Дубликат", "Заметка с таким названием уже существует."
                 )
-                note.title = new_title
-                new_dir = os.path.join(
-                    NOTES_DIR,
-                    safe_folder_name(note.title, note.uuid, note.timestamp),
-                )
-                if os.path.exists(old_dir):
+                return
+            previous_title = note.title
+            old_dir = os.path.join(
+                NOTES_DIR,
+                safe_folder_name(previous_title, note.uuid, note.timestamp),
+            )
+            new_dir = os.path.join(
+                NOTES_DIR,
+                safe_folder_name(new_title, note.uuid, note.timestamp),
+            )
+            moved = False
+            try:
+                if old_dir != new_dir and os.path.exists(new_dir):
+                    raise FileExistsError("Целевая папка заметки уже существует")
+                if old_dir != new_dir and os.path.exists(old_dir):
                     os.rename(old_dir, new_dir)
+                    moved = True
+                note.title = new_title
                 self.save_note_to_file(note)
-                self.refresh_notes_list()
+            except Exception:
+                logging.exception("Переименование заметки не удалось")
+                note.title = previous_title
+                if moved:
+                    try:
+                        os.rename(new_dir, old_dir)
+                    except OSError:
+                        logging.exception("Не удалось откатить перенос папки заметки")
+                QMessageBox.warning(
+                    self, "Не удалось переименовать",
+                    "Переименование не выполнено. Исходное название "
+                    "восстановлено; проверьте доступ к папке Data."
+                )
+                return
+            self.refresh_notes_list()
 
     @staticmethod
     def safe_filename(title: str, ext: str) -> str:
@@ -1582,8 +1701,20 @@ class NotesApp(NotePersistenceMixin, PluginsMixin, RemindersMixin, TrayMixin, Au
     def delete_current_note(self) -> None:
         self.delete_note()
 
+    def _prompt_new_note_title(self) -> tuple[str, bool]:
+        """Русифицированный диалог создания заметки."""
+        dialog = QInputDialog(self)
+        dialog.setWindowTitle("Новая заметка")
+        dialog.setLabelText("Введите название:")
+        dialog.setInputMode(QInputDialog.TextInput)
+        dialog.setOkButtonText("Создать")
+        dialog.setCancelButtonText("Отмена")
+        if not dialog.exec():
+            return "", False
+        return dialog.textValue(), True
+
     def new_note(self) -> None:
-        title, ok = QInputDialog.getText(self, "Новая заметка", "Введите название:")
+        title, ok = self._prompt_new_note_title()
         if ok and title:
             for note in self.notes:
                 if note.title == title:
@@ -1606,10 +1737,24 @@ class NotesApp(NotePersistenceMixin, PluginsMixin, RemindersMixin, TrayMixin, Au
             )
             note.history = [""]
             note.history_index = 0
-            note_dir = os.path.join(
-                NOTES_DIR, safe_folder_name(title, note_uuid, ts_iso)
-            )
-            os.makedirs(note_dir, exist_ok=True)
+            # Прежде чем менять активную заметку, гарантируем сохранение
+            # предыдущей. При ошибке не очищаем редактор и не теряем ввод.
+            try:
+                if self.current_note is not None:
+                    self.save_note_quiet(force=True)
+                # Новая заметка должна существовать на диске ещё до того,
+                # как появится в списке: сбой сразу после создания безопасен.
+                self.save_note_to_file(note)
+            except Exception:
+                logging.exception("Не удалось создать или сохранить заметку")
+                self._set_unsaved(True)
+                QMessageBox.warning(
+                    self, "Не удалось создать заметку",
+                    "Данные предыдущей заметки не удалось сохранить или "
+                    "новую заметку не удалось записать на диск. "
+                    "Редактор оставлен без переключения."
+                )
+                return
             self.notes.append(note)
             self.current_note = note
             if hasattr(self, "spell_highlighter"):
@@ -1630,6 +1775,7 @@ class NotesApp(NotePersistenceMixin, PluginsMixin, RemindersMixin, TrayMixin, Au
             self.password_manager_field.clear()
             self.refresh_notes_list()
             self.show_note_with_attachments(note)
+            self._update_editor_visibility()
             self.text_edit.setFocus()
             self.text_edit.setReadOnly(False)
             note.password_manager_visible = False
@@ -1694,7 +1840,8 @@ class NotesApp(NotePersistenceMixin, PluginsMixin, RemindersMixin, TrayMixin, Au
             self.current_note.password_manager = self.password_manager_field.text()
             self.update_current_note_custom_fields()
             self.save_note_to_file(self.current_note)
-            self.record_state_for_undo()
+            # Quiet/autosave выполняется часто: версии истории формирует
+            # отдельный таймер после паузы печати, а не каждый disk flush.
             self._set_unsaved(False)
 
     def open_note_folder(self, note: Note) -> None:
@@ -1935,6 +2082,8 @@ class NotesApp(NotePersistenceMixin, PluginsMixin, RemindersMixin, TrayMixin, Au
                 note_folder = NOTES_DIR / safe_folder_name(
                     previous_note.title, previous_note.uuid, previous_note.timestamp)
                 self._save_payload_to_folder(note_folder, note_snapshot, keep_backups=10)
+                self.record_state_for_undo()
+                self._clear_recovery_snapshot(previous_note.uuid)
             self.current_note = note
             self.tags_label.setText(f"Теги: {', '.join(note.tags) if note and note.tags else 'нет'}")
             if hasattr(self, "settings"):
@@ -2034,7 +2183,21 @@ class NotesApp(NotePersistenceMixin, PluginsMixin, RemindersMixin, TrayMixin, Au
 
     def _update_editor_visibility(self):
         has = self.current_note is not None
-        self.dock_editor.setVisible(has)
+        # dock_editor — это прокси НАСТОЯЩЕГО центрального виджета:
+        # скрывать его при отсутствии заметки нельзя, иначе исчезнет и welcome-screen.
+        self.dock_editor.setVisible(True)
+        if hasattr(self, "empty_notes_page"):
+            self.empty_notes_page.setVisible(not has)
+            if not has:
+                self.empty_notes_title.setText(
+                    "Выберите заметку" if getattr(self, "notes", None)
+                    else "Пока нет заметок"
+                )
+                self.empty_notes_hint.setText(
+                    "Выберите заметку слева или создайте новую."
+                    if getattr(self, "notes", None)
+                    else "Создайте первую заметку — редактор и инструменты появятся автоматически."
+                )
         self.dock_toolbar.setVisible(has)
         self.visibility_toolbar.setVisible(has)
         self.text_edit.setVisible(has)
@@ -2443,6 +2606,48 @@ class NotesApp(NotePersistenceMixin, PluginsMixin, RemindersMixin, TrayMixin, Au
             self.current_note.favorite = not self.current_note.favorite
             self.refresh_notes_list()
 
+    @staticmethod
+    def _timestamp_sort_key(note: Note) -> int:
+        """Сортировка по реальному времени изменения, включая timezone."""
+        stamp = QDateTime.fromString(str(getattr(note, "timestamp", "") or ""), Qt.ISODate)
+        return stamp.toMSecsSinceEpoch() if stamp.isValid() else 0
+
+    def show_recent_notes(self) -> None:
+        """Последние 15 созданных заметок без изменения JSON на диске."""
+        self.notes_list.clear()
+        recent = sorted(
+            self.notes,
+            key=lambda note: self._timestamp_sort_key(note),
+            reverse=True,
+        )[:15]
+        for note in recent:
+            stamp = QDateTime.fromString(note.timestamp or "", Qt.ISODate)
+            display_date = stamp.toString("dd.MM.yyyy") if stamp.isValid() else ""
+            item = QListWidgetItem(
+                f"{note.title} — {display_date}" + (" 🔔" if note.reminder else "")
+            )
+            item.setData(Qt.UserRole, note)
+            item.setFont(QFont("Segoe UI Emoji", 10))
+            if note.favorite:
+                item.setForeground(self.get_contrast_favorite_color())
+            self.notes_list.addItem(item)
+
+    def show_untagged_notes(self) -> None:
+        """Виртуальная группа заметок без тегов — без изменения их хранения."""
+        self.notes_list.clear()
+        for note in self.notes:
+            if note.tags:
+                continue
+            timestamp = QDateTime.fromString(note.timestamp or "", Qt.ISODate)
+            date_str = timestamp.toString("dd.MM.yyyy") if timestamp.isValid() else ""
+            reminder_symbol = " 🔔" if note.reminder else ""
+            item = QListWidgetItem(f"{note.title} — {date_str}{reminder_symbol}")
+            item.setData(Qt.UserRole, note)
+            item.setFont(QFont("Segoe UI Emoji", 10))
+            if note.favorite:
+                item.setForeground(self.get_contrast_favorite_color())
+            self.notes_list.addItem(item)
+
     def show_favorites_only(self) -> None:
         self.notes_list.clear()
         for note in self.notes:
@@ -2656,6 +2861,7 @@ class NotesApp(NotePersistenceMixin, PluginsMixin, RemindersMixin, TrayMixin, Au
         add_tool_button("", "• - Маркированный  список", self.insert_bullet_list)
         add_tool_button("", "1. - Нумерованный список", self.insert_numbered_list)
         add_tool_button("", "☑ - Чекбокс", self.insert_checkbox)
+        add_tool_button("", "☑ - Переключить чекбокс", self.toggle_checkbox_at_cursor)
         add_tool_button("", "📅 - Таблица", self.insert_table)
         add_tool_button("", "🔗 - Ссылка", self.insert_link)
         add_tool_button("", "❌ - Удалить ссылку", self.remove_link)
@@ -2673,6 +2879,14 @@ class NotesApp(NotePersistenceMixin, PluginsMixin, RemindersMixin, TrayMixin, Au
         favorites_button = QPushButton("★Избранные")
         favorites_button.clicked.connect(self.show_favorites_only)
         flow_layout.addWidget(favorites_button)
+        no_tags_button = QPushButton("Без тегов")
+        no_tags_button.setToolTip("Показать заметки без тегов (без изменения данных)")
+        no_tags_button.clicked.connect(self.show_untagged_notes)
+        flow_layout.addWidget(no_tags_button)
+        recent_button = QPushButton("Недавно созданные")
+        recent_button.setToolTip("15 последних заметок по дате создания")
+        recent_button.clicked.connect(self.show_recent_notes)
+        flow_layout.addWidget(recent_button)
         reset_button = QPushButton("Сбросить фильтр")
         reset_button.clicked.connect(self.refresh_notes_list)
         flow_layout.addWidget(reset_button)
@@ -2687,14 +2901,24 @@ class NotesApp(NotePersistenceMixin, PluginsMixin, RemindersMixin, TrayMixin, Au
         self.sort_order_combo.currentIndexChanged.connect(self.apply_sorting)
         flow_layout.addWidget(self.sort_order_combo)
         self.search_mode_combo = QComboBox()
-        self.search_mode_combo.addItems(["Заголовок", "Содержимое", "Напоминание"])
+        self.search_mode_combo.addItems(["Заголовок", "Содержимое", "Напоминание", "Везде"])
         flow_layout.addWidget(self.search_mode_combo)
         self.search_bar = QLineEdit()
         self.search_bar.setPlaceholderText("Поиск...")
         flow_layout.addWidget(self.search_bar)
+        self.checklist_toggle_shortcut = QShortcut(QKeySequence("Ctrl+Shift+K"), self.text_edit)
+        self.checklist_toggle_shortcut.activated.connect(self.toggle_checkbox_at_cursor)
+        self.search_focus_shortcut = QShortcut(QKeySequence("Ctrl+Shift+F"), self)
+        self.search_focus_shortcut.activated.connect(self.search_bar.setFocus)
         search_button = QPushButton("🔍 - Поиск")
         search_button.clicked.connect(self.trigger_search)
         flow_layout.addWidget(search_button)
+        next_match_button = QPushButton("Следующее совпадение")
+        next_match_button.setToolTip("Выделить следующее совпадение в открытой заметке (Ctrl+G)")
+        next_match_button.clicked.connect(self.find_next_in_current_note)
+        flow_layout.addWidget(next_match_button)
+        self.search_next_shortcut = QShortcut(QKeySequence("Ctrl+G"), self)
+        self.search_next_shortcut.activated.connect(self.find_next_in_current_note)
         self.font_combo = QFontComboBox()
         self.font_combo.setCurrentFont(QFont("Times New Roman"))
         self.font_combo.currentFontChanged.connect(self.change_font)
@@ -3777,12 +4001,19 @@ class NotesApp(NotePersistenceMixin, PluginsMixin, RemindersMixin, TrayMixin, Au
     def closeEvent(self, event: QCloseEvent):
         self.save_settings()
         try:
+            # Одного сохранения активной заметки достаточно.
             self.save_note_quiet(force=True)
-            if getattr(self, "current_note", None):
-                self.save_note_quiet(force=True)
             self.save_all_notes_to_disk()
         except Exception:
             logging.exception("Save on close failed")
+            self._set_unsaved(True)
+            event.ignore()
+            QMessageBox.warning(
+                self, "Не удалось сохранить заметки",
+                "Окно останется открытым: изменения не удалось записать. "
+                "Проверьте свободное место и доступ к папке Data.",
+            )
+            return
         event.ignore()
         self.hide()
         try:
@@ -3792,6 +4023,25 @@ class NotesApp(NotePersistenceMixin, PluginsMixin, RemindersMixin, TrayMixin, Au
             pass
         self.window_hidden.emit()
 
+
+    def _flush_debounced_history(self) -> None:
+        """Фиксирует сгруппированную версию и сохраняет её на диск."""
+        note = getattr(self, "current_note", None)
+        if note is None or getattr(self, "_is_switching_note", False):
+            return
+        session = getattr(self, "_edit_session_note_uuid", None)
+        if session and session != note.uuid:
+            return
+        self.update_current_note_content()
+        try:
+            self.save_note_to_file(note)
+            self._set_unsaved(False)
+        except Exception:
+            logging.exception("Не удалось сохранить сгруппированную версию заметки")
+            self._set_unsaved(True)
+            retry = getattr(self, "_autosave_timer", None)
+            if retry is not None:
+                retry.start(5000)
 
     def update_current_note_content(self):
         if not hasattr(self, "current_note") or self.current_note is None:

@@ -8,6 +8,17 @@ on:
       - "Other_dev/notes_app.py"
       - "tests/test_np_notes_integrity.py"
       - "tests/test_np_notes_hardening.py"
+      - "tests/test_np_notes_safety_20261125.py"
+      - "tests/test_np_notes_qt_smoke.py"
+      - "tests/test_np_notes_full_app_qt.py"
+      - "tests/test_np_notes_search_benchmark.py"
+      - "tests/test_np_notes_recovery.py"
+      - "tools/benchmark_np_notes_search.py"
+      - "tools/benchmark_np_notes_qt_search.py"
+      - "tools/preview_np_notes_pr83.ps1"
+      - "tools/backup_np_notes_data.ps1"
+      - "tools/preflight_np_notes_release.ps1"
+      - "tools/install_np_notes_code.ps1"
       - ".github/workflows/np-notes-integrity.yml"
   pull_request:
     branches: [main]
@@ -16,6 +27,17 @@ on:
       - "Other_dev/notes_app.py"
       - "tests/test_np_notes_integrity.py"
       - "tests/test_np_notes_hardening.py"
+      - "tests/test_np_notes_safety_20261125.py"
+      - "tests/test_np_notes_qt_smoke.py"
+      - "tests/test_np_notes_full_app_qt.py"
+      - "tests/test_np_notes_search_benchmark.py"
+      - "tests/test_np_notes_recovery.py"
+      - "tools/benchmark_np_notes_search.py"
+      - "tools/benchmark_np_notes_qt_search.py"
+      - "tools/preview_np_notes_pr83.ps1"
+      - "tools/backup_np_notes_data.ps1"
+      - "tools/preflight_np_notes_release.ps1"
+      - "tools/install_np_notes_code.ps1"
       - ".github/workflows/np-notes-integrity.yml"
 
 jobs:
@@ -33,4 +55,194 @@ jobs:
       - name: Check Python syntax
         run: python -m compileall -q Other_dev/noteapp Other_dev/notes_app.py
       - name: Validate backups, portability, autosave, plugins, attachments
-        run: python -m unittest -v tests.test_np_notes_integrity tests.test_np_notes_hardening
+        run: python -m unittest -v tests.test_np_notes_integrity tests.test_np_notes_hardening tests.test_np_notes_safety_20261125 tests.test_np_notes_search_benchmark tests.test_np_notes_recovery
+      - name: Benchmark synthetic notes search (100 / 1000 / 10000)
+        run: python tools/benchmark_np_notes_search.py --notes 100,1000,10000 --repeats 3
+
+  qt-editor-smoke:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Validate isolated preview PowerShell syntax
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path 'tools/preview_np_notes_pr83.ps1').Path,
+            [ref]$tokens, [ref]$errors
+          ) | Out-Null
+          if ($errors.Count -ne 0) {
+            $errors | Format-List | Out-String | Write-Host
+            throw "Preview script syntax is invalid"
+          }
+      - name: Reopen existing isolated preview without touching test notes
+        shell: pwsh
+        run: |
+          $commit = 'ab12345678901234567890123456789012345678'
+          $root = Join-Path $env:RUNNER_TEMP ('np-notes-preview-reopen-' + [guid]::NewGuid().ToString('N'))
+          $launcher = Join-Path $root 'Launcher'
+          $preview = Join-Path $env:TEMP ('NP_Notes_PR83_' + $commit.Substring(0,12))
+          try {
+            New-Item -ItemType Directory -Path $launcher -Force | Out-Null
+            New-Item -ItemType File -Path (Join-Path $launcher 'Choice.pyw') | Out-Null
+            New-Item -ItemType Directory -Path (Join-Path $preview 'Data') -Force | Out-Null
+            New-Item -ItemType Directory -Path (Join-Path $preview 'noteapp\app') -Force | Out-Null
+            New-Item -ItemType File -Path (Join-Path $preview 'notes_app.py') | Out-Null
+            New-Item -ItemType File -Path (Join-Path $preview 'noteapp\app\__init__.py') | Out-Null
+            Set-Content -LiteralPath (Join-Path $preview 'PREVIEW_ONLY.txt') -Value "NP Notes isolated preview of $commit"
+            $testNote = Join-Path $preview 'Data\note-test.json'
+            Set-Content -LiteralPath $testNote -Value '{"test":"preserve"}'
+            $before = (Get-FileHash -LiteralPath $testNote -Algorithm SHA256).Hash
+            # Preview uses Write-Host; validate its exit status and the
+            # unchanged files instead of capturing success text as pipeline output.
+            & './tools/preview_np_notes_pr83.ps1' -LauncherRoot $launcher -CommitSha $commit
+            if (-not (Test-Path -LiteralPath (Join-Path $preview 'PREVIEW_ONLY.txt'))) {
+              throw 'Existing preview marker disappeared'
+            }
+            if ((Get-FileHash -LiteralPath $testNote -Algorithm SHA256).Hash -ne $before) {
+              throw 'Existing isolated note was changed'
+            }
+          }
+          finally {
+            if (Test-Path $root) { Remove-Item $root -Recurse -Force }
+            if (Test-Path $preview) { Remove-Item $preview -Recurse -Force }
+          }
+      - name: Validate Notes-only backup under Windows PowerShell 5.1
+        shell: pwsh
+        run: |
+          $path = (Resolve-Path 'tools/backup_np_notes_data.ps1').Path
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            $path, [ref]$tokens, [ref]$errors
+          ) | Out-Null
+          if ($errors.Count -gt 0) { throw ($errors | Out-String) }
+          $root = Join-Path $env:RUNNER_TEMP ('np-notes-backup-test-' + [guid]::NewGuid().ToString('N'))
+          $source = Join-Path $root 'Data'
+          $backup = Join-Path $root 'Backup'
+          try {
+            New-Item -ItemType Directory -Force -Path (Join-Path $source 'Notes\sample') | Out-Null
+            New-Item -ItemType Directory -Force -Path (Join-Path $source 'LaptopCare') | Out-Null
+            Set-Content -LiteralPath (Join-Path $source 'Notes\sample\note.json') -Value '{"text":"example"}' -Encoding UTF8
+            Set-Content -LiteralPath (Join-Path $source 'Notes\sample\attachment.log') -Value 'real user attachment' -Encoding UTF8
+            Set-Content -LiteralPath (Join-Path $source 'settings.ini') -Value 'key=value' -Encoding UTF8
+            Set-Content -LiteralPath (Join-Path $source 'LaptopCare\laptopcare.log') -Value 'runtime log' -Encoding UTF8
+            Set-Content -LiteralPath (Join-Path $source 'crash_fault.log') -Value 'runtime log' -Encoding UTF8
+            $sqlite = Join-Path $source 'LaptopCare\procmon.sqlite'
+            Set-Content -LiteralPath $sqlite -Value 'live sqlite' -Encoding UTF8
+            $locked = [IO.File]::Open($sqlite, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+            try {
+              $result = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $path -SourceRoot $source -BackupRoot $backup
+              if ($LASTEXITCODE -ne 0) { throw "PowerShell 5.1 backup failed: $LASTEXITCODE" }
+            }
+            finally { $locked.Dispose() }
+            if (-not (($result | Out-String) -match 'SCOPE=NP_NOTES_ONLY')) {
+              throw 'No Notes-only confirmation'
+            }
+            foreach ($name in @('Notes\sample\note.json','Notes\sample\attachment.log','settings.ini')) {
+              $expected = (Get-FileHash -LiteralPath (Join-Path $source $name) -Algorithm SHA256).Hash
+              $actual = (Get-FileHash -LiteralPath (Join-Path $backup $name) -Algorithm SHA256).Hash
+              if ($expected -ne $actual) { throw "Invalid hash for $name" }
+            }
+            foreach ($name in @('LaptopCare\procmon.sqlite','LaptopCare\laptopcare.log','crash_fault.log')) {
+              if (Test-Path -LiteralPath (Join-Path $backup $name)) {
+                throw "Unrelated Launcher file copied: $name"
+              }
+            }
+            if (-not (Test-Path -LiteralPath (Join-Path $backup 'SHA256-manifest.json'))) {
+              throw 'Missing SHA256 manifest'
+            }
+            $failed = $false
+            try { & $path -SourceRoot $source -BackupRoot $backup } catch { $failed = $true }
+            if (-not $failed) { throw 'Script overwrote existing backup' }
+          }
+          finally {
+            if (Test-Path $root) { Remove-Item -LiteralPath $root -Recurse -Force }
+          }
+      - name: Release preflight is read-only under Windows PowerShell 5.1
+        shell: pwsh
+        run: |
+          $sandbox = Join-Path $env:RUNNER_TEMP ('np-notes-preflight-' + [guid]::NewGuid().ToString('N'))
+          try {
+            New-Item -ItemType Directory -Path (Join-Path $sandbox 'Data\Notes') -Force | Out-Null
+            New-Item -ItemType Directory -Path (Join-Path $sandbox 'noteapp\app') -Force | Out-Null
+            New-Item -ItemType File -Path (Join-Path $sandbox 'notes_app.py') | Out-Null
+            New-Item -ItemType File -Path (Join-Path $sandbox 'noteapp\app\__init__.py') | Out-Null
+            Set-Content -LiteralPath (Join-Path $sandbox 'Data\Notes\example.json') -Value '{"keep":true}' -Encoding UTF8
+            $file = Join-Path $sandbox 'Data\Notes\example.json'
+            $hash = (Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash
+            $script = (Resolve-Path 'tools/preflight_np_notes_release.ps1').Path
+            $report = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $script -LauncherRoot $sandbox
+            if ($LASTEXITCODE -ne 0) { throw 'Windows PowerShell release preflight failed' }
+            if (-not (($report | Out-String) -match 'DATA_NOT_MODIFIED=TRUE')) {
+              throw 'Expected read-only preflight marker absent'
+            }
+            if ((Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash -ne $hash) {
+              throw 'Preflight unexpectedly modified data'
+            }
+          }
+          finally {
+            if (Test-Path $sandbox) { Remove-Item -LiteralPath $sandbox -Recurse -Force }
+          }
+      - name: Code-only installer dry-run does not change shared Data
+        shell: pwsh
+        run: |
+          $script = (Resolve-Path 'tools/install_np_notes_code.ps1').Path
+          $sandbox = Join-Path $env:RUNNER_TEMP ('np-notes-installer-test-' + [guid]::NewGuid().ToString('N'))
+          try {
+            New-Item -ItemType Directory -Path (Join-Path $sandbox 'Data\Notes') -Force | Out-Null
+            New-Item -ItemType Directory -Path (Join-Path $sandbox 'noteapp\app') -Force | Out-Null
+            Set-Content -LiteralPath (Join-Path $sandbox 'notes_app.py') -Value 'original code'
+            Set-Content -LiteralPath (Join-Path $sandbox 'noteapp\app\__init__.py') -Value 'original package'
+            Set-Content -LiteralPath (Join-Path $sandbox 'Data\Notes\note.json') -Value '{"original":true}'
+            $notesHash = (Get-FileHash -LiteralPath (Join-Path $sandbox 'Data\Notes\note.json') -Algorithm SHA256).Hash
+            $codeHash = (Get-FileHash -LiteralPath (Join-Path $sandbox 'notes_app.py') -Algorithm SHA256).Hash
+            $result = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $script -LauncherRoot $sandbox
+            if ($LASTEXITCODE -ne 0) { throw 'Installer PowerShell 5.1 dry-run failed' }
+            if (-not (($result | Out-String) -match 'DEPLOY_MODE=DRY_RUN')) {
+              throw 'Installer did not run in dry-run mode'
+            }
+            if ((Get-FileHash -LiteralPath (Join-Path $sandbox 'Data\Notes\note.json') -Algorithm SHA256).Hash -ne $notesHash) {
+              throw 'Installer modified user data'
+            }
+            if ((Get-FileHash -LiteralPath (Join-Path $sandbox 'notes_app.py') -Algorithm SHA256).Hash -ne $codeHash) {
+              throw 'Installer modified program during dry-run'
+            }
+          }
+          finally {
+            if (Test-Path $sandbox) { Remove-Item -LiteralPath $sandbox -Recurse -Force }
+          }
+      - name: Install Qt dependencies
+        run: python -m pip install "PySide6>=6.7,<7"
+      - name: Exercise Qt editor without real user data
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python -m unittest -v tests.test_np_notes_qt_smoke
+      - name: Smoke test complete NotesApp on isolated empty Data
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python -m unittest -v tests.test_np_notes_full_app_qt
+      - name: Diagnose isolated full-app smoke logs on failure
+        if: failure()
+        shell: pwsh
+        run: |
+          Get-ChildItem -LiteralPath $env:TEMP -Directory -Filter 'np-notes-full-smoke-*' -ErrorAction SilentlyContinue | ForEach-Object {
+            Get-ChildItem -LiteralPath (Join-Path $_.FullName 'Data') -Filter '*crash.log' -File -ErrorAction SilentlyContinue | ForEach-Object {
+              Write-Host "=== Test crash log ==="
+              Get-Content -LiteralPath $_.FullName -Tail 60
+            }
+          }
+      - name: Remove isolated test logs after Qt process exits
+        if: always()
+        shell: pwsh
+        run: |
+          Get-ChildItem -LiteralPath $env:TEMP -Directory -Filter 'np-notes-full-smoke-*' -ErrorAction SilentlyContinue |
+            Remove-Item -Recurse -Force -ErrorAction Stop
+      - name: Benchmark synthetic QTextDocument search
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python tools/benchmark_np_notes_qt_search.py --notes 100,1000,10000 --repeats 3

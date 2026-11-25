@@ -86,12 +86,31 @@ class SearchMixin:
     def trigger_search(self):
         self.handle_combined_search()
 
+    def find_next_in_current_note(self) -> bool:
+        """Выделяет следующее совпадение в тексте, не изменяя заметку."""
+        if not getattr(self, "current_note", None):
+            return False
+        query = self.search_bar.text().strip()
+        if not query:
+            return False
+        document = self.text_edit.document()
+        cursor = self.text_edit.textCursor()
+        found = document.find(query, cursor)
+        if found.isNull():
+            found = document.find(query, 0)
+        if found.isNull():
+            return False
+        self.text_edit.setTextCursor(found)
+        self.text_edit.ensureCursorVisible()
+        self.text_edit.setFocus()
+        return True
+
     def handle_combined_search(self):
         tag = self.tag_filter.currentText().strip().lower()
         if tag == "все теги":
             tag = ""
 
-        text = self.search_bar.text().strip().lower()
+        text = self.search_bar.text().strip().casefold()
         mode = self.search_mode_combo.currentText()
 
         if not text and not tag:
@@ -102,20 +121,29 @@ class SearchMixin:
             matches_tag_filter = tag in [t.lower() for t in note.tags] if tag else True
             if not text:
                 return matches_tag_filter
-            note_tags_joined = " ".join([t for t in (note.tags or [])]).lower()
-            matches_search_by_tags = text in note_tags_joined if note_tags_joined else False
+            note_tags_joined = " ".join(str(t) for t in (note.tags or [])).casefold()
+            matches_search_by_tags = text in note_tags_joined
+            title_match = text in (note.title or "").casefold()
+            reminder_match = text in str(note.reminder or "").casefold()
             if mode == "Заголовок":
-                matches_search_main = text in (note.title or "").lower()
+                matches_search_main = title_match
             elif mode == "Напоминание":
-                matches_search_main = bool(note.reminder) and text in str(note.reminder).lower()
+                matches_search_main = reminder_match
+            elif mode == "Везде" and (title_match or reminder_match or matches_search_by_tags):
+                # Не конвертируем HTML в QTextDocument, если метаданные уже совпали.
+                return matches_tag_filter
             else:
-                content_plain = getattr(note, "content_txt", "") or ""
-                if not content_plain:
-                    doc = QTextDocument()
-                    doc.setHtml(note.content)
-                    content_plain = doc.toPlainText()
-                    note.content_txt = content_plain
-                matches_search_main = text in content_plain.lower()
+                # Редактируемый документ всегда приоритетнее кэша.
+                if self.current_note and note.uuid == self.current_note.uuid:
+                    content_plain = self.text_edit.toPlainText()
+                else:
+                    content_plain = getattr(note, "content_txt", "") or ""
+                    if not content_plain:
+                        doc = QTextDocument()
+                        doc.setHtml(note.content or "")
+                        content_plain = doc.toPlainText()
+                        note.content_txt = content_plain
+                matches_search_main = text in content_plain.casefold()
             return matches_tag_filter and (matches_search_main or matches_search_by_tags)
         filtered = [n for n in self.notes if _matches(n)]
         fav_color = self.get_contrast_favorite_color()
@@ -165,10 +193,13 @@ class SearchMixin:
     def update_search_filter_items(self) -> None:
         if not hasattr(self, "search_mode_combo") or self.search_mode_combo is None:
             return
-        modes = ["Заголовок", "Содержимое", "Напоминание"]
+        modes = ["Заголовок", "Содержимое", "Напоминание", "Везде"]
+        selected = self.search_mode_combo.currentText()
         self.search_mode_combo.blockSignals(True)
         self.search_mode_combo.clear()
         self.search_mode_combo.addItems(modes)
+        if selected in modes:
+            self.search_mode_combo.setCurrentText(selected)
         self.search_mode_combo.blockSignals(False)
 
     def _timestamp_sort_key(self, note: "Note") -> int:
