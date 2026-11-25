@@ -217,9 +217,12 @@ class SettingsMixin:
                 "retry_pending": "Ошибка или конфликт — изменения сохранены локально",
             }
             pending = service.queue.count()
+            conflict_root = service.state_directory / "remote_conflicts"
+            conflicts = sum(1 for _ in conflict_root.rglob("*.enc")) if conflict_root.is_dir() else 0
+            detail = f" · Конфликтов: {conflicts}" if conflicts else ""
             sync_label.setText(
                 f"{states.get(service.worker.state, 'Ожидание')} "
-                f"· В очереди: {pending} · Каждые 5 минут"
+                f"· В очереди: {pending}{detail} · Каждые 5 минут"
             )
 
         refresh_sync_status()
