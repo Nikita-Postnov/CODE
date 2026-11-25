@@ -195,6 +195,7 @@ class EditorQtSmokeTests(unittest.TestCase):
             pass
         owner = Owner()
         owner.text_edit = self.edit
+        owner.record_state_for_undo = lambda: None
         toggle = extract_editor_method("toggle_checkbox_at_cursor")
         owner.insert_checkbox = lambda: None
         toggle(owner)
