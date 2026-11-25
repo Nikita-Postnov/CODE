@@ -5,6 +5,8 @@ Requires PySide6 and runs with QT_QPA_PLATFORM=offscreen.
 """
 import os
 import sys
+import logging
+import faulthandler
 import tempfile
 import unittest
 from pathlib import Path
@@ -44,6 +46,19 @@ class FullAppFirstRunSmoke(unittest.TestCase):
             os.environ["LAUNCHER_ROOT"] = cls.old_launcher_root
         if str(APP_ROOT) in sys.path:
             sys.path.remove(str(APP_ROOT))
+        # Windows keeps open log files locked. Close only handlers created
+        # for the isolated test directory; never touch an actual user log.
+        from noteapp import logging_setup
+        faulthandler.disable()
+        fault_file = getattr(logging_setup, "_fault_log_file", None)
+        if fault_file is not None:
+            fault_file.close()
+            logging_setup._fault_log_file = None
+        for handler in list(logging.getLogger().handlers):
+            target = getattr(handler, "baseFilename", None)
+            if target and Path(target).is_relative_to(cls.root):
+                logging.getLogger().removeHandler(handler)
+                handler.close()
         cls.temp.cleanup()
 
     def test_empty_data_then_create_first_note(self):
