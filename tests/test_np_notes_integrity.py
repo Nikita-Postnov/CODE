@@ -69,6 +69,22 @@ class TestNotesStorage(unittest.TestCase):
         backups = list(folder.glob("note_backup_*.json"))
         self.assertEqual(len(backups), 3)
 
+    def test_failed_backup_copy_never_exposes_partial_json(self):
+        folder = self.root / "backup_failure"
+        folder.mkdir()
+        file = folder / "note.json"
+        file.write_text('{"title":"saved"}', encoding="utf-8")
+
+        def partial_copy(source, target, *args, **kwargs):
+            target.write(b'{"title":')
+            raise OSError("simulated disk full")
+
+        with patch.object(shutil, "copyfileobj", partial_copy):
+            self.worker._make_backup_if_exists(file)
+        self.assertEqual(list(folder.glob("note_backup_*.json")), [])
+        self.assertEqual(list(folder.glob("note_backup_*.tmp")), [])
+        self.assertEqual(file.read_text(encoding="utf-8"), '{"title":"saved"}')
+
     def test_unchanged_note_does_not_replace_or_generate_backup(self):
         path = self.root / "b"
         payload = {"title": "important", "content": "abc"}
