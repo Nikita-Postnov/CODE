@@ -104,7 +104,8 @@ class TestReminders(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         namespace = {"datetime": datetime, "timedelta": timedelta, "monthrange": monthrange}
-        fns = ["normalize_reminder_repeat", "parse_reminder_datetime", "next_reminder_datetime"]
+        fns = ["normalize_reminder_repeat", "parse_reminder_datetime",
+               "reminder_now_for_due", "next_reminder_datetime"]
         nodes = [node_from(APP / "reminders.py", x) for x in fns]
         exec(compile(ast.fix_missing_locations(ast.Module(body=nodes, type_ignores=[])),
                      "<reminder-tests>", "exec"), namespace)
