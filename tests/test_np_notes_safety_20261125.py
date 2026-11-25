@@ -332,6 +332,47 @@ class FirstNoteDialogTests(unittest.TestCase):
         self.assertIn('dialog.setCancelButtonText("Отмена")', body)
 
 
+class DebouncedHistoryPersistenceTests(unittest.TestCase):
+    def test_grouped_history_is_persisted_without_silent_data_loss(self):
+        source = (ROOT / "app" / "__init__.py").read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        cls = next(n for n in tree.body if isinstance(n, ast.ClassDef)
+                   and n.name == "NotesApp")
+        method = next(n for n in cls.body if isinstance(n, ast.FunctionDef)
+                      and n.name == "_flush_debounced_history")
+        module = ast.Module(body=[method], type_ignores=[])
+        ast.fix_missing_locations(module)
+        namespace = {"logging": __import__("logging")}
+        exec(compile(module, "<debounced-history>", "exec"), namespace)
+        class Note:
+            uuid = "current"
+        class Fake:
+            current_note = Note()
+            updated = 0
+            persisted = 0
+            dirty = None
+            def update_current_note_content(self):
+                self.updated += 1
+            def save_note_to_file(self, note):
+                self.persisted += 1
+                if getattr(self, "fail", False):
+                    raise OSError("Disk full")
+            def _set_unsaved(self, flag):
+                self.dirty = flag
+        owner = Fake()
+        namespace["_flush_debounced_history"](owner)
+        self.assertEqual((owner.updated, owner.persisted, owner.dirty),
+                         (1, 1, False))
+        owner.fail = True
+        namespace["_flush_debounced_history"](owner)
+        self.assertTrue(owner.dirty)
+        self.assertEqual(owner.persisted, 2)
+        self.assertIn(
+            "self._save_debouncer.timeout.connect(self._flush_debounced_history)",
+            source,
+        )
+
+
 class QuietAutosaveHistoryTests(unittest.TestCase):
     def test_quiet_disk_flush_does_not_add_history(self):
         source = (ROOT / "app" / "__init__.py").read_text(encoding="utf-8")
