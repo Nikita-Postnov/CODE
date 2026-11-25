@@ -94,6 +94,28 @@ jobs:
             [ref]$tokens, [ref]$errors
           ) | Out-Null
           if ($errors.Count -ne 0) { throw ($errors | Out-String) }
+      - name: Exercise DPAPI round trip on Windows PowerShell 5.1
+        shell: pwsh
+        run: |
+          $code = @'
+          $ErrorActionPreference = 'Stop'
+          Add-Type -AssemblyName System.Security -ErrorAction Stop
+          $original = [Text.Encoding]::UTF8.GetBytes('NPNotes-synthetic-test-only')
+          $cipher = [Security.Cryptography.ProtectedData]::Protect(
+              $original, $null, [Security.Cryptography.DataProtectionScope]::CurrentUser
+          )
+          $plain = [Security.Cryptography.ProtectedData]::Unprotect(
+              $cipher, $null, [Security.Cryptography.DataProtectionScope]::CurrentUser
+          )
+          if ([Text.Encoding]::UTF8.GetString($plain) -ne 'NPNotes-synthetic-test-only') {
+              throw 'DPAPI round trip failed'
+          }
+          Write-Output 'DPAPI_ROUNDTRIP=PASS'
+          '@
+          $file = Join-Path $env:RUNNER_TEMP 'np-notes-dpapi-synthetic.ps1'
+          [IO.File]::WriteAllText($file, $code)
+          & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $file
+          if ($LASTEXITCODE -ne 0) { throw "Windows PowerShell 5.1 DPAPI test failed: $LASTEXITCODE" }
       - name: Validate isolated preview PowerShell syntax
         shell: pwsh
         run: |
