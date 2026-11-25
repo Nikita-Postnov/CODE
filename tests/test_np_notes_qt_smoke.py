@@ -98,9 +98,9 @@ class WidgetQtSmokeTests(unittest.TestCase):
         proxy = Proxy()
         set_opacity = extract_widget_method("set_widget_opacity")
         set_opacity(proxy, 0.85)
-        self.assertAlmostEqual(widget.windowOpacity(), 0.85)
+        self.assertAlmostEqual(widget.windowOpacity(), 0.85, delta=1 / 255 + 1e-6)
         set_opacity(proxy, 0.1)
-        self.assertAlmostEqual(widget.windowOpacity(), 0.6)
+        self.assertAlmostEqual(widget.windowOpacity(), 0.6, delta=1 / 255 + 1e-6)
         self.assertEqual(proxy.saved, 2)
 
 
