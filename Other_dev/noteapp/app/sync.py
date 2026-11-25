@@ -10,8 +10,8 @@ import logging
 
 from PySide6.QtCore import QThread, QTimer, Signal
 
-from ..config import DATA_DIR
-from ..github_sync import SYNC_INTERVAL_MS, enabled_config, run_configured_sync
+from ..config import DATA_DIR, NOTES_DIR
+from ..github_sync import SYNC_INTERVAL_MS, enabled_config, run_configured_sync, apply_configured_pending
 
 
 class SyncThread(QThread):
@@ -23,7 +23,7 @@ class SyncThread(QThread):
 
     def run(self):
         try:
-            outcome = run_configured_sync(DATA_DIR, protected_uuid=self.protected_uuid)
+            outcome = run_configured_sync(DATA_DIR, protected_uuid=self.protected_uuid, stage_downloads=True)
             self.completed.emit(outcome)
         except Exception as exc:
             # Do not log token, passphrase or note contents.
@@ -65,10 +65,34 @@ class SyncMixin:
             self._github_sync_status = "error"
             return
         self._github_sync_status = result.status
-        if result.downloaded and not getattr(self, "_unsaved", False):
-            # Reconcile disk imports via the existing preload mechanism on GUI thread.
-            # Current selected note is protected by the worker and is never overwritten.
-            try:
-                self._start_background_preload()
-            except Exception:
-                logging.exception("Unable to refresh imported notes")
+        if getattr(self, "_unsaved", False):
+            return
+        active = getattr(self, "current_note", None)
+        protected = getattr(active, "uuid", None)
+        try:
+            # Only Qt main thread applies staged encrypted remote updates.
+            updated = apply_configured_pending(DATA_DIR, protected_uuid=protected)
+        except Exception:
+            logging.exception("Unable to apply verified sync downloads")
+            return
+        if not updated:
+            return
+        try:
+            # Replace only imported UUIDs in memory. Preserve selected editor
+            # and unsaved notes, and never start a second preload race.
+            changed = set(updated)
+            by_id = {note.uuid: note for note in getattr(self, "notes", [])
+                     if note.uuid not in changed}
+            for folder in NOTES_DIR.iterdir():
+                file = folder / "note.json"
+                if folder.is_dir() and not folder.is_symlink() and file.is_file():
+                    payload = self._load_note_from_path(str(file))
+                    if payload.uuid in changed:
+                        by_id[payload.uuid] = payload
+            self.notes = list(by_id.values())
+            self._apply_saved_notes_order()
+            self.refresh_notes_list()
+            self.update_tag_filter_items()
+            self.update_search_filter_items()
+        except Exception:
+            logging.exception("Imported note files are safe, but GUI refresh failed")
