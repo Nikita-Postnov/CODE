@@ -23,6 +23,7 @@ try:
         QApplication, QWidget, QFontComboBox, QSpinBox, QComboBox,
     )
     from noteapp.app.editor import EditorMixin
+    from noteapp.app.dropdowns import DropdownsMixin
     from noteapp.widgets.text_edit import CustomTextEdit
 except ImportError:
     QApplication = None
@@ -33,7 +34,7 @@ class FakeSettings:
         return default
 
 
-class EditorHost(QWidget, EditorMixin):
+class EditorHost(QWidget, EditorMixin, DropdownsMixin):
     """Standalone app fixture, with real NotesApp's dirty callback contract."""
     def __init__(self):
         super().__init__()
@@ -58,6 +59,15 @@ class EditorHost(QWidget, EditorMixin):
 
     def _set_unsaved(self, flag: bool):
         self.changes.append(flag)
+
+    def _ensure_dd_map(self):
+        if not hasattr(self, "_dropdown_tokens"):
+            self._dropdown_tokens = {}
+
+    @staticmethod
+    def _html_escape(text):
+        return (text.replace("&", "&amp;").replace("<", "&lt;")
+                .replace(">", "&gt;"))
 
     def record_state_for_undo(self):
         self.history_count += 1
@@ -363,6 +373,43 @@ class EditorControlsAudit(unittest.TestCase):
         host.text_edit.insertFromMimeData(md)
         self.assertEqual(len(received), 1)
         self.assertEqual(host.text_edit.toPlainText(), "")
+
+    def test_dropdown_insert_change_and_html_roundtrip(self):
+        host = self.new_host("Pick: ")
+        cursor = host.text_edit.textCursor()
+        cursor.movePosition(QTextCursor.End)
+        host.text_edit.setTextCursor(cursor)
+        with patch.object(host, "show_dropdown_menu_for_token"):
+            host.insert_dropdown()
+        self.assertEqual(len(host._dropdown_tokens), 1)
+        dd_id = next(iter(host._dropdown_tokens))
+        self.assertEqual(host._dropdown_tokens[dd_id]["value"], "Вариант 1")
+        self.assertIn("dropdown://", host.text_edit.toHtml())
+        host._update_dropdown_token(dd_id, "Вариант 2")
+        html = host._persist_dropdown_values_in_html(host.text_edit.toHtml())
+        self.assertIn("Вариант 2", html)
+        restored = self.new_host("")
+        restored.text_edit.setHtml(html)
+        restored._dropdown_tokens = {}
+        info = restored._get_dropdown_token_info(dd_id)
+        self.assertIsNotNone(info)
+        self.assertEqual(info["value"], "Вариант 2")
+        self.assertEqual(len(info["values"]), 3)
+        self.assertIn("Pick:", restored.text_edit.toPlainText())
+
+    def test_bullet_numbered_and_checklist_enter_continuation(self):
+        for marker, callback, expected in (
+            ("bullet", "insert_bullet_list", "• Item\\n• "),
+            ("number", "insert_numbered_list", "1. Item\\n2. "),
+            ("checklist", "insert_checkbox", "☐ Item\\n☐ "),
+        ):
+            with self.subTest(marker=marker):
+                host = self.new_host("")
+                getattr(host, callback)()
+                QTest.keyClicks(host.text_edit, "Item")
+                QTest.keyClick(host.text_edit, Qt.Key_Return)
+                self.app.processEvents()
+                self.assertIn(expected, host.text_edit.toPlainText())
 
     def test_readonly_version_does_not_modify_empty_editor(self):
         host = self.new_host("")
