@@ -314,6 +314,10 @@ class NotePersistenceMixin:
 
     def save_note_to_file(self, note: Note) -> None:
         self.save_note_to_specific_folder(note, NOTES_DIR)
+        # Удаляем черновик только ПОСЛЕ успешной записи основной заметки.
+        clear = getattr(self, "_clear_recovery_snapshot", None)
+        if callable(clear):
+            clear(note.uuid)
 
     def save_all_notes_to_disk(self) -> None:
         self.ensure_notes_directory()
