@@ -207,6 +207,63 @@ class NotesApp(NotePersistenceMixin, PluginsMixin, RemindersMixin, TrayMixin, Au
         self.reminder_timer = QTimer(self)
         self.reminder_timer.timeout.connect(self.check_reminders)
         self.reminder_timer.start(60000)
+        # Only activate when all GitHub credentials and encryption inputs exist.
+        self._np_notes_sync = None
+        QTimer.singleShot(1000, self._start_optional_np_notes_sync)
+
+    def _start_optional_np_notes_sync(self) -> None:
+        try:
+            from noteapp.sync_service import configure_from_environment
+            service = configure_from_environment(DATA_DIR / "NPNotesSync", NOTES_DIR)
+            if service is not None:
+                self._np_notes_sync = service
+                self._np_notes_received_seen = 0
+                self._np_notes_refresh_timer = QTimer(self)
+                self._np_notes_refresh_timer.setInterval(10000)
+                self._np_notes_refresh_timer.timeout.connect(
+                    self._refresh_received_np_notes
+                )
+                self._np_notes_refresh_timer.start()
+                service.start()
+        except Exception:
+            logging.exception("NP Notes encrypted cloud sync unavailable")
+
+    def _refresh_received_np_notes(self) -> None:
+        service = getattr(self, "_np_notes_sync", None)
+        if service is None:
+            return
+
+        # Only the GUI thread may apply revisions to existing note folders.
+        # Never replace the current editor's model, an unsaved draft, or any
+        # file while the background preloader is reading the notes folder.
+        loader = getattr(self, "_background_loader", None)
+        loader_busy = loader is not None and loader.isRunning()
+        if not loader_busy and not self.isWindowModified():
+            active = getattr(self, "current_note", None)
+            blocked = [active.uuid] if active is not None else []
+            try:
+                updated = service.apply_staged_remote_updates(blocked)
+                replacement = {}
+                for note_id, folder in updated:
+                    payload = json.loads((folder / "note.json").read_bytes())
+                    replacement[note_id] = Note.from_dict(payload)
+                    replacement[note_id].content_txt = payload.get("content_txt", "") or ""
+                if replacement:
+                    self.notes = [
+                        replacement.get(note.uuid, note)
+                        for note in self.notes
+                    ]
+                    self.refresh_notes_list()
+            except Exception:
+                logging.exception("NP Notes remote fast-forward deferred")
+
+        count = service.received_count
+        if count == getattr(self, "_np_notes_received_seen", 0):
+            return
+        self._np_notes_received_seen = count
+        # New remote UUIDs are added to the existing collection. The merge
+        # intentionally preserves every in-memory note already being edited.
+        self._start_background_preload()
 
     @staticmethod
     def _html_to_plain_text(content: str) -> str:
@@ -392,6 +449,9 @@ class NotesApp(NotePersistenceMixin, PluginsMixin, RemindersMixin, TrayMixin, Au
         except Exception:
             pass
 
+        sync_service = getattr(self, "_np_notes_sync", None)
+        if sync_service is not None:
+            sync_service.stop()
         self.close()
         app = QApplication.instance()
         if app is not None:
@@ -4081,7 +4141,9 @@ def main(argv=None):
             win._init_tray_icon()
             win.hide()
         else:
-            win.show()
+            # Open on the full available desktop by default. Qt's maximized
+            # state respects the Windows taskbar and multi-monitor work area.
+            win.showMaximized()
 
         rc = app.exec()
         logging.info(f"=== APP EXIT rc={rc} ===")

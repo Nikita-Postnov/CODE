@@ -27,7 +27,11 @@ from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QFormLayout,
+    QLabel,
     QSpinBox,
+    QPushButton,
+    QInputDialog,
+    QMessageBox,
     QStyleFactory,
 )
 
@@ -171,6 +175,7 @@ class SettingsMixin:
         dialog = QDialog(self)
         dialog.setWindowFlag(Qt.WindowStaysOnTopHint, True)
         dialog.setWindowTitle("Настройки")
+        dialog.setMinimumWidth(670)
         layout = QFormLayout(dialog)
         theme_combo = QComboBox(dialog)
         theme_combo.addItems(["Светлая", "Тёмная"])
@@ -199,6 +204,108 @@ class SettingsMixin:
             "Меньше — чаще запись на диск; больше — меньше нагрузки."
         )
         layout.addRow("Автосохранение (мс):", autosave_debounce)
+        # Status is read-only; secrets are never exposed in the UI.
+        sync_label = QLabel(dialog)
+        sync_label.setWordWrap(True)
+
+        def refresh_sync_status():
+            service = getattr(self, "_np_notes_sync", None)
+            if service is None:
+                sync_label.setText("Отключена: заметки сохраняются локально")
+                return
+            states = {
+                "idle": "Ожидание синхронизации",
+                "waiting_for_network": "GitHub недоступен — данные сохраняются локально",
+                "synchronizing": "Синхронизация",
+                "synchronized": "Синхронизировано",
+                "retry_pending": "Ошибка или конфликт — изменения сохранены локально",
+            }
+            pending = service.queue.count()
+            conflict_root = service.state_directory / "remote_conflicts"
+            conflicts = sum(1 for _ in conflict_root.rglob("*.enc")) if conflict_root.is_dir() else 0
+            pending_root = service.state_directory / "pending_remote_updates"
+            incoming = (
+                sum(1 for _ in pending_root.rglob("*.enc"))
+                if pending_root.is_dir() else 0
+            )
+            detail = f" · Конфликтов: {conflicts}" if conflicts else ""
+            if incoming:
+                detail += f" · Ожидают применения: {incoming}"
+            failure = getattr(service.worker, "last_failure", None)
+            if failure and service.worker.state == "retry_pending":
+                detail += f" · Причина: {failure}"
+            if service.worker.state == "waiting_for_network":
+                probe_error = getattr(service, "last_probe_error", None)
+                if probe_error:
+                    detail += f" · Причина: {probe_error}"
+            status_text = (
+                f"{states.get(service.worker.state, 'Ожидание')} "
+                f"· В очереди: {pending} · Каждые 5 минут"
+                f"{detail.replace(' · Причина:', chr(10) + 'Причина:')}"
+            )
+            sync_label.setText(status_text)
+            sync_label.setToolTip(status_text)
+
+        refresh_sync_status()
+        sync_status_timer = QTimer(dialog)
+        sync_status_timer.timeout.connect(refresh_sync_status)
+        sync_status_timer.start(2000)
+        layout.addRow("GitHub-синхронизация:", sync_label)
+
+        conflict_button = QPushButton("Сохранить конфликт как отдельную заметку", dialog)
+        conflict_button.setToolTip(
+            "Не удаляет и не перезаписывает исходную заметку. "
+            "Создаёт копию удалённой версии с другим UUID."
+        )
+
+        def resolve_one_conflict():
+            service = getattr(self, "_np_notes_sync", None)
+            if service is None:
+                return
+            conflict_root = service.state_directory / "remote_conflicts"
+            options = {}
+            if conflict_root.is_dir():
+                for stored in conflict_root.glob("*/*.enc"):
+                    note_id, sha = stored.parent.name, stored.stem
+                    label = f"{note_id} · версия {sha[:12]}"
+                    options[label] = (note_id, sha)
+            if not options:
+                QMessageBox.information(dialog, "Конфликты", "Конфликтов нет.")
+                return
+            label, ok = QInputDialog.getItem(
+                dialog, "Восстановить версию",
+                "Выбери зашифрованную конфликтующую версию:",
+                list(options), 0, False,
+            )
+            if not ok or label not in options:
+                return
+            confirm = QMessageBox.question(
+                dialog, "Создать копию?",
+                "Конфликтующая версия станет отдельной заметкой. "
+                "Исходная заметка и зашифрованный конфликт сохранятся. "
+                "Продолжить?",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+            )
+            if confirm != QMessageBox.Yes:
+                return
+            try:
+                service.restore_conflict_copy(*options[label])
+            except Exception:
+                logging.exception("Unable to restore NP Notes encrypted conflict")
+                QMessageBox.warning(
+                    dialog, "Ошибка восстановления",
+                    "Не удалось создать копию. Исходная заметка не изменена."
+                )
+                return
+            QMessageBox.information(
+                dialog, "Восстановлено",
+                "Создана отдельная заметка с копией конфликтующей версии."
+            )
+            refresh_sync_status()
+
+        conflict_button.setEnabled(getattr(self, "_np_notes_sync", None) is not None)
+        conflict_button.clicked.connect(resolve_one_conflict)
+        layout.addRow("Разрешение конфликтов:", conflict_button)
         buttons = QDialogButtonBox(
             QDialogButtonBox.Ok | QDialogButtonBox.Cancel, dialog
         )

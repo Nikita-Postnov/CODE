@@ -314,6 +314,14 @@ class NotePersistenceMixin:
 
     def save_note_to_file(self, note: Note) -> None:
         self.save_note_to_specific_folder(note, NOTES_DIR)
+        # Outbound sync is strictly downstream of successful durable local save.
+        # A cloud failure must never prevent saving or deleting crash drafts.
+        sync_service = getattr(self, "_np_notes_sync", None)
+        if sync_service is not None:
+            try:
+                sync_service.saved(note.uuid)
+            except Exception:
+                logging.exception("Could not enqueue NP Notes cloud sync; local note remains saved")
         # Удаляем черновик только ПОСЛЕ успешной записи основной заметки.
         clear = getattr(self, "_clear_recovery_snapshot", None)
         active = getattr(self, "current_note", None)
