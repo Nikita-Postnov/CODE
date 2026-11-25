@@ -120,6 +120,12 @@ jobs:
             [ref]$tokens, [ref]$errors
           ) | Out-Null
           if ($errors.Count -ne 0) { throw ($errors | Out-String) }
+      - name: Verify activation Python import under Windows PowerShell 5.1
+        shell: pwsh
+        run: |
+          $result = & powershell.exe -NoProfile -ExecutionPolicy Bypass -Command 'python -c "import cryptography"; if ($LASTEXITCODE -ne 0) { exit 1 }'
+          if ($LASTEXITCODE -ne 0) { throw 'Windows PowerShell 5.1 python import failed' }
+          Write-Output 'ACTIVATION_PYTHON_IMPORT=PASS'
       - name: Exercise DPAPI round trip on Windows PowerShell 5.1
         shell: pwsh
         run: |
