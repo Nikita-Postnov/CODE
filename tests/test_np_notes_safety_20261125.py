@@ -332,6 +332,21 @@ class FirstNoteDialogTests(unittest.TestCase):
         self.assertIn('dialog.setCancelButtonText("Отмена")', body)
 
 
+class QuietAutosaveHistoryTests(unittest.TestCase):
+    def test_quiet_disk_flush_does_not_add_history(self):
+        source = (ROOT / "app" / "__init__.py").read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        cls = next(n for n in tree.body if isinstance(n, ast.ClassDef)
+                   and n.name == "NotesApp")
+        method = next(n for n in cls.body if isinstance(n, ast.FunctionDef)
+                      and n.name == "save_note_quiet")
+        text = ast.get_source_segment(source, method)
+        self.assertNotIn("self.record_state_for_undo()", text)
+        self.assertIn("self.save_note_to_file(self.current_note)", text)
+        self.assertIn("self._set_unsaved(False)", text)
+        self.assertIn("self._save_debouncer.setInterval(1400)", source)
+
+
 class RenameSafetyTests(unittest.TestCase):
     def test_failed_folder_rename_restores_original_note_and_path(self):
         import os
