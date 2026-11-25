@@ -22,6 +22,8 @@ def gui_worker(root: Path) -> None:
     os.environ["QT_QPA_PLATFORM"] = "offscreen"
     os.environ["LAUNCHER_ROOT"] = str(root)
     from PySide6.QtCore import QSettings
+    from PySide6.QtGui import QFont, QTextCursor
+    from PySide6.QtWidgets import QPushButton
     from PySide6.QtTest import QTest
     from PySide6.QtWidgets import QApplication
 
@@ -103,6 +105,54 @@ def gui_worker(root: Path) -> None:
         assert warning.called, "Save failure must be reported"
     assert window.current_note.uuid == current_uuid, "Editor switched despite disk failure"
     assert len(window.notes) == 2, "Failed note was added to list"
+
+    # Real NotesApp toolbar integration: no isolated EditorMixin stub here.
+    # The controls must remain attached to the actual Qt window, dispatch to
+    # the selected note, and survive a real isolated note.json save/reopen.
+    toolbar_buttons = window.findChildren(QPushButton)
+    def editor_button(prefix):
+        matches = [button for button in toolbar_buttons
+                   if button.toolTip().startswith(prefix)]
+        assert len(matches) == 1, "Missing editor toolbar button: " + prefix
+        return matches[0]
+    window.text_edit.setPlainText("Toolbar integration")
+    cur = window.text_edit.textCursor()
+    cur.select(QTextCursor.Document)
+    window.text_edit.setTextCursor(cur)
+    editor_button("𝐁 - Жирный").click()
+    assert "font-weight:700" in window.text_edit.toHtml(), (
+        "Bold toolbar callback did not apply to selected text"
+    )
+    window.font_size_spin.setValue(18)
+    window.font_combo.setCurrentFont(QFont("Arial"))
+    html = window.text_edit.toHtml().lower()
+    assert "arial" in html and "18pt" in html, (
+        "Changing actual font dropdown lost size or font choice"
+    )
+    window.line_spacing_combo.setCurrentIndex(2)
+    window.paragraph_after_combo.setCurrentIndex(2)
+    assert window.text_edit.textCursor().blockFormat().lineHeight() == 150, (
+        "Actual line-spacing dropdown did not alter selected paragraphs"
+    )
+    assert window.text_edit.textCursor().blockFormat().bottomMargin() > 0, (
+        "Actual paragraph-after dropdown did not work"
+    )
+    cur = window.text_edit.textCursor()
+    cur.movePosition(QTextCursor.End)
+    window.text_edit.setTextCursor(cur)
+    editor_button("▁ - Горизонтальная линия").click()
+    assert "─" in window.text_edit.toPlainText(), (
+        "Real horizontal line button did not insert visible separator"
+    )
+    window.save_note()
+    saved = window._note_folder_path(window.current_note, root / "Data" / "Notes")
+    payload = json.loads((saved / "note.json").read_text(encoding="utf-8"))
+    assert "─" in payload["content"], "Separator missing from saved synthetic note"
+    assert "Toolbar integration" in payload["content"], "Rich text lost during save"
+    window.text_edit.setHtml(payload["content"])
+    assert "─" in window.text_edit.toPlainText(), (
+        "Separator did not survive real note save/reopen"
+    )
 
     (root / "ready.flag").write_text("FIRST_RUN_GUI_OK", encoding="ascii")
     # Worker intentionally remains running; the controller stops this temporary
