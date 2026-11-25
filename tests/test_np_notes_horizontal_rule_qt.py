@@ -13,7 +13,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "Other_dev"))
 
 try:
-    from PySide6.QtGui import QFontMetrics, QTextCursor, QTextOption
+    from PySide6.QtGui import QFontMetrics, QImage, QTextCursor, QTextOption
     from PySide6.QtWidgets import QApplication, QPushButton, QMessageBox, QWidget
     from noteapp.widgets.text_edit import CustomTextEdit
     from noteapp.app.editor import EditorMixin
@@ -78,6 +78,32 @@ class HorizontalLineRegression(unittest.TestCase):
         cloned = CustomTextEdit()
         cloned.setHtml(editor.text_edit.toHtml())
         self.assertEqual(cloned.toPlainText(), output)
+
+    def test_real_qt_viewport_paints_visible_rule_after_button_click(self):
+        editor = self.new_editor("Above")
+        cursor = editor.text_edit.textCursor()
+        cursor.movePosition(QTextCursor.End)
+        editor.text_edit.setTextCursor(cursor)
+        editor.line_button.click()
+        self.app.processEvents()
+        image = editor.text_edit.viewport().grab().toImage().convertToFormat(
+            QImage.Format.Format_RGBA8888
+        )
+        values = []
+        for y in range(0, min(140, image.height())):
+            lit = sum(
+                1 for x in range(15, image.width() - 15)
+                if (lambda color: color.red() >= 110
+                    and color.green() >= 110
+                    and color.blue() >= 110)(image.pixelColor(x, y))
+            )
+            values.append((lit, y))
+        best = max(values)
+        print("NP_NOTES_RULE_PIXELS=" + str(best[0]), flush=True)
+        self.assertGreater(
+            best[0], int((image.width() - 30) * 0.55),
+            "Actual NP Notes-style dark editor did not paint a long rule",
+        )
 
     def test_existing_selected_text_is_not_deleted(self):
         editor = self.new_editor("Important\nOther")
