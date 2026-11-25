@@ -6,7 +6,7 @@ from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtWidgets import QApplication, QTextEdit, QWidget
+from PySide6.QtWidgets import QApplication, QTextEdit, QWidget, QLabel
 from PySide6.QtGui import QTextCursor
 
 APP_DIR = Path(__file__).resolve().parents[1] / "Other_dev" / "noteapp" / "app"
@@ -116,7 +116,7 @@ class EmptyFirstRunQtSmokeTests(unittest.TestCase):
                 self.dock_toolbar = QWidget(window)
                 self.visibility_toolbar = QWidget(window)
                 self.text_edit = QTextEdit(center)
-                self.tags_label = QWidget(center)
+                self.tags_label = QLabel("Теги: нет", center)
                 self._add_field_panel = QWidget(center)
                 self.add_field_btn = QWidget(center)
                 self.attachments_scroll = QWidget(center)
