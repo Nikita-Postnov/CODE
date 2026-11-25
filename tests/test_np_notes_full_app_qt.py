@@ -127,7 +127,14 @@ def gui_worker(root: Path) -> None:
     window.font_combo.setCurrentFont(QFont("Arial"))
     html = window.text_edit.toHtml().lower()
     assert "arial" in html and "18pt" in html, (
-        "Changing actual font dropdown lost size or font choice"
+        "Changing actual font dropdown lost size or font choice: "
+        + repr({
+            "font_combo": window.font_combo.currentFont().family(),
+            "size_spin": window.font_size_spin.value(),
+            "cursor_format": window.text_edit.textCursor().charFormat().font().toString(),
+            "selection": window.text_edit.textCursor().hasSelection(),
+            "html_tail": html[-950:],
+        })
     )
     window.line_spacing_combo.setCurrentIndex(2)
     window.paragraph_after_combo.setCurrentIndex(2)
