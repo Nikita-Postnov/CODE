@@ -1,4 +1,5 @@
 """Recovery draft encryption tests. Never opens real user files."""
+import ast
 from pathlib import Path
 import importlib.util
 import os
@@ -24,6 +25,61 @@ class DraftSecurityTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 REC.draft_path(self.folder, bad)
         self.assertEqual(list(self.folder.iterdir()), [])
+
+    def test_successful_save_clears_draft_only_after_commit(self):
+        persistence = FILE.parent / "app" / "persistence.py"
+        tree = ast.parse(persistence.read_text(encoding="utf-8"))
+        cls = next(node for node in tree.body
+                   if isinstance(node, ast.ClassDef) and node.name == "NotePersistenceMixin")
+        method = next(node for node in cls.body
+                      if isinstance(node, ast.FunctionDef) and node.name == "save_note_to_file")
+        module = ast.Module(body=[method], type_ignores=[])
+        ast.fix_missing_locations(module)
+        namespace = {"NOTES_DIR": object(), "Note": object}
+        exec(compile(module, "<persistence-clear-draft>", "exec"), namespace)
+        class Note:
+            uuid = "test"
+        class Owner:
+            called = False
+            cleared = False
+            def save_note_to_specific_folder(self, note, folder):
+                self.called = True
+                if getattr(self, "fail", False):
+                    raise OSError("disk full")
+            def _clear_recovery_snapshot(self, uuid):
+                self.cleared = True
+        owner = Owner()
+        owner.fail = True
+        with self.assertRaises(OSError):
+            namespace["save_note_to_file"](owner, Note())
+        self.assertFalse(owner.cleared)
+        owner.fail = False
+        namespace["save_note_to_file"](owner, Note())
+        self.assertTrue(owner.called)
+        self.assertTrue(owner.cleared)
+
+    def test_snapshot_refuses_mismatched_note_uuid(self):
+        file = FILE.parent / "app" / "recovery.py"
+        tree = ast.parse(file.read_text(encoding="utf-8"))
+        cls = next(node for node in tree.body
+                   if isinstance(node, ast.ClassDef) and node.name == "RecoveryMixin")
+        method = next(node for node in cls.body
+                      if isinstance(node, ast.FunctionDef) and node.name == "_write_recovery_snapshot")
+        module = ast.Module(body=[method], type_ignores=[])
+        ast.fix_missing_locations(module)
+        called = []
+        namespace = {"save_draft": lambda *args: called.append(args),
+                     "RECOVERY_DIR": self.folder,
+                     "logging": __import__("logging")}
+        exec(compile(module, "<recovery-write>", "exec"), namespace)
+        class Note:
+            uuid = "current"
+        class Fake:
+            current_note = Note()
+            _recovery_snapshot_note_uuid = "previous"
+            text_edit = None
+        namespace["_write_recovery_snapshot"](Fake())
+        self.assertEqual(called, [])
 
     def test_missing_draft_returns_none(self):
         self.assertIsNone(REC.read_draft(self.folder, self.note_uuid))
