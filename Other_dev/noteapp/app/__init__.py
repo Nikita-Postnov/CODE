@@ -1377,6 +1377,27 @@ class NotesApp(NotePersistenceMixin, PluginsMixin, RemindersMixin, TrayMixin, Au
             self.history_list.addItem(item)
         self.history_list.scrollToBottom()
 
+    def _persist_history_navigation(self) -> None:
+        """Сохраняет Undo/Redo, не добавляя версию и не уничтожая Redo."""
+        note = getattr(self, "current_note", None)
+        if note is None:
+            return
+        timer = getattr(self, "_save_debouncer", None)
+        if timer is not None:
+            timer.stop()
+        note.content = self.text_edit.toHtml()
+        self._set_unsaved(True)
+        try:
+            self.save_note_to_file(note)
+        except Exception:
+            logging.exception("Не удалось сохранить результат Undo/Redo")
+            self._schedule_recovery_snapshot()
+            retry = getattr(self, "_autosave_timer", None)
+            if retry is not None:
+                retry.start(5000)
+        else:
+            self._set_unsaved(False)
+
     def undo(self) -> None:
         if not self.current_note:
             return
@@ -1388,6 +1409,7 @@ class NotesApp(NotePersistenceMixin, PluginsMixin, RemindersMixin, TrayMixin, Au
             )
             self.text_edit.blockSignals(False)
             self.update_history_list_selection()
+            self._persist_history_navigation()
 
     def redo(self) -> None:
         if not self.current_note:
@@ -1400,6 +1422,7 @@ class NotesApp(NotePersistenceMixin, PluginsMixin, RemindersMixin, TrayMixin, Au
             )
             self.text_edit.blockSignals(False)
             self.update_history_list_selection()
+            self._persist_history_navigation()
 
     def update_history_list_selection(self) -> None:
         if not self.current_note:
