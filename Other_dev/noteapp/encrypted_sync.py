@@ -97,6 +97,20 @@ class GitHubTransport:
         self.token = token
         self.opener = opener or urllib.request.urlopen
 
+    def assert_private(self):
+        """Fail closed: never publish encrypted note metadata to a public repo."""
+        request = urllib.request.Request(
+            self.url,
+            headers={"Accept": "application/vnd.github+json",
+                     "Authorization": "Bearer " + self.token,
+                     "X-GitHub-Api-Version": "2022-11-28"},
+        )
+        with self.opener(request, timeout=15) as response:
+            metadata = json.load(response)
+        if metadata.get("private") is not True:
+            raise SyncSecurityError("Refusing NP Notes sync to a non-private repository")
+        return True
+
     def _call(self, path: str, method="GET", document=None):
         headers = {"Accept": "application/vnd.github+json",
                    "Authorization": "Bearer " + self.token,
