@@ -23,7 +23,8 @@ class SyncThread(QThread):
 
     def run(self):
         try:
-            outcome = run_configured_sync(DATA_DIR, protected_uuid=self.protected_uuid, stage_downloads=True)
+            outcome = run_configured_sync(DATA_DIR, protected_uuid=self.protected_uuid,
+                                          stage_downloads=True, cancelled=self.isInterruptionRequested)
             self.completed.emit(outcome)
         except Exception as exc:
             # Do not log token, passphrase or note contents.
@@ -56,9 +57,30 @@ class SyncMixin:
         # Any unsaved editor content must remain exclusively in memory/local disk.
         thread = SyncThread(protected_uuid=protected, parent=self)
         thread.completed.connect(self._github_sync_completed)
+        thread.finished.connect(self._github_sync_thread_finished)
         thread.finished.connect(thread.deleteLater)
         self._github_sync_thread = thread
         thread.start()
+
+    def _github_sync_thread_finished(self):
+        self._github_sync_thread = None
+
+    def _stop_github_sync(self) -> bool:
+        timer = getattr(self, "_github_sync_timer", None)
+        if timer is not None:
+            timer.stop()
+        worker = getattr(self, "_github_sync_thread", None)
+        if worker is None:
+            return True
+        try:
+            if worker.isRunning():
+                worker.requestInterruption()
+                # GitHub's HTTP timeout is 12 seconds; do not destroy a live QThread.
+                if not worker.wait(15000):
+                    return False
+        except RuntimeError:
+            return True
+        return True
 
     def _github_sync_completed(self, result):
         if result is None:
