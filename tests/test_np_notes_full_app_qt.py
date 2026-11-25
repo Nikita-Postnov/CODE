@@ -73,10 +73,13 @@ def gui_worker(root: Path) -> None:
         if note.title == "Проверка отказа записи":
             raise OSError("simulated disk full")
         return original_save(note)
-    with patch("PySide6.QtWidgets.QInputDialog.getText",
-               return_value=("Проверка отказа записи", True)), \\
-         patch("PySide6.QtWidgets.QMessageBox.warning") as warning, \\
-         patch.object(window, "save_note_to_file", side_effect=simulated_failure):
+    with (
+        patch("PySide6.QtWidgets.QInputDialog.getText",
+              return_value=("Проверка отказа записи", True)),
+        patch("PySide6.QtWidgets.QMessageBox.warning") as warning,
+        patch.object(window, "save_note_to_file",
+                     side_effect=simulated_failure),
+    ):
         window.new_note()
         assert warning.called, "Save failure must be reported"
     assert window.current_note.uuid == current_uuid, "Editor switched despite disk failure"
