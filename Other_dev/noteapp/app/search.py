@@ -86,6 +86,25 @@ class SearchMixin:
     def trigger_search(self):
         self.handle_combined_search()
 
+    def find_next_in_current_note(self) -> bool:
+        """Выделяет следующее совпадение в тексте, не изменяя заметку."""
+        if not getattr(self, "current_note", None):
+            return False
+        query = self.search_bar.text().strip()
+        if not query:
+            return False
+        document = self.text_edit.document()
+        cursor = self.text_edit.textCursor()
+        found = document.find(query, cursor)
+        if found.isNull():
+            found = document.find(query, 0)
+        if found.isNull():
+            return False
+        self.text_edit.setTextCursor(found)
+        self.text_edit.ensureCursorVisible()
+        self.text_edit.setFocus()
+        return True
+
     def handle_combined_search(self):
         tag = self.tag_filter.currentText().strip().lower()
         if tag == "все теги":
