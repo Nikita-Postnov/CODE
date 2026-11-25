@@ -3167,83 +3167,31 @@ class CanvasView(QGraphicsView):
         if e.button() == Qt.LeftButton:
             scene_pos = self.mapToScene(e.position().toPoint())
 
-            if self.tool == Tool.PAN:
-                # In PAN mode show handles for clicked item, then delegate to scene.
-                hit_item, _ = self._hit_handle(scene_pos)
-                if hit_item is None:
-                    hit_item = self._hit_resizable_item(scene_pos)
-                if hit_item is not None:
-                    self._clear_all_handles()
-                    hit_item._show_handles = True
-                    hit_item.update()
-                else:
-                    self._clear_all_handles()
-                super().mousePressEvent(e)
-                if e.isAccepted():
-                    target = self._scene.mouseGrabberItem()
-                    if target is None:
-                        target = self.itemAt(e.position().toPoint())
-                    self._begin_scene_edit_undo(target)
-                    return
-                # Not accepted → fall through to panning below
-            else:
-                # Non-PAN tool: handle interaction takes priority over drawing.
-
-                # Tools that draw new shapes — only intercept border/handle clicks,
-                # never fill clicks (user wants to draw inside the shape).
-                DRAWING_TOOLS = (
-                    Tool.PEN, Tool.HIGHLIGHT, Tool.RECT, Tool.ELLIPSE,
-                    Tool.ARROW, Tool.BLUR, Tool.PIXELATE, Tool.ERASER,
-                    Tool.CROP, Tool.REDACT, Tool.STEP, Tool.FILL, Tool.TEXT,
-                    Tool.SPOTLIGHT, Tool.CALLOUT, Tool.RULER,
-                )
-                is_drawing_tool = self.tool in DRAWING_TOOLS
-
-                # 1. Clicking on a visible handle → start resize via scene routing
+            # Existing objects are editable with any drawing tool. Alt permits
+            # drawing over an object without accidentally moving it.
+            if self.tool == Tool.PAN or not (e.modifiers() & Qt.AltModifier):
                 hit_item, _ = self._hit_handle(scene_pos)
                 if hit_item is not None:
                     self._begin_scene_edit_undo(hit_item)
                     super().mousePressEvent(e)
                     return
 
-                # 2. Clicking on the border of any shape → select & start drag-move
-                border_hit = self._hit_border_item(scene_pos)
-                if border_hit is not None:
+                hit_item = self._hit_resizable_item(scene_pos)
+                if hit_item is not None:
                     self._clear_all_handles()
-                    border_hit._show_handles = True
-                    border_hit.update()
-                    self._begin_scene_edit_undo(border_hit)
-                    self._dragging_item = border_hit
+                    self._scene.clearSelection()
+                    hit_item.setSelected(True)
+                    hit_item._show_handles = True
+                    hit_item.update()
+                    self._begin_scene_edit_undo(hit_item)
+                    self._dragging_item = hit_item
                     self._drag_scene_start = scene_pos
-                    self._drag_item_start = border_hit.pos()
+                    self._drag_item_start = QPointF(hit_item.pos())
                     self.setCursor(Qt.SizeAllCursor)
                     e.accept()
                     return
-
-                # 3. Clicking inside the fill:
-                #    - drawing tool  → clear handles, proceed to draw (fall through)
-                #    - PAN-intent    → select & drag
-                fill_hit = self._hit_resizable_item(scene_pos)
-                if fill_hit is not None:
-                    if is_drawing_tool:
-                        # Just clear other handles and let drawing proceed normally
-                        self._clear_all_handles()
-                        e.ignore()
-                    else:
-                        self._clear_all_handles()
-                        fill_hit._show_handles = True
-                        fill_hit.update()
-                        self._begin_scene_edit_undo(fill_hit)
-                        self._dragging_item = fill_hit
-                        self._drag_scene_start = scene_pos
-                        self._drag_item_start = fill_hit.pos()
-                        self.setCursor(Qt.SizeAllCursor)
-                        e.accept()
-                        return
-                else:
-                    # 4. Empty space → clear handles and let normal drawing proceed
-                    self._clear_all_handles()
-                    e.ignore()
+            self._clear_all_handles()
+            self._scene.clearSelection()
         if e.button() == Qt.MiddleButton or (
             self.tool == Tool.PAN and e.button() == Qt.LeftButton
         ):
@@ -3489,7 +3437,7 @@ class CanvasView(QGraphicsView):
         if self._dragging_item is not None and e.button() == Qt.LeftButton:
             self._commit_scene_edit_undo_if_changed()
             self._dragging_item = None
-            self.setCursor(Qt.CrossCursor)
+            self.setCursor(Qt.OpenHandCursor if self.tool == Tool.PAN else Qt.CrossCursor)
             e.accept()
             return
         if self._panning and e.button() in (Qt.LeftButton, Qt.MiddleButton):
@@ -3594,9 +3542,15 @@ class CanvasView(QGraphicsView):
                         item = ResizableRectItem(QRectF(r), QPen(Qt.NoPen), QColor(_REDACT_COLOR))
 
                     if item is not None:
+                        self.push_undo()
+                        self._clear_all_handles()
+                        self._scene.clearSelection()
                         self._scene.addItem(item)
-                        item.setFlag(QGraphicsItem.ItemIsMovable, False)  # movable only in PAN mode
+                        item.setFlag(QGraphicsItem.ItemIsMovable, False)
                         item.setZValue(2)
+                        item.setSelected(True)
+                        item._show_handles = True
+                        item.update()
 
                 self._start_pos = None
                 self.cancel_preview()
