@@ -282,7 +282,7 @@ class EditorMixin:
             raise ValueError("Unsupported line spacing")
         cursor = self.text_edit.textCursor()
         delta = QTextBlockFormat()
-        delta.setLineHeight(round(value * 100), QTextBlockFormat.ProportionalHeight)
+        delta.setLineHeight(float(round(value * 100)), QTextBlockFormat.ProportionalHeight.value)
         cursor.beginEditBlock()
         try:
             cursor.mergeBlockFormat(delta)
