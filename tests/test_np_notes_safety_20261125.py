@@ -319,6 +319,33 @@ class CloseWindowSafetyTests(unittest.TestCase):
         self.assertFalse(owner.hidden)
         self.assertEqual(len(warnings), 1)
 
+class AsyncPreloadSafetyTests(unittest.TestCase):
+    def test_startup_snapshot_does_not_replace_newly_created_note(self):
+        source = (ROOT / "app" / "__init__.py").read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        cls = next(n for n in tree.body if isinstance(n, ast.ClassDef)
+                   and n.name == "NotesApp")
+        method = next(n for n in cls.body if isinstance(n, ast.FunctionDef)
+                      and n.name == "_merge_preloaded_notes")
+        namespace = {"Note": object}
+        body = ast.Module(body=[method], type_ignores=[])
+        ast.fix_missing_locations(body)
+        exec(compile(body, "<startup-snapshot>", "exec"), namespace)
+        merge = namespace["_merge_preloaded_notes"]
+        class Note:
+            def __init__(self, uuid, content):
+                self.uuid, self.content = uuid, content
+        stale = Note("same-uuid", "old disk snapshot")
+        modified = Note("same-uuid", "new user edits")
+        new = Note("created-during-load", "new first note")
+        another = Note("unrelated", "previously on disk")
+        output = merge([stale, another], [modified, new])
+        mapped = {n.uuid: n for n in output}
+        self.assertEqual(len(mapped), 3)
+        self.assertIs(mapped["same-uuid"], modified)
+        self.assertIs(mapped["created-during-load"], new)
+        self.assertIs(mapped["unrelated"], another)
+
 class EmptyFirstRunTests(unittest.TestCase):
     def test_initial_window_has_visible_create_note_action(self):
         source = (ROOT / "app" / "__init__.py").read_text(encoding="utf-8")
