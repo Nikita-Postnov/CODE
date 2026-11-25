@@ -319,6 +319,19 @@ class CloseWindowSafetyTests(unittest.TestCase):
         self.assertFalse(owner.hidden)
         self.assertEqual(len(warnings), 1)
 
+class FirstNoteDialogTests(unittest.TestCase):
+    def test_creation_dialog_has_russian_action_buttons(self):
+        source = (ROOT / "app" / "__init__.py").read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        cls = next(n for n in tree.body if isinstance(n, ast.ClassDef)
+                   and n.name == "NotesApp")
+        method = next(n for n in cls.body if isinstance(n, ast.FunctionDef)
+                      and n.name == "_prompt_new_note_title")
+        body = ast.get_source_segment(source, method)
+        self.assertIn('dialog.setOkButtonText("Создать")', body)
+        self.assertIn('dialog.setCancelButtonText("Отмена")', body)
+
+
 class AsyncPreloadSafetyTests(unittest.TestCase):
     def test_startup_snapshot_does_not_replace_newly_created_note(self):
         source = (ROOT / "app" / "__init__.py").read_text(encoding="utf-8")
