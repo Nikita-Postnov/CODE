@@ -94,7 +94,7 @@ jobs:
             Set-Content -LiteralPath $testNote -Value '{"test":"preserve"}'
             $before = (Get-FileHash -LiteralPath $testNote -Algorithm SHA256).Hash
             $output = & './tools/preview_np_notes_pr83.ps1' -LauncherRoot $launcher -CommitSha $commit
-            if (-not ($output -match 'PREVIEW_REUSED=')) { throw 'Existing preview was not reused' }
+            if (-not (($output | Out-String) -match 'PREVIEW_REUSED=')) { throw 'Existing preview was not reused' }
             if ((Get-FileHash -LiteralPath $testNote -Algorithm SHA256).Hash -ne $before) {
               throw 'Existing isolated note was changed'
             }
