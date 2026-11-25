@@ -51,6 +51,43 @@ class ObjectEditingTests(unittest.TestCase):
         item.setSelected(True)
         return item
 
+    def test_drag_existing_shape_by_center_with_drawing_tool(self):
+        self.view.resize(500, 360)
+        self.view.show()
+        self.app.processEvents()
+        self.view.set_tool(shot.Tool.RECT)
+        item = self.add_rect(40, 40)
+        item.setFlag(shot.QGraphicsItem.ItemIsMovable, False)
+        before = QPointF(item.pos())
+        start = self.view.mapFromScene(QPointF(65, 55))
+        end = self.view.mapFromScene(QPointF(95, 75))
+        QTest.mousePress(self.view.viewport(), Qt.LeftButton, Qt.NoModifier, start)
+        QTest.mouseMove(self.view.viewport(), end)
+        QTest.mouseRelease(self.view.viewport(), Qt.LeftButton, Qt.NoModifier, end)
+        self.assertEqual(item.pos(), before + QPointF(30, 20))
+        self.assertEqual(len(self.view._resizable_items()), 1)
+        self.view.undo()
+        self.assertEqual(self.view._resizable_items()[0].pos(), before)
+        self.view.redo()
+        self.assertEqual(self.view._resizable_items()[0].pos(), before + QPointF(30, 20))
+
+    def test_new_shape_is_selected_and_can_be_undone(self):
+        self.view.resize(500, 360)
+        self.view.show()
+        self.app.processEvents()
+        self.view.set_tool(shot.Tool.RECT)
+        start = self.view.mapFromScene(QPointF(20, 20))
+        end = self.view.mapFromScene(QPointF(80, 70))
+        QTest.mousePress(self.view.viewport(), Qt.LeftButton, Qt.NoModifier, start)
+        QTest.mouseMove(self.view.viewport(), end)
+        QTest.mouseRelease(self.view.viewport(), Qt.LeftButton, Qt.NoModifier, end)
+        items = self.view._resizable_items()
+        self.assertEqual(len(items), 1)
+        self.assertTrue(items[0]._show_handles)
+        self.assertTrue(items[0].isSelected())
+        self.view.undo()
+        self.assertFalse(self.view._resizable_items())
+
     def test_copy_and_paste_retains_vector_text_and_undo(self):
         original = self.add_text()
         self.assertTrue(self.view.copy_selected_objects())
