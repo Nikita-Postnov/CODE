@@ -411,6 +411,8 @@ class DesktopNotesWidget(QWidget):
         try:
             s = QSettings(qt_path(SETTINGS_PATH), QSettings.IniFormat)
             s.beginGroup("DesktopNotesWidget")
+            self._always_on_top = str(s.value("always_on_top", "true")).lower() not in ("false", "0", "no")
+            self.setWindowFlag(Qt.WindowStaysOnTopHint, self._always_on_top)
             if s.contains("x") and s.contains("y"):
                 self.move(int(s.value("x", type=int)), int(s.value("y", type=int)))
             if s.contains("w") and s.contains("h"):
@@ -430,6 +432,7 @@ class DesktopNotesWidget(QWidget):
             s.setValue("y", self.y())
             s.setValue("w", self.width())
             s.setValue("h", self.height())
+            s.setValue("always_on_top", getattr(self, "_always_on_top", True))
             s.endGroup()
         except Exception:
             pass
@@ -731,6 +734,13 @@ class DesktopNotesWidget(QWidget):
                 self, "Ошибка", f"Не удалось открыть приложение 'Заметки': {e}"
             )
 
+    def set_always_on_top(self, enabled: bool) -> None:
+        """Меняем режим окна без изменения содержимого заметок."""
+        self._always_on_top = bool(enabled)
+        self.setWindowFlag(Qt.WindowStaysOnTopHint, self._always_on_top)
+        self.show()
+        self._save_pos()
+
     def copy_note_text(self, item: QListWidgetItem) -> None:
         """Копирование без изменения заметки и без служебной метки списка."""
         if item is None:
@@ -746,6 +756,11 @@ class DesktopNotesWidget(QWidget):
     def show_context_menu(self, pos):
         item = self.notes_list.itemAt(pos)
         menu = QMenu(self)
+        topmost = menu.addAction("Поверх всех окон")
+        topmost.setCheckable(True)
+        topmost.setChecked(getattr(self, "_always_on_top", True))
+        topmost.toggled.connect(self.set_always_on_top)
+        menu.addSeparator()
         if item is not None:
             menu.addAction("Копировать текст", lambda: self.copy_note_text(item))
             menu.addSeparator()
