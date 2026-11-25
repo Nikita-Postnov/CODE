@@ -30,7 +30,7 @@ def _valid_uuid(value):
         raise UnsafeSnapshot("Invalid UUID") from exc
 
 
-_HREF = re.compile(r'''(href\s*=\s*["'])([^"']+)(["'])''', re.IGNORECASE)
+_HREF = re.compile(r'''((?:href|src)\s*=\s*["'])([^"']+)(["'])''', re.IGNORECASE)
 
 
 def canonicalize_attachment_links(content: str, attachment_names) -> str:
@@ -130,7 +130,9 @@ def unpack_to_memory(snapshot: bytes, note_id: str):
         raise UnsafeSnapshot("Wrong snapshot identity")
     files = {}
     for filename, encoded in attachments.items():
-        if (not isinstance(filename, str) or filename in ("", ".", "..")
+        if (not isinstance(filename, str) or filename in IGNORED_NAMES
+                or filename.startswith(IGNORED_PREFIXES)
+                or filename in ("", ".", "..")
                 or filename.startswith(".") or "/" in filename or chr(92) in filename
                 or not isinstance(encoded, str)):
             raise UnsafeSnapshot("Unsafe filename")
