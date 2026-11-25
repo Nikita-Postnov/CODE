@@ -23,7 +23,7 @@ APP_ROOT = Path(__file__).resolve().parents[1] / "Other_dev"
 class FullAppFirstRunSmoke(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.temp = tempfile.TemporaryDirectory(prefix="np-notes-full-smoke-")
+        cls.temp = tempfile.TemporaryDirectory(prefix="np-notes-full-smoke-", ignore_cleanup_errors=True)
         cls.root = Path(cls.temp.name)
         cls.old_launcher_root = os.environ.get("LAUNCHER_ROOT")
         os.environ["LAUNCHER_ROOT"] = str(cls.root)
