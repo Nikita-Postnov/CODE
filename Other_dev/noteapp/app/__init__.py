@@ -653,8 +653,13 @@ class NotesApp(NotePersistenceMixin, PluginsMixin, RemindersMixin, TrayMixin, Au
         editor_layout_combined.addWidget(self.tags_label)
         editor_layout_combined.addWidget(self.text_edit)
         editor_layout_combined.addWidget(self.attachments_scroll)
-        editor_layout_combined.setStretch(1, 1)
-        editor_layout_combined.setStretch(2, 0)
+        # Назначаем растяжение виджетам, а не индексам: после вставки
+        # панели пользовательских полей позиции элементов сдвигаются.
+        # Иначе строка «Теги» занимает почти весь экран, а редактор
+        # оказывается прижат к нижней границе окна.
+        editor_layout_combined.setStretchFactor(self.empty_notes_page, 1)
+        editor_layout_combined.setStretchFactor(self.tags_label, 0)
+        editor_layout_combined.setStretchFactor(self.text_edit, 1)
         self.central_widget = QWidget()
         _cw_lay = QVBoxLayout(self.central_widget)
         _cw_lay.setContentsMargins(0, 0, 0, 0)
