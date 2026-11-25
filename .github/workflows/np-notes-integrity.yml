@@ -10,6 +10,7 @@ on:
       - "tests/test_np_notes_hardening.py"
       - "tests/test_np_notes_safety_20261125.py"
       - "tests/test_np_notes_qt_smoke.py"
+      - "tests/test_np_notes_horizontal_rule_qt.py"
       - "tests/test_np_notes_full_app_qt.py"
       - "tests/test_np_notes_search_benchmark.py"
       - "tests/test_np_notes_recovery.py"
@@ -46,6 +47,7 @@ on:
       - "tests/test_np_notes_hardening.py"
       - "tests/test_np_notes_safety_20261125.py"
       - "tests/test_np_notes_qt_smoke.py"
+      - "tests/test_np_notes_horizontal_rule_qt.py"
       - "tests/test_np_notes_full_app_qt.py"
       - "tests/test_np_notes_search_benchmark.py"
       - "tests/test_np_notes_recovery.py"
@@ -327,7 +329,7 @@ jobs:
       - name: Exercise Qt editor without real user data
         env:
           QT_QPA_PLATFORM: offscreen
-        run: python -m unittest -v tests.test_np_notes_qt_smoke
+        run: python -m unittest -v tests.test_np_notes_qt_smoke tests.test_np_notes_horizontal_rule_qt
       - name: Smoke test complete NotesApp on isolated empty Data
         env:
           QT_QPA_PLATFORM: offscreen
