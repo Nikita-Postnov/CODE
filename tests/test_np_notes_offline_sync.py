@@ -57,6 +57,24 @@ class OfflineSyncTests(unittest.TestCase):
         self.assertFalse(worker.sync_once())
         self.assertEqual(self.queue.count(), 1)
 
+    def test_safe_failure_category_and_retry_clears_it(self):
+        self.queue.mark_changed("fake-1")
+        network = [True]
+        calls = [0]
+        def send(_):
+            calls[0] += 1
+            if calls[0] == 1:
+                raise OSError("secret-private-proxy-url")
+            return True
+        worker = module.OfflineSyncWorker(self.queue, lambda: network[0], send)
+        self.assertFalse(worker.sync_once())
+        self.assertEqual(worker.last_failure, "Отправка: OSError")
+        self.assertNotIn("secret", worker.last_failure)
+        self.assertEqual(self.queue.count(), 1)
+        self.assertTrue(worker.sync_once())
+        self.assertIsNone(worker.last_failure)
+        self.assertEqual(self.queue.count(), 0)
+
     def test_new_edit_during_upload_not_acknowledged(self):
         self.queue.mark_changed("fake-1")
         def simultaneous_edit(_):
