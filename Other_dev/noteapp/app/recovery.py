@@ -8,7 +8,7 @@ import os
 from PySide6.QtCore import QTimer, Qt
 from PySide6.QtWidgets import QMessageBox
 
-from ..config import DATA_DIR
+from ..config import DATA_DIR, NOTES_DIR
 from ..recovery import clear_draft, list_drafts, read_draft, save_draft
 
 RECOVERY_DIR = DATA_DIR / "Recovery"
@@ -90,13 +90,28 @@ class RecoveryMixin:
                     and self.isWindowModified()):
                 # Do not overwrite typing performed since startup.
                 continue
+            saved_is_newer = False
+            try:
+                note_path = self._note_folder_path(note, NOTES_DIR) / "note.json"
+                draft_timestamp = int(record.get("timestamp_ns") or 0)
+                saved_is_newer = bool(
+                    draft_timestamp and note_path.is_file()
+                    and note_path.stat().st_mtime_ns > draft_timestamp
+                )
+            except (OSError, AttributeError, ValueError, TypeError):
+                pass
+            warning = (
+                "\\n\\nВНИМАНИЕ: сохранённая версия новее черновика. "
+                "Восстановление заменит текущий текст."
+                if saved_is_newer else ""
+            )
             answer = QMessageBox.question(
                 self,
                 "Найдены несохранённые правки",
                 "Для заметки «" + str(note.title or "Без названия") +
                 "» найден зашифрованный черновик предыдущего запуска.\n\n"
                 "Восстановить черновик? «Нет» удалит его, «Отмена» оставит "
-                "для следующего запуска.",
+                "для следующего запуска." + warning,
                 QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel,
                 QMessageBox.Cancel,
             )
