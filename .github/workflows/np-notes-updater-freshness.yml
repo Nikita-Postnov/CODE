@@ -1,0 +1,68 @@
+name: NP Notes updater cache and release safety
+
+on:
+  pull_request:
+    paths:
+      - "tools/update_np_notes_from_github.ps1"
+      - ".github/workflows/np-notes-updater-freshness.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify-updater:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate PowerShell 5.1 syntax and immutable manifest flow
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $path = (Resolve-Path 'tools/update_np_notes_from_github.ps1').Path
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+              $path, [ref]$tokens, [ref]$errors
+          ) | Out-Null
+          if ($errors.Count) { throw ($errors | Out-String) }
+          $source = Get-Content -LiteralPath $path -Raw -Encoding UTF8
+          foreach ($required in @(
+            'branches/main?nonce=',
+            'ExpectedReleaseCommit',
+            'UPDATER_RELEASE_SHA',
+            'NP_NOTES_SYNC_STATE_BACKUP_VERIFIED',
+            'RELEASE_ACTION'
+          )) {
+            if (-not $source.Contains($required)) {
+              throw "Missing mandatory updater safety step: $required"
+            }
+          }
+          Write-Host 'WINDOWS_POWERSHELL_51_SYNTAX=PASS'
+      - name: Verify cache-resistant GitHub release lookup (no notes)
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+          $nonce = [guid]::NewGuid().ToString('N')
+          $headers = @{
+            'User-Agent' = 'NPNotes-Release-CI/1.0'
+            'Accept' = 'application/vnd.github+json'
+            'X-GitHub-Api-Version' = '2022-11-28'
+            'Cache-Control' = 'no-cache'
+            'Pragma' = 'no-cache'
+          }
+          $info = Invoke-RestMethod -Uri "https://api.github.com/repos/Nikita-Postnov/CODE/branches/main?nonce=$nonce" -Headers $headers -UseBasicParsing
+          $sha = [string]$info.commit.sha
+          if ($sha -cnotmatch '^[0-9a-f]{40}$') {
+            throw 'Invalid branch SHA'
+          }
+          $url = "https://raw.githubusercontent.com/Nikita-Postnov/CODE/$sha/tools/np_notes_release.json?nonce=$nonce"
+          $text = (Invoke-WebRequest -Uri $url -UseBasicParsing -Headers @{ 'Cache-Control'='no-cache' }).Content
+          $manifest = $text | ConvertFrom-Json
+          if ([string]$manifest.source_commit -cnotmatch '^[0-9a-f]{40}$') {
+            throw 'Invalid release SHA'
+          }
+          Write-Host "MAIN_SHA=$sha"
+          Write-Host "RELEASE_SHA=$($manifest.source_commit)"
+          Write-Host 'FRESH_RELEASE_LOOKUP=PASS'
