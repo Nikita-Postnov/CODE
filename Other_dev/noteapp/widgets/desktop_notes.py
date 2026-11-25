@@ -413,6 +413,12 @@ class DesktopNotesWidget(QWidget):
             s.beginGroup("DesktopNotesWidget")
             self._always_on_top = str(s.value("always_on_top", "true")).lower() not in ("false", "0", "no")
             self.setWindowFlag(Qt.WindowStaysOnTopHint, self._always_on_top)
+            try:
+                value = float(s.value("opacity", 1.0))
+            except (TypeError, ValueError):
+                value = 1.0
+            self._widget_opacity = max(0.6, min(1.0, value))
+            self.setWindowOpacity(self._widget_opacity)
             if s.contains("x") and s.contains("y"):
                 self.move(int(s.value("x", type=int)), int(s.value("y", type=int)))
             if s.contains("w") and s.contains("h"):
@@ -433,6 +439,7 @@ class DesktopNotesWidget(QWidget):
             s.setValue("w", self.width())
             s.setValue("h", self.height())
             s.setValue("always_on_top", getattr(self, "_always_on_top", True))
+            s.setValue("opacity", getattr(self, "_widget_opacity", 1.0))
             s.endGroup()
         except Exception:
             pass
@@ -734,6 +741,12 @@ class DesktopNotesWidget(QWidget):
                 self, "Ошибка", f"Не удалось открыть приложение 'Заметки': {e}"
             )
 
+    def set_widget_opacity(self, opacity: float) -> None:
+        """Устанавливает безопасную непрозрачность в пределах 60–100 %."""
+        self._widget_opacity = max(0.6, min(1.0, float(opacity)))
+        self.setWindowOpacity(self._widget_opacity)
+        self._save_pos()
+
     def set_always_on_top(self, enabled: bool) -> None:
         """Меняем режим окна без изменения содержимого заметок."""
         self._always_on_top = bool(enabled)
@@ -760,6 +773,12 @@ class DesktopNotesWidget(QWidget):
         topmost.setCheckable(True)
         topmost.setChecked(getattr(self, "_always_on_top", True))
         topmost.toggled.connect(self.set_always_on_top)
+        opacity_menu = menu.addMenu("Прозрачность")
+        for percent in (100, 90, 80, 70, 60):
+            action = opacity_menu.addAction(f"{percent}%")
+            action.setCheckable(True)
+            action.setChecked(round(getattr(self, "_widget_opacity", 1.0) * 100) == percent)
+            action.triggered.connect(lambda _checked=False, value=percent: self.set_widget_opacity(value / 100))
         menu.addSeparator()
         if item is not None:
             menu.addAction("Копировать текст", lambda: self.copy_note_text(item))
