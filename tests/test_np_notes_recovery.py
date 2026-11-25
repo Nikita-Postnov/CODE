@@ -188,6 +188,49 @@ class DraftSecurityTests(unittest.TestCase):
         self.assertTrue(fake.dirty)
         self.assertEqual(removed, [self.note_uuid])
 
+    @unittest.skipUnless(os.name == "nt", "Recovery prompt runs on Windows")
+    def test_stale_draft_prompts_with_newer_saved_file_warning(self):
+        import logging
+        from types import SimpleNamespace
+        note_path = self.folder / "note.json"
+        note_path.write_text('{"title":"Newer saved note"}', encoding="utf-8")
+        method_source = FILE.parent / "app" / "recovery.py"
+        tree = ast.parse(method_source.read_text(encoding="utf-8"))
+        cls = next(x for x in tree.body if isinstance(x, ast.ClassDef)
+                   and x.name == "RecoveryMixin")
+        method = next(x for x in cls.body if isinstance(x, ast.FunctionDef)
+                      and x.name == "_offer_recovery_snapshots")
+        module = ast.Module(body=[method], type_ignores=[])
+        ast.fix_missing_locations(module)
+        note = SimpleNamespace(uuid=self.note_uuid, title="Example", content="Saved")
+        dialogs = []
+        class MessageBox:
+            Yes, No, Cancel = 1, 2, 4
+            @classmethod
+            def question(cls, *args):
+                dialogs.append(args[2])
+                return cls.Cancel
+        namespace = {
+            "os": os, "logging": logging,
+            "RECOVERY_DIR": self.folder, "NOTES_DIR": self.folder,
+            "list_drafts": lambda _: [self.note_uuid],
+            "read_draft": lambda *_: {"html": "Older unsaved",
+                                      "timestamp_ns": 1},
+            "QMessageBox": MessageBox,
+        }
+        exec(compile(module, "<recovery-warning>", "exec"), namespace)
+        class Fake:
+            notes = [note]
+            current_note = None
+            def isWindowModified(self):
+                return False
+            def _note_folder_path(self, note, directory):
+                return directory
+        namespace["_offer_recovery_snapshots"](Fake())
+        self.assertEqual(len(dialogs), 1)
+        self.assertIn("сохранённая версия новее", dialogs[0])
+        self.assertEqual(note.content, "Saved")
+
     def test_missing_draft_returns_none(self):
         self.assertIsNone(REC.read_draft(self.folder, self.note_uuid))
         self.assertEqual(REC.list_drafts(self.folder), [])
