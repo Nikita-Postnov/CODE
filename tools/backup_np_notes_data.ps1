@@ -32,8 +32,13 @@ if (Test-Path -LiteralPath $destination) {
 # Diagnostic crash logs can be held exclusively by a running process.
 # They do not contain notes. Skip only this known log and rotated copies.
 function IsDiagnosticCrashLog([string]$FileName) {
-    return $FileName -eq 'crash.log' -or
-        $FileName.StartsWith('crash.log.', [StringComparison]::OrdinalIgnoreCase)
+    $name = $FileName.ToLowerInvariant()
+    return (
+        $name -eq 'crash.log' -or
+        $name.StartsWith('crash.log.', [StringComparison]::Ordinal) -or
+        $name -eq 'crash_fault.log' -or
+        $name.StartsWith('crash_fault.log.', [StringComparison]::Ordinal)
+    )
 }
 $files = @(Get-ChildItem -LiteralPath $source -File -Recurse -Force |
     Where-Object { -not (IsDiagnosticCrashLog $_.Name) })
