@@ -232,12 +232,37 @@ class NotesApp(NotePersistenceMixin, PluginsMixin, RemindersMixin, TrayMixin, Au
         service = getattr(self, "_np_notes_sync", None)
         if service is None:
             return
+
+        # Only the GUI thread may apply revisions to existing note folders.
+        # Never replace the current editor's model, an unsaved draft, or any
+        # file while the background preloader is reading the notes folder.
+        loader = getattr(self, "_background_loader", None)
+        loader_busy = loader is not None and loader.isRunning()
+        if not loader_busy and not self.isWindowModified():
+            active = getattr(self, "current_note", None)
+            blocked = [active.uuid] if active is not None else []
+            try:
+                updated = service.apply_staged_remote_updates(blocked)
+                replacement = {}
+                for note_id, folder in updated:
+                    payload = json.loads((folder / "note.json").read_bytes())
+                    replacement[note_id] = Note.from_dict(payload)
+                    replacement[note_id].content_txt = payload.get("content_txt", "") or ""
+                if replacement:
+                    self.notes = [
+                        replacement.get(note.uuid, note)
+                        for note in self.notes
+                    ]
+                    self.refresh_notes_list()
+            except Exception:
+                logging.exception("NP Notes remote fast-forward deferred")
+
         count = service.received_count
         if count == getattr(self, "_np_notes_received_seen", 0):
             return
         self._np_notes_received_seen = count
-        # The existing preload merge preserves in-memory edits while
-        # adding newly received notes to the list on the main GUI thread.
+        # New remote UUIDs are added to the existing collection. The merge
+        # intentionally preserves every in-memory note already being edited.
         self._start_background_preload()
 
     @staticmethod
