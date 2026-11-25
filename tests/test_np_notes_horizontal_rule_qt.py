@@ -47,8 +47,8 @@ class HorizontalRuleTest(unittest.TestCase):
         reopened.setHtml(html)
         html2 = reopened.toHtml().lower()
         self.assertIn("<hr", html2)
-        self.assertIn("Before", html2)
-        self.assertIn("After", html2)
+        self.assertIn("before", html2)
+        self.assertIn("after", html2)
         self.assertNotIn("<p>.</p>", html2)
 
     def test_existing_content_preserved_when_cursor_has_selection(self):
@@ -61,8 +61,8 @@ class HorizontalRuleTest(unittest.TestCase):
         editor.insert_horizontal_line()
         html = editor.text_edit.toHtml()
         self.assertIn("<hr", html.lower())
-        self.assertIn("first", html)
-        self.assertIn("second", html)
+        self.assertIn("first", html.lower())
+        self.assertIn("second", html.lower())
 
     def test_repeat_insertion_keeps_two_separators(self):
         editor = _Editor()
@@ -73,8 +73,8 @@ class HorizontalRuleTest(unittest.TestCase):
         editor.insert_horizontal_line()
         editor.insert_horizontal_line()
         html = editor.text_edit.toHtml().lower()
-        self.assertGreaterEqual(html.count("<hr"), 2)
-        self.assertIn("Test", html)
+        self.assertEqual(html.count("<hr"), 2)
+        self.assertIn("test", html)
 
 if __name__ == "__main__":
     unittest.main()
