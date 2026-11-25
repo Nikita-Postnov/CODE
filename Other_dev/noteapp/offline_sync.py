@@ -99,12 +99,14 @@ class OfflineSyncWorker:
         *,
         interval_seconds: float = SYNC_INTERVAL_SECONDS,
         retry_seconds: float = RETRY_INTERVAL_SECONDS,
+        receive_encrypted: Callable[[], bool] | None = None,
     ):
         if interval_seconds <= 0 or retry_seconds <= 0:
             raise ValueError("Intervals must be positive")
         self.queue = queue
         self.online = online
         self.send_encrypted = send_encrypted
+        self.receive_encrypted = receive_encrypted
         self.interval_seconds = interval_seconds
         self.retry_seconds = retry_seconds
         self.state = "idle"
@@ -126,6 +128,10 @@ class OfflineSyncWorker:
                     self.state = "retry_pending"
                     return False
                 self.queue.acknowledge(item_id, revision)
+            if self.receive_encrypted is not None:
+                if self.receive_encrypted() is not True:
+                    self.state = "retry_pending"
+                    return False
         except Exception:
             self.state = "retry_pending"
             return False
