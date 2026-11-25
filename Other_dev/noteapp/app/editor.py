@@ -428,7 +428,12 @@ class EditorMixin:
                 self.text_edit.setFocus()
 
     def toggle_checkbox_at_cursor(self) -> None:
-        """Переключает ☐ / ☑ в текущем абзаце с поддержкой Undo."""
+        """Переключает чекбокс с использованием истории NotesApp.
+
+        В приложении Qt Undo отключён; поэтому фиксируем оба состояния
+        в собственной истории заметки, а не полагаемся на QTextEdit.undo().
+        """
+        self.record_state_for_undo()
         cursor = self.text_edit.textCursor()
         block = cursor.block()
         text = block.text()
@@ -442,6 +447,7 @@ class EditorMixin:
             toggle.endEditBlock()
         else:
             self.insert_checkbox()
+        self.record_state_for_undo()
         self.text_edit.setFocus()
 
     def insert_horizontal_line(self) -> None:
