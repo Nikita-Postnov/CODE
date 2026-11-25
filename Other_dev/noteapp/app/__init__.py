@@ -1644,8 +1644,20 @@ class NotesApp(NotePersistenceMixin, PluginsMixin, RemindersMixin, TrayMixin, Au
     def delete_current_note(self) -> None:
         self.delete_note()
 
+    def _prompt_new_note_title(self) -> tuple[str, bool]:
+        """Русифицированный диалог создания заметки."""
+        dialog = QInputDialog(self)
+        dialog.setWindowTitle("Новая заметка")
+        dialog.setLabelText("Введите название:")
+        dialog.setInputMode(QInputDialog.TextInput)
+        dialog.setOkButtonText("Создать")
+        dialog.setCancelButtonText("Отмена")
+        if not dialog.exec():
+            return "", False
+        return dialog.textValue(), True
+
     def new_note(self) -> None:
-        title, ok = QInputDialog.getText(self, "Новая заметка", "Введите название:")
+        title, ok = self._prompt_new_note_title()
         if ok and title:
             for note in self.notes:
                 if note.title == title:
