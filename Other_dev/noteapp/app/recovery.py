@@ -101,7 +101,7 @@ class RecoveryMixin:
             except (OSError, AttributeError, ValueError, TypeError):
                 pass
             warning = (
-                "\\n\\nВНИМАНИЕ: сохранённая версия новее черновика. "
+                "\n\nВНИМАНИЕ: сохранённая версия новее черновика. "
                 "Восстановление заменит текущий текст."
                 if saved_is_newer else ""
             )
