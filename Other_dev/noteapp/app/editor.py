@@ -808,6 +808,10 @@ class EditorMixin:
         ch.setBackground(QBrush())
         bf = QTextBlockFormat()
         bf.setHeadingLevel(0)
+        # "Reset formatting" must also clear the new paragraph settings;
+        # leaving custom line-height / bottom margin behind was surprising.
+        bf.setLineHeight(0, QTextBlockFormat.SingleHeight.value)
+        bf.setBottomMargin(0.0)
         if c.hasSelection():
             c.mergeBlockFormat(bf)
             c.mergeCharFormat(ch)
