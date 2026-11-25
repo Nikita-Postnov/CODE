@@ -110,7 +110,9 @@ class EditorMixin:
         self.text_edit.setFontPointSize(14)
 
     def change_font(self, font: QFont) -> None:
-        self.text_edit.setCurrentFont(font)
+        # This is the connected QFontComboBox callback, not set_font_family.
+        # Apply only the family to preserve font size and selected styles.
+        self.set_font_family(font.family())
 
     def change_font_size(self, size: int) -> None:
         try:
@@ -363,8 +365,10 @@ class EditorMixin:
     def set_font_family(self, font_family: str) -> None:
         try:
             fmt = QTextCharFormat()
-            f = QFont(font_family)
-            fmt.setFont(f)
+            # Change only the family. setFont(QFont(family)) also sets the
+            # QFont default point size (12), unintentionally erasing 18 pt,
+            # italic, weight and other formatting on the selected text.
+            fmt.setFontFamilies([font_family])
             cur = self.text_edit.textCursor()
             if cur.hasSelection():
                 cur.mergeCharFormat(fmt)
@@ -637,7 +641,10 @@ class EditorMixin:
     def insert_audio_link(self, filepath: str) -> None:
         filename = os.path.basename(filepath)
         file_url = QUrl.fromLocalFile(os.path.abspath(filepath)).toString()
-        self.text_edit.insertHtml(f'📄 <a href="{file_url}">{filename}</a>')
+        self.text_edit.insertHtml(
+            f'📄 <a href="{html_lib.escape(file_url, quote=True)}">'
+            f'{html_lib.escape(filename)}</a>'
+        )
         self.save_note()
 
     def insert_link(self) -> None:
@@ -665,39 +672,40 @@ class EditorMixin:
             fmt.setFont(QFont("Times New Roman", 14))
             cursor.insertText(url, fmt)
 
-        def _select_entire_anchor(self, cursor: QTextCursor) -> QTextCursor | None:
-            fmt = cursor.charFormat()
-            if not fmt.isAnchor():
+    def _select_entire_anchor(self, cursor: QTextCursor) -> QTextCursor | None:
+        """Select the complete link, including its first and last character.
+
+        QTextCursor.charFormat() refers to the character before the cursor,
+        so probing document positions precisely avoids truncating links at
+        paragraph boundaries or accidentally selecting neighboring text.
+        """
+        doc = cursor.document()
+        maximum = doc.characterCount() - 1
+
+        def href_at(char_index: int) -> str | None:
+            if char_index < 0 or char_index >= maximum:
                 return None
-            href = fmt.anchorHref()
-            c = QTextCursor(cursor)
-            max_steps = cursor.document().characterCount() + 5
-            steps = 0
-            while steps < max_steps:
-                steps += 1
-                left = QTextCursor(c)
-                moved = left.movePosition(QTextCursor.Left, QTextCursor.KeepAnchor, 1)
-                if (not moved) or left.atStart():
-                    break
-                f = left.charFormat()
-                if not (f.isAnchor() and f.anchorHref() == href):
-                    break
-                if left.position() == c.position() and left.anchor() == c.anchor():
-                    break
-                c = left
-            while steps < max_steps:
-                steps += 1
-                right = QTextCursor(c)
-                moved = right.movePosition(QTextCursor.Right, QTextCursor.KeepAnchor, 1)
-                if (not moved) or right.atEnd():
-                    break
-                f = right.charFormat()
-                if not (f.isAnchor() and f.anchorHref() == href):
-                    break
-                if right.position() == c.position() and right.anchor() == c.anchor():
-                    break
-                c = right
-            return c
+            probe = QTextCursor(doc)
+            probe.setPosition(char_index + 1)
+            fmt = probe.charFormat()
+            return fmt.anchorHref() if fmt.isAnchor() else None
+
+        point = cursor.selectionStart() if cursor.hasSelection() else cursor.position()
+        href = href_at(point) or href_at(point - 1)
+        if not href:
+            return None
+        start = point
+        while start > 0 and href_at(start - 1) == href:
+            start -= 1
+        end = point
+        while end < maximum and href_at(end) == href:
+            end += 1
+        if start >= end:
+            return None
+        selected = QTextCursor(doc)
+        selected.setPosition(start)
+        selected.setPosition(end, QTextCursor.KeepAnchor)
+        return selected
 
     def edit_link(self) -> None:
         cursor = self.text_edit.textCursor()
@@ -800,6 +808,10 @@ class EditorMixin:
         ch.setBackground(QBrush())
         bf = QTextBlockFormat()
         bf.setHeadingLevel(0)
+        # "Reset formatting" must also clear the new paragraph settings;
+        # leaving custom line-height / bottom margin behind was surprising.
+        bf.setLineHeight(0, QTextBlockFormat.SingleHeight.value)
+        bf.setBottomMargin(0.0)
         if c.hasSelection():
             c.mergeBlockFormat(bf)
             c.mergeCharFormat(ch)

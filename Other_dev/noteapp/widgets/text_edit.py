@@ -537,6 +537,16 @@ class CustomTextEdit(QTextEdit):
         if highlighter:
             highlighter.add_to_dictionary(word)
 
+    def _add_copy_format_actions(self, menu: QMenu) -> None:
+        """Available even when the selected text contains no letters."""
+        menu.addSeparator()
+        copy_plain_action = QAction("Copy (without formatting)", self)
+        copy_plain_action.triggered.connect(self.copy_without_formatting)
+        copy_rich_action = QAction("Copy (with formatting)", self)
+        copy_rich_action.triggered.connect(self.copy_with_formatting)
+        menu.addAction(copy_plain_action)
+        menu.addAction(copy_rich_action)
+
     def contextMenuEvent(self, event: QContextMenuEvent) -> None:
         menu = QMenu(self)
         menu.setStyleSheet(CUSTOM_MENU_STYLE)
@@ -583,6 +593,8 @@ class CustomTextEdit(QTextEdit):
             )
         )
         menu.addAction(view_dict_action)
+        # Add commands before the "no alphabetic word" early return.
+        self._add_copy_format_actions(menu)
         word_cursor = self.cursorForPosition(event.pos())
         word_cursor.select(QTextCursor.WordUnderCursor)
         raw_word = word_cursor.selectedText()
@@ -644,13 +656,6 @@ class CustomTextEdit(QTextEdit):
         user_candidates = _clean(user_candidates)
         spell_candidates = _clean(spell_candidates)
         doc_candidates = _clean(doc_candidates)
-        menu.addSeparator()
-        copy_plain_action = QAction("Copy (without formatting)", self)
-        copy_plain_action.triggered.connect(self.copy_without_formatting)
-        copy_rich_action = QAction("Copy (with formatting)", self)
-        copy_rich_action.triggered.connect(self.copy_with_formatting)
-        menu.addAction(copy_plain_action)
-        menu.addAction(copy_rich_action)
         menu.addSeparator()
         ignore_action = QAction("Ignore the word in the current note", self)
         ignore_action.triggered.connect(
@@ -782,13 +787,10 @@ class CustomTextEdit(QTextEdit):
         tbl = cur.currentTable()
         if not tbl:
             return
-        first = tbl.cellAt(0, 0).firstCursorPosition()
-        last = tbl.cellAt(tbl.rows() - 1, tbl.columns() - 1).lastCursorPosition()
-        c = QTextCursor(first)
-        c.setPosition(last.position(), QTextCursor.KeepAnchor)
-        c.beginEditBlock()
-        c.removeSelectedText()
-        c.endEditBlock()
+        # Selecting the text between the first and last cells only empties
+        # the cells; it does not delete the QTextTable structure itself.
+        # Qt removes the table frame when its last row is deleted.
+        tbl.removeRows(0, tbl.rows())
 
     def _insert_table(self, rows=2, cols=2) -> None:
         cur = self.textCursor()
