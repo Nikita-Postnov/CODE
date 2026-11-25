@@ -22,6 +22,7 @@ from PySide6.QtGui import (
     QBrush,
     QColor,
     QFont,
+    QFontMetrics,
     QTextBlockFormat,
     QTextCharFormat,
     QTextCursor,
@@ -453,69 +454,110 @@ class EditorMixin:
         self.record_state_for_undo()
         self.text_edit.setFocus()
 
-    def insert_horizontal_line(self) -> None:
-        """Insert a visible, full-width divider independent of Qt's HR parser.
+    def _insert_visible_horizontal_rule(self, cursor: QTextCursor) -> None:
+        """Draw a visible text-based rule without Qt HTML/table rendering.
 
-        QTextEdit inherits horizontal-rule properties across paragraphs, and
-        the browser-style <hr> can be invisible with an application stylesheet.
-        A borderless, one-cell, shaded Qt table survives toHtml()/setHtml()
-        and scales when the editor width changes. No user text is deleted.
+        The application's editor uses NoWrap. Calculate the number of
+        box-drawing characters from the actual viewport and fixed-width
+        font, so the rule is unmistakable even in the dark theme. A stored
+        rule is ordinary rich text and survives Qt HTML round trips.
         """
+        if cursor.hasSelection():
+            cursor.setPosition(cursor.selectionEnd())
+        block = cursor.block()
+        legacy_dot = (
+            block.isValid()
+            and block.text().strip() == "."
+            and cursor.currentTable() is None
+            and cursor.currentList() is None
+        )
+        if legacy_dot:
+            cursor.setPosition(block.position())
+            cursor.setPosition(
+                block.position() + len(block.text()), QTextCursor.KeepAnchor
+            )
+            cursor.removeSelectedText()
+        elif cursor.positionInBlock():
+            cursor.insertBlock()
+
+        line_font = QFont("Consolas", 11)
+        line_metrics = QFontMetrics(line_font)
+        char_width = max(1, line_metrics.horizontalAdvance("─"))
+        document_margin = self.text_edit.document().documentMargin()
+        usable_width = max(
+            120, self.text_edit.viewport().width() - 2 * document_margin - 16
+        )
+        characters = max(12, min(360, int(usable_width / char_width)))
+        rule_format = QTextCharFormat()
+        rule_format.setFont(line_font)
+        rule_format.setForeground(QColor("#a9a9a9"))
+
+        original_format = QTextCharFormat(cursor.charFormat())
+        cursor.insertText("─" * characters, rule_format)
+        cursor.insertBlock()
+        cursor.setCharFormat(original_format)
+
+    def insert_horizontal_line(self) -> None:
+        """Insert a visible divider or replace the selected legacy dot."""
         cursor = self.text_edit.textCursor()
         cursor.beginEditBlock()
         try:
-            if cursor.hasSelection():
-                cursor.setPosition(cursor.selectionEnd())
-            # Legacy versions sometimes left an isolated dot in place of an
-            # HR. Only replace it on explicit invocation while the cursor is
-            # inside that exact one-character paragraph. Never scan/migrate
-            # all notes: a standalone dot can also be deliberate user text.
-            current_block = cursor.block()
-            old_divider = (
-                current_block.isValid()
-                and current_block.text().strip() == "."
-                and cursor.currentTable() is None
-                and cursor.currentList() is None
-            )
-            if old_divider:
-                cursor.setPosition(current_block.position())
-                cursor.setPosition(
-                    current_block.position() + len(current_block.text()),
-                    QTextCursor.KeepAnchor,
-                )
-                cursor.removeSelectedText()
-                # Cursor remains in the now-empty block; do not remove the
-                # following paragraph or its existing formatting.
-            elif cursor.positionInBlock():
-                cursor.insertBlock()
-            table_format = QTextTableFormat()
-            table_format.setWidth(QTextLength(QTextLength.PercentageLength, 100))
-            table_format.setBorder(0)
-            table_format.setCellPadding(0)
-            table_format.setCellSpacing(0)
-            table = cursor.insertTable(1, 1, table_format)
-            cell = table.cellAt(0, 0)
-            cell_format = cell.format().toTableCellFormat()
-            cell_format.setBackground(QColor("#989898"))
-            cell.setFormat(cell_format)
-            rule_cursor = cell.firstCursorPosition()
-            tiny = QTextCharFormat()
-            tiny.setFontPointSize(1)
-            rule_cursor.insertText("\u00a0", tiny)
-
-            # Exit the divider so typing afterwards does not enter the cell.
-            cursor = table.lastCursorPosition()
-            if not cursor.movePosition(QTextCursor.NextBlock):
-                cursor.movePosition(QTextCursor.End)
-            if cursor.currentTable() is not None:
-                cursor.movePosition(QTextCursor.End)
-                cursor.insertBlock()
+            self._insert_visible_horizontal_rule(cursor)
         finally:
             cursor.endEditBlock()
         self.text_edit.setTextCursor(cursor)
         self.text_edit.setFocus()
         if hasattr(self, "_set_unsaved"):
-            self._set_unsaved()
+            self._set_unsaved(True)
+
+    def restore_legacy_horizontal_lines(self) -> None:
+        """Replace standalone dots in the current note only after consent.
+
+        The user chooses this command explicitly because a standalone dot
+        can otherwise be valid text. Every other note stays unchanged.
+        """
+        document = self.text_edit.document()
+        locations = []
+        block = document.begin()
+        while block.isValid():
+            probe = QTextCursor(block)
+            if (
+                block.text().strip() == "."
+                and probe.currentTable() is None
+                and probe.currentList() is None
+            ):
+                locations.append(block.position())
+            block = block.next()
+        if not locations:
+            QMessageBox.information(
+                self, "Горизонтальные линии",
+                "В текущей заметке нет отдельных точек для восстановления.",
+            )
+            return
+        reply = QMessageBox.question(
+            self, "Восстановить горизонтальные линии",
+            f"В текущей заметке найдено отдельных точек: {len(locations)}.\n"
+            "Заменить их горизонтальными линиями?\n"
+            "Другие заметки и обычные точки внутри текста не изменятся.",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            return
+        cursor = self.text_edit.textCursor()
+        cursor.beginEditBlock()
+        try:
+            # Process from the end so replacing text cannot move earlier
+            # QTextBlock positions.
+            for position in reversed(locations):
+                cursor.setPosition(position)
+                self._insert_visible_horizontal_rule(cursor)
+        finally:
+            cursor.endEditBlock()
+        self.text_edit.setTextCursor(cursor)
+        self.text_edit.setFocus()
+        if hasattr(self, "_set_unsaved"):
+            self._set_unsaved(True)
 
     def insert_audio_link(self, filepath: str) -> None:
         filename = os.path.basename(filepath)
