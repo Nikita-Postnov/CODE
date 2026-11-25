@@ -22,6 +22,7 @@ def gui_worker(root: Path) -> None:
     os.environ["QT_QPA_PLATFORM"] = "offscreen"
     os.environ["LAUNCHER_ROOT"] = str(root)
     from PySide6.QtCore import QSettings
+    from PySide6.QtTest import QTest
     from PySide6.QtWidgets import QApplication
 
     data = root / "Data"
@@ -64,6 +65,17 @@ def gui_worker(root: Path) -> None:
     first_folder = window._note_folder_path(window.current_note, root / "Data" / "Notes")
     assert (first_folder / "note.json").is_file(), "New note was not persisted immediately"
     window.text_edit.setPlainText("Несохранённые правки перед переключением")
+    # Disk autosave happens before the separate history debounce.
+    QTest.qWait(700)
+    app.processEvents()
+    assert len(window.current_note.history) <= 2, (
+        "Quiet autosave flooded undo history during ordinary typing"
+    )
+    QTest.qWait(1000)
+    app.processEvents()
+    assert len(window.current_note.history) == 2, (
+        "A single edit session must create exactly one history entry"
+    )
     with patch.object(window, "_prompt_new_note_title",
                return_value=("Вторая тестовая заметка", True)):
         window.new_note()
