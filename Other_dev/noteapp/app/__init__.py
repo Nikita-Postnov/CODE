@@ -207,6 +207,19 @@ class NotesApp(NotePersistenceMixin, PluginsMixin, RemindersMixin, TrayMixin, Au
         self.reminder_timer = QTimer(self)
         self.reminder_timer.timeout.connect(self.check_reminders)
         self.reminder_timer.start(60000)
+        # Only activate when all GitHub credentials and encryption inputs exist.
+        self._np_notes_sync = None
+        QTimer.singleShot(1000, self._start_optional_np_notes_sync)
+
+    def _start_optional_np_notes_sync(self) -> None:
+        try:
+            from noteapp.sync_service import configure_from_environment
+            service = configure_from_environment(DATA_DIR / "NPNotesSync", NOTES_DIR)
+            if service is not None:
+                self._np_notes_sync = service
+                service.start()
+        except Exception:
+            logging.exception("NP Notes encrypted cloud sync unavailable")
 
     @staticmethod
     def _html_to_plain_text(content: str) -> str:
@@ -392,6 +405,9 @@ class NotesApp(NotePersistenceMixin, PluginsMixin, RemindersMixin, TrayMixin, Au
         except Exception:
             pass
 
+        sync_service = getattr(self, "_np_notes_sync", None)
+        if sync_service is not None:
+            sync_service.stop()
         self.close()
         app = QApplication.instance()
         if app is not None:
