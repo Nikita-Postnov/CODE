@@ -284,6 +284,7 @@ class NotePersistenceMixin:
                 temporary.unlink(missing_ok=True)
         except Exception:
             logging.exception("Failed to create backup for %s", qt_path(note_path))
+            raise  # Не перезаписывать оригинал, если его не удалось зарезервировать.
 
     def _write_note_cache_from_payload(self, note_path: Path, payload: dict) -> None:
         try:
