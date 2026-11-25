@@ -269,6 +269,9 @@ class NotesApp(NotePersistenceMixin, PluginsMixin, RemindersMixin, TrayMixin, Au
         self.notes = notes or []
         if not self.notes:
             self.notes_list.clear()
+            self._update_editor_visibility()
+            self.update_tag_filter_items()
+            self.update_search_filter_items()
             return
         self.deduplicate_notes()
         self._apply_saved_notes_order()
@@ -476,6 +479,7 @@ class NotesApp(NotePersistenceMixin, PluginsMixin, RemindersMixin, TrayMixin, Au
     def init_ui(self) -> None:
         self.setWindowTitle("Мои Заметки — [*]")
         self.setMinimumSize(600, 270)
+        self.resize(1080, 720)  # Для первого запуска; сохранённая геометрия имеет приоритет.
         self.setWindowIcon(QIcon(qt_path(ICON_PATH)))
         always_on_top = self.settings.value("ui/always_on_top", True, type=bool)
         self.setWindowFlag(Qt.WindowStaysOnTopHint, always_on_top)
@@ -607,6 +611,30 @@ class NotesApp(NotePersistenceMixin, PluginsMixin, RemindersMixin, TrayMixin, Au
         )
         editor_combined = QWidget()
         editor_layout_combined = QVBoxLayout(editor_combined)
+        # Пустое хранилище — нормальное состояние изолированной установки:
+        # вместо серой пустоты показываем понятный первый шаг.
+        self.empty_notes_page = QWidget(editor_combined)
+        empty_layout = QVBoxLayout(self.empty_notes_page)
+        empty_layout.setContentsMargins(24, 24, 24, 24)
+        empty_layout.addStretch(1)
+        self.empty_notes_title = QLabel("Пока нет заметок", self.empty_notes_page)
+        self.empty_notes_title.setAlignment(Qt.AlignCenter)
+        self.empty_notes_title.setStyleSheet("font-size: 22px; font-weight: 600;")
+        empty_layout.addWidget(self.empty_notes_title)
+        self.empty_notes_hint = QLabel(
+            "Создайте первую заметку — редактор и инструменты появятся автоматически.",
+            self.empty_notes_page,
+        )
+        self.empty_notes_hint.setAlignment(Qt.AlignCenter)
+        self.empty_notes_hint.setWordWrap(True)
+        empty_layout.addWidget(self.empty_notes_hint)
+        self.empty_notes_create_button = QPushButton("＋ Создать заметку", self.empty_notes_page)
+        self.empty_notes_create_button.setMinimumHeight(36)
+        self.empty_notes_create_button.setMaximumWidth(240)
+        self.empty_notes_create_button.clicked.connect(self.new_note)
+        empty_layout.addWidget(self.empty_notes_create_button, 0, Qt.AlignHCenter)
+        empty_layout.addStretch(1)
+        editor_layout_combined.addWidget(self.empty_notes_page, 1)
         editor_layout_combined.addWidget(self.tags_label)
         editor_layout_combined.addWidget(self.text_edit)
         editor_layout_combined.addWidget(self.attachments_scroll)
@@ -2054,6 +2082,8 @@ class NotesApp(NotePersistenceMixin, PluginsMixin, RemindersMixin, TrayMixin, Au
     def _update_editor_visibility(self):
         has = self.current_note is not None
         self.dock_editor.setVisible(has)
+        if hasattr(self, "empty_notes_page"):
+            self.empty_notes_page.setVisible(not has)
         self.dock_toolbar.setVisible(has)
         self.visibility_toolbar.setVisible(has)
         self.text_edit.setVisible(has)
