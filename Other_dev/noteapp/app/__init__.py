@@ -4141,7 +4141,9 @@ def main(argv=None):
             win._init_tray_icon()
             win.hide()
         else:
-            win.show()
+            # Open on the full available desktop by default. Qt's maximized
+            # state respects the Windows taskbar and multi-monitor work area.
+            win.showMaximized()
 
         rc = app.exec()
         logging.info(f"=== APP EXIT rc={rc} ===")
