@@ -117,6 +117,8 @@ jobs:
             $path, [ref]$tokens, [ref]$errors
           ) | Out-Null
           if ($errors.Count -gt 0) { throw ($errors | Out-String) }
+          $v5parse = & powershell.exe -NoProfile -Command '$null = [System.Management.Automation.Language.Parser]::ParseFile($args[0], [ref]$null, [ref]$null)' $path
+          if ($LASTEXITCODE -ne 0) { throw 'Windows PowerShell 5.1 script parsing failed' }
           $root = Join-Path $env:RUNNER_TEMP ('np-notes-backup-test-' + [guid]::NewGuid().ToString('N'))
           try {
             $source = Join-Path $root 'Data'
@@ -141,7 +143,10 @@ jobs:
             $lockedIndicator = [IO.File]::Open($indicatorLog, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
             $lockedLaptop = [IO.File]::Open($laptopLog, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
             try {
-              $result = & $path -SourceRoot $source -BackupRoot $backup
+              # User runs Windows PowerShell 5.1, not pwsh 7.
+              # Execute the real copy in powershell.exe to catch encoding issues.
+              $result = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $path -SourceRoot $source -BackupRoot $backup
+              if ($LASTEXITCODE -ne 0) { throw "Windows PowerShell 5.1 backup failed: exit $LASTEXITCODE" }
             }
             finally {
               $locked.Dispose()
