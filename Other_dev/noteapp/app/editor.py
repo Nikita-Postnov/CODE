@@ -478,7 +478,11 @@ class EditorMixin:
                 and cursor.currentList() is None
             )
             if old_divider:
-                cursor.select(QTextCursor.BlockUnderCursor)
+                cursor.setPosition(current_block.position())
+                cursor.setPosition(
+                    current_block.position() + len(current_block.text()),
+                    QTextCursor.KeepAnchor,
+                )
                 cursor.removeSelectedText()
                 # Cursor remains in the now-empty block; do not remove the
                 # following paragraph or its existing formatting.
