@@ -383,6 +383,13 @@ class NotesApp(SyncMixin, NotePersistenceMixin, PluginsMixin, RemindersMixin, Tr
                 + str(exc),
             )
             return
+        if not self._stop_github_sync():
+            QMessageBox.warning(
+                self, "Синхронизация завершается",
+                "Сетевая операция ещё завершается. Заметки уже сохранены. "
+                "Повторите выход после завершения синхронизации.",
+            )
+            return
         try:
             if getattr(self, "tray_icon", None):
                 self.tray_icon.hide()
