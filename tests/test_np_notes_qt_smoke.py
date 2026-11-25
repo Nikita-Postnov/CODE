@@ -6,7 +6,7 @@ from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtWidgets import QApplication, QTextEdit
+from PySide6.QtWidgets import QApplication, QTextEdit, QWidget
 from PySide6.QtGui import QTextCursor
 
 APP_DIR = Path(__file__).resolve().parents[1] / "Other_dev" / "noteapp" / "app"
@@ -23,6 +23,44 @@ def extract_editor_method(name):
     body = ast.Module(body=[method], type_ignores=[])
     exec(compile(ast.fix_missing_locations(body), "<editor-qt-test>", "exec"), namespace)
     return namespace[name]
+
+
+def extract_widget_method(name):
+    file = APP_DIR.parent / "widgets" / "desktop_notes.py"
+    tree = ast.parse(file.read_text(encoding="utf-8"))
+    cls = next(node for node in tree.body
+               if isinstance(node, ast.ClassDef) and node.name == "DesktopNotesWidget")
+    method = next(node for node in cls.body
+                  if isinstance(node, ast.FunctionDef) and node.name == name)
+    namespace = {}
+    body = ast.Module(body=[method], type_ignores=[])
+    exec(compile(ast.fix_missing_locations(body), "<widget-qt-test>", "exec"), namespace)
+    return namespace[name]
+
+
+class WidgetQtSmokeTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QApplication.instance() or QApplication([])
+
+    def test_desktop_widget_opacity_on_real_qwidget(self):
+        widget = QWidget()
+        self.addCleanup(widget.close)
+        class Proxy:
+            def __init__(self):
+                self.widget = widget
+                self.saved = 0
+            def setWindowOpacity(self, opacity):
+                self.widget.setWindowOpacity(opacity)
+            def _save_pos(self):
+                self.saved += 1
+        proxy = Proxy()
+        set_opacity = extract_widget_method("set_widget_opacity")
+        set_opacity(proxy, 0.85)
+        self.assertAlmostEqual(widget.windowOpacity(), 0.85)
+        set_opacity(proxy, 0.1)
+        self.assertAlmostEqual(widget.windowOpacity(), 0.6)
+        self.assertEqual(proxy.saved, 2)
 
 
 class EditorQtSmokeTests(unittest.TestCase):
