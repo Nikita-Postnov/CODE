@@ -18,7 +18,7 @@ from uuid import UUID
 from .encrypted_sync import GitHubTransport, SyncConflict, seal, unseal
 from .offline_sync import OfflineSyncQueue, OfflineSyncWorker
 from .sync_snapshot import pack_note, UnsafeSnapshot
-from .incoming_sync import import_new_note, stage_conflict
+from .incoming_sync import import_new_note, stage_conflict, restore_conflict_as_copy
 
 
 class EncryptedOutboundService:
@@ -174,6 +174,17 @@ class EncryptedOutboundService:
             )
             self.received_count += 1
         return True
+
+    def restore_conflict_copy(self, note_id, sha):
+        """User-requested restoration as a separate note, never an overwrite."""
+        target = restore_conflict_as_copy(
+            self.repository_root, self.state_directory, note_id, sha,
+            self.passphrase,
+        )
+        note = json.loads((target / "note.json").read_bytes())
+        self.saved(note["uuid"])
+        self.received_count += 1
+        return target
 
     def saved(self, note_id):
         self.queue.mark_changed(str(UUID(note_id)))
