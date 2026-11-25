@@ -45,10 +45,11 @@ $running = @(Get-CimInstance Win32_Process -Filter "Name='python.exe' OR Name='p
 if ($running.Count -gt 0) {
     throw 'Close NP Notes completely (including system tray) before activation'
 }
-& $python -c 'import cryptography; import sys; print("CRYPTOGRAPHY_READY=TRUE")'
+& $python -c 'import cryptography'
 if ($LASTEXITCODE -ne 0) {
     throw 'Required portable cryptography dependency missing'
 }
+Write-Host 'CRYPTOGRAPHY_READY=TRUE'
 $backupRoot = Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'NP_Notes_Data_Backups'
 New-Item -ItemType Directory -Path $backupRoot -Force | Out-Null
 $backup = Join-Path $backupRoot (
