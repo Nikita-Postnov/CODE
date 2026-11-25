@@ -14,9 +14,14 @@ Status: **draft / pre-release. Real note synchronization remains disabled until 
 - Upload requires repository visibility to be **private**, and a previous
   GitHub blob SHA is required when replacing an existing encrypted file.
 - A new note from a second device can be imported into an unused folder.
-  Existing local note UUIDs are not overwritten by incoming revisions.
-  Divergent incoming ciphertext is quarantined in
-  `Data/NPNotesSync/remote_conflicts`.
+- Existing notes with a previously acknowledged clean local baseline are
+  staged in encrypted form by the worker and fast-forwarded only on the GUI
+  thread, after creating a full-folder backup under
+  `Data/NPNotesSync/remote_update_backups`. Open/edited notes are skipped.
+- Divergent incoming ciphertext is quarantined in
+  `Data/NPNotesSync/remote_conflicts`. A user can restore conflicts as
+  separate UUIDs from the settings UI; automatic destructive merging is
+  prohibited.
 
 ## Configuration (ONLY after review and synthetic tests)
 
@@ -36,7 +41,10 @@ The application reads these process environment variables on startup:
 - `NP_NOTES_SYNC_TOKEN`: fine-grained access token.
 - `NP_NOTES_SYNC_PASSPHRASE`: strong shared encryption passphrase (16+ chars).
 - `NP_NOTES_SYNC_BRANCH`: optional, defaults to `main`.
-- `NP_NOTES_SYNC_ENABLE=1`: **required explicit activation gate**; storing DPAPI credentials is never enough to activate real-note transfer.
+- **Explicit activation required**: process variable `NP_NOTES_SYNC_ENABLE=1`
+  for isolated development, or a persistent `Data/NPNotesSync/sync_enabled.json`
+  marker written by `tools/activate_np_notes_sync.ps1` after a verified backup.
+  Storing DPAPI credentials alone never activates real-note transfer.
 
 On Windows, use `tools/configure_np_notes_encrypted_sync.ps1` to store the token and passphrase with the current user's DPAPI. Never put secrets in commands or screenshots. `tools/test_np_notes_sync_live_synthetic.py` tests the encrypted private GitHub path using only synthetic note contents and deletes its test object from the current branch. `tools/check_np_notes_sync_ready.ps1` performs a local read-only preflight.
 
@@ -51,11 +59,12 @@ environment variables.
 - The PR does not create a data repository, create tokens, enable production
   credentials, or migrate existing user data.
 - Concurrent edits are preserved but **not auto-merged**: the remote revision
-  remains encrypted in the conflict quarantine. In the settings window, the
-  explicit **Сохранить конфликт как отдельную заметку** action imports a
-  selected remote revision with a new UUID, without changing either the
-  existing local note or the encrypted quarantine. Existing-note fast-forward
-  synchronization is not complete and must not be advertised as working.
+  remains encrypted in quarantine. The settings action
+  **Сохранить конфликт как отдельную заметку** imports a selected remote
+  revision with a new UUID without modifying the original.
+  Unchanged local notes can fast-forward to remote revisions only after
+  backup and main-thread precondition checks. These paths must pass isolated
+  tests before activating real-note transfer.
 - A single Contents API snapshot is limited by the program's 24 MiB encoded
   snapshot budget. Oversized content is retained locally and stays pending.
 - No deletion is propagated to other devices yet. This prevents accidental
