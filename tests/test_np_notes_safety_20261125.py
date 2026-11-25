@@ -332,6 +332,69 @@ class FirstNoteDialogTests(unittest.TestCase):
         self.assertIn('dialog.setCancelButtonText("Отмена")', body)
 
 
+class RenameSafetyTests(unittest.TestCase):
+    def test_failed_folder_rename_restores_original_note_and_path(self):
+        import os
+        import tempfile
+        from types import SimpleNamespace
+        source = (ROOT / "app" / "__init__.py").read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        cls = next(n for n in tree.body if isinstance(n, ast.ClassDef)
+                   and n.name == "NotesApp")
+        method = next(n for n in cls.body if isinstance(n, ast.FunctionDef)
+                      and n.name == "rename_note")
+        body = ast.Module(body=[method], type_ignores=[])
+        ast.fix_missing_locations(body)
+        class Dialog:
+            def __init__(self, parent):
+                pass
+            def setWindowTitle(self, value):
+                pass
+            def setLabelText(self, value):
+                pass
+            def setTextValue(self, value):
+                pass
+            def findChild(self, kind):
+                return None
+            def exec(self):
+                return True
+            def textValue(self):
+                return "new"
+        class Box:
+            warnings = []
+            @classmethod
+            def warning(cls, *args):
+                cls.warnings.append(args)
+        class Log:
+            @staticmethod
+            def exception(*args):
+                pass
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "old-u").mkdir()
+            namespace = {
+                "QInputDialog": Dialog, "QLineEdit": object,
+                "QMessageBox": Box, "logging": Log,
+                "NOTES_DIR": root, "os": os, "Note": object,
+                "safe_folder_name": lambda title, uuid, timestamp: title + "-" + uuid,
+            }
+            exec(compile(body, "<rename-safety>", "exec"), namespace)
+            note = SimpleNamespace(title="old", uuid="u", timestamp="now")
+            class Owner:
+                notes = [note]
+                updated = False
+                def save_note_to_file(self, current):
+                    raise OSError("Disk full after rename")
+                def refresh_notes_list(self):
+                    self.updated = True
+            owner = Owner()
+            namespace["rename_note"](owner, note)
+            self.assertEqual(note.title, "old")
+            self.assertTrue((root / "old-u").is_dir())
+            self.assertFalse((root / "new-u").exists())
+            self.assertFalse(owner.updated)
+            self.assertEqual(len(Box.warnings), 1)
+
 class AsyncPreloadSafetyTests(unittest.TestCase):
     def test_startup_snapshot_does_not_replace_newly_created_note(self):
         source = (ROOT / "app" / "__init__.py").read_text(encoding="utf-8")
