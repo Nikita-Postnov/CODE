@@ -61,7 +61,8 @@ class ServiceTests(unittest.TestCase):
 
     def _save(self, text):
         self.note_file.write_text(json.dumps({
-            "uuid": self.note_id, "title": "Fake", "content": text
+            "uuid": self.note_id, "title": "Fake", "content": text,
+            "timestamp": "2026-11-25T10:45:00"
         }), encoding="utf-8")
 
     def test_first_upload_then_no_unnecessary_rewrite(self):
@@ -89,6 +90,30 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(self.service.queue.count(), 0)
         self.service.enqueue_existing()
         self.assertEqual(self.service.queue.pending()[0][0], self.note_id)
+
+    def test_two_devices_import_without_overwrite(self):
+        # Device A uploads a fake note. Device B starts with empty notes.
+        self.service._send(self.note_id)
+        second_root = Path(self.temp.name) / "other_device"
+        second_notes = second_root / "Notes"
+        second_notes.mkdir(parents=True)
+        device_b = EncryptedOutboundService(
+            second_root / "state", second_notes, "fake", "fake",
+            "fake-token", "synthetic long secret phrase",
+        )
+        device_b.transport = self.remote
+        self.assertTrue(device_b._receive())
+        imported = list(second_notes.glob("*/note.json"))
+        self.assertEqual(len(imported), 1)
+        self.assertEqual(json.loads(imported[0].read_text())["content"], "v1")
+
+        # A later remote edit must not overwrite B's existing note.
+        self._save("edited on A")
+        self.service._send(self.note_id)
+        self.assertTrue(device_b._receive())
+        self.assertEqual(json.loads(imported[0].read_text())["content"], "v1")
+        conflicts = list((second_root / "state" / "remote_conflicts").rglob("*.enc"))
+        self.assertEqual(len(conflicts), 1)
 
     def test_does_not_read_sibling_data(self):
         outside = Path(self.temp.name) / "OtherApp"
