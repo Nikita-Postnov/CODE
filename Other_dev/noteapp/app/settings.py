@@ -210,7 +210,7 @@ class SettingsMixin:
         def refresh_sync_status():
             service = getattr(self, "_np_notes_sync", None)
             if service is None:
-                sync_label.setText("Не настроено: требуется приватный GitHub и ключ")
+                sync_label.setText("Отключена: заметки сохраняются локально")
                 return
             states = {
                 "idle": "Ожидание синхронизации",
@@ -222,7 +222,14 @@ class SettingsMixin:
             pending = service.queue.count()
             conflict_root = service.state_directory / "remote_conflicts"
             conflicts = sum(1 for _ in conflict_root.rglob("*.enc")) if conflict_root.is_dir() else 0
+            pending_root = service.state_directory / "pending_remote_updates"
+            incoming = (
+                sum(1 for _ in pending_root.rglob("*.enc"))
+                if pending_root.is_dir() else 0
+            )
             detail = f" · Конфликтов: {conflicts}" if conflicts else ""
+            if incoming:
+                detail += f" · Ожидают применения: {incoming}"
             sync_label.setText(
                 f"{states.get(service.worker.state, 'Ожидание')} "
                 f"· В очереди: {pending}{detail} · Каждые 5 минут"
@@ -285,6 +292,7 @@ class SettingsMixin:
             )
             refresh_sync_status()
 
+        conflict_button.setEnabled(getattr(self, "_np_notes_sync", None) is not None)
         conflict_button.clicked.connect(resolve_one_conflict)
         layout.addRow("Разрешение конфликтов:", conflict_button)
         buttons = QDialogButtonBox(
