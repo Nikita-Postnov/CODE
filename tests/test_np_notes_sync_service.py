@@ -240,6 +240,36 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(json.loads(self.note_file.read_text())["content"],
                          "revision from B")
 
+    def test_remote_rename_preserves_attachments_without_duplicate_uuid(self):
+        self.note_folder.joinpath("synthetic.png").write_bytes(b"FAKEPNG")
+        self.service._send(self.note_id)
+        second_root = Path(self.temp.name) / "rename_device"
+        second_notes = second_root / "Notes"
+        second_notes.mkdir(parents=True)
+        device_b = EncryptedOutboundService(
+            second_root / "state", second_notes, "fake", "fake",
+            "fake-token", "synthetic long secret phrase",
+        )
+        device_b.transport = self.remote
+        self.assertTrue(device_b._receive())
+        old_folder = next(second_notes.glob("*/note.json")).parent
+        record = json.loads(self.note_file.read_text())
+        record["title"] = "Fake renamed remotely"
+        record["content"] = '<img src="file:///C:/OtherPC/synthetic.png">'
+        self.note_file.write_text(json.dumps(record), encoding="utf-8")
+        self.service._send(self.note_id)
+        self.assertTrue(device_b._receive())
+        updates = device_b.apply_staged_remote_updates([])
+        self.assertEqual(len(updates), 1)
+        new_folder = updates[0][1]
+        self.assertNotEqual(new_folder, old_folder)
+        self.assertFalse(old_folder.exists())
+        self.assertEqual((new_folder / "synthetic.png").read_bytes(), b"FAKEPNG")
+        updated = json.loads((new_folder / "note.json").read_text())
+        self.assertEqual(updated["title"], "Fake renamed remotely")
+        self.assertIn(new_folder.resolve().as_uri(), updated["content"])
+        self.assertEqual(len(list(second_notes.glob("*/note.json"))), 1)
+
     def test_local_dirty_revision_never_fast_forwards(self):
         self.service._send(self.note_id)
         second_root = Path(self.temp.name) / "dirty_device"
