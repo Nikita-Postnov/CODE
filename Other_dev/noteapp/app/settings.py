@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QFormLayout,
+    QLabel,
     QSpinBox,
     QStyleFactory,
 )
@@ -199,6 +200,33 @@ class SettingsMixin:
             "Меньше — чаще запись на диск; больше — меньше нагрузки."
         )
         layout.addRow("Автосохранение (мс):", autosave_debounce)
+        # Status is read-only; secrets are never exposed in the UI.
+        sync_label = QLabel(dialog)
+        sync_label.setWordWrap(True)
+
+        def refresh_sync_status():
+            service = getattr(self, "_np_notes_sync", None)
+            if service is None:
+                sync_label.setText("Не настроено: требуется приватный GitHub и ключ")
+                return
+            states = {
+                "idle": "Ожидание синхронизации",
+                "waiting_for_network": "Нет интернета — данные сохраняются локально",
+                "synchronizing": "Синхронизация",
+                "synchronized": "Синхронизировано",
+                "retry_pending": "Ошибка или конфликт — изменения сохранены локально",
+            }
+            pending = service.queue.count()
+            sync_label.setText(
+                f"{states.get(service.worker.state, 'Ожидание')} "
+                f"· В очереди: {pending} · Каждые 5 минут"
+            )
+
+        refresh_sync_status()
+        sync_status_timer = QTimer(dialog)
+        sync_status_timer.timeout.connect(refresh_sync_status)
+        sync_status_timer.start(2000)
+        layout.addRow("GitHub-синхронизация:", sync_label)
         buttons = QDialogButtonBox(
             QDialogButtonBox.Ok | QDialogButtonBox.Cancel, dialog
         )
