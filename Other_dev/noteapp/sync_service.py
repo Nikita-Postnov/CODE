@@ -11,6 +11,7 @@ import hashlib
 import json
 import sqlite3
 import threading
+from contextlib import contextmanager
 from pathlib import Path
 from uuid import UUID
 
@@ -33,8 +34,14 @@ class EncryptedOutboundService:
         self._init_db()
         self.worker = OfflineSyncWorker(self.queue, self._online, self._send)
 
+    @contextmanager
     def _connect(self):
-        return sqlite3.connect(str(self._db_path), timeout=10)
+        db = sqlite3.connect(str(self._db_path), timeout=10)
+        try:
+            with db:
+                yield db
+        finally:
+            db.close()
 
     def _init_db(self):
         with self._connect() as db:
@@ -91,12 +98,12 @@ class EncryptedOutboundService:
         return matches[0]
 
     def _online(self):
-        # No credential-bearing request as a mere connectivity probe.
-        import socket
+        # Respect system HTTPS proxy/VPN settings without exposing a token.
+        import urllib.request
         try:
-            with socket.create_connection(("api.github.com", 443), timeout=3):
-                return True
-        except OSError:
+            with urllib.request.urlopen("https://api.github.com/", timeout=4) as response:
+                return response.status == 200
+        except Exception:
             return False
 
     def _send(self, note_id):
@@ -125,7 +132,8 @@ class EncryptedOutboundService:
 
     def saved(self, note_id):
         self.queue.mark_changed(str(UUID(note_id)))
-        self.worker.wake()
+        # The worker batches writes on its 5-minute interval; no upload
+        # is triggered by every keystroke/autosave.
 
     def enqueue_existing(self):
         """Recover changes saved before a prior queue update or crash."""
