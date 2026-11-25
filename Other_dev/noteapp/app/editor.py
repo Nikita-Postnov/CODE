@@ -556,8 +556,15 @@ class EditorMixin:
                 block.position() + len(block.text()), QTextCursor.KeepAnchor
             )
             cursor.removeSelectedText()
-        elif cursor.positionInBlock():
-            cursor.insertBlock()
+        elif cursor.block().text():
+            # Reserve a dedicated paragraph for the divider. Splitting in
+            # the middle of a text block leaves a nonempty suffix; splitting
+            # at the beginning produces an empty block BEFORE that suffix.
+            if cursor.positionInBlock():
+                cursor.insertBlock()
+            if cursor.block().text():
+                cursor.insertBlock()
+                cursor.movePosition(QTextCursor.PreviousBlock)
 
         line_font = QFont("Consolas", 11)
         line_metrics = QFontMetrics(line_font)
@@ -573,7 +580,14 @@ class EditorMixin:
 
         original_format = QTextCharFormat(cursor.charFormat())
         cursor.insertText("─" * characters, rule_format)
-        cursor.insertBlock()
+        # When replacing an old standalone dot (or inserting into an
+        # existing blank paragraph), the next paragraph already exists.
+        # insertBlock() in that case created an extra empty line between
+        # the divider and the heading. Reuse the existing next paragraph.
+        if cursor.block().next().isValid():
+            cursor.movePosition(QTextCursor.NextBlock)
+        else:
+            cursor.insertBlock()
         cursor.setCharFormat(original_format)
 
     def insert_horizontal_line(self) -> None:
@@ -590,34 +604,56 @@ class EditorMixin:
             self._set_unsaved(True)
 
     def restore_legacy_horizontal_lines(self) -> None:
-        """Replace standalone dots in the current note only after consent.
+        """Explicitly repair old divider dots and redundant post-rule gaps.
 
-        The user chooses this command explicitly because a standalone dot
-        can otherwise be valid text. Every other note stays unchanged.
+        Changing stored user notes automatically would be unsafe: a dot or
+        intentional blank paragraph may be part of the user's text. This
+        action requires confirmation and only edits the current document.
         """
         document = self.text_edit.document()
-        locations = []
+        operations = []
+        dot_count = 0
+        extra_gap_count = 0
         block = document.begin()
         while block.isValid():
             probe = QTextCursor(block)
-            if (
-                block.text().strip() == "."
-                and probe.currentTable() is None
-                and probe.currentList() is None
-            ):
-                locations.append(block.position())
+            in_table_or_list = (
+                probe.currentTable() is not None
+                or probe.currentList() is not None
+            )
+            if not in_table_or_list and block.text().strip() == ".":
+                operations.append((block.position(), "dot"))
+                dot_count += 1
+            elif not in_table_or_list:
+                rule = block.text().strip()
+                next_block = block.next()
+                if (
+                    len(rule) >= 12
+                    and set(rule) == {"─"}
+                    and next_block.isValid()
+                    and not next_block.text()
+                    and next_block.next().isValid()
+                    and next_block.next().text().strip()
+                ):
+                    # Delete the separator between the rule and the empty
+                    # block. This removes the redundant block without
+                    # merging into or reformatting the next heading.
+                    operations.append((block.position() + len(block.text()), "gap"))
+                    extra_gap_count += 1
             block = block.next()
-        if not locations:
+        if not operations:
             QMessageBox.information(
                 self, "Горизонтальные линии",
-                "В текущей заметке нет отдельных точек для восстановления.",
+                "В текущей заметке нет старых точек или лишних пустых строк "
+                "сразу после горизонтальных линий.",
             )
             return
         reply = QMessageBox.question(
             self, "Восстановить горизонтальные линии",
-            f"В текущей заметке найдено отдельных точек: {len(locations)}.\n"
-            "Заменить их горизонтальными линиями?\n"
-            "Другие заметки и обычные точки внутри текста не изменятся.",
+            f"Старых точек: {dot_count}.\\n"
+            f"Пустых строк после линий: {extra_gap_count}.\\n"
+            "Восстановить разделители и убрать указанные пустые строки?\\n"
+            "Это изменит только текущую заметку. Остальной текст сохранится.",
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No,
         )
@@ -626,11 +662,13 @@ class EditorMixin:
         cursor = self.text_edit.textCursor()
         cursor.beginEditBlock()
         try:
-            # Process from the end so replacing text cannot move earlier
-            # QTextBlock positions.
-            for position in reversed(locations):
+            # Edits from end to start preserve positions of earlier blocks.
+            for position, action in sorted(operations, reverse=True):
                 cursor.setPosition(position)
-                self._insert_visible_horizontal_rule(cursor)
+                if action == "gap":
+                    cursor.deleteChar()
+                else:
+                    self._insert_visible_horizontal_rule(cursor)
         finally:
             cursor.endEditBlock()
         self.text_edit.setTextCursor(cursor)
