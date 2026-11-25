@@ -19,7 +19,7 @@ def probe(mode):
         cell=table.cellAt(0,0)
         cf=cell.format().toTableCellFormat();cf.setBackground(QColor("#a0a0a0"));cell.setFormat(cf)
     elif mode=="block":
-        fmt=QTextBlockFormat();fmt.setBackground(QColor("#a0a0a0"));fmt.setLineHeight(2,int(QTextBlockFormat.FixedHeight))
+        fmt=QTextBlockFormat();fmt.setBackground(QColor("#a0a0a0"));fmt.setLineHeight(2,QTextBlockFormat.FixedHeight.value)
         cur.setBlockFormat(fmt)
         cur.insertText(" ")
     elif mode=="frame":
