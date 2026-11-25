@@ -114,6 +114,7 @@ class EncryptedOutboundService:
         folder = self._find_folder(note_id)
         if folder is None:
             raise UnsafeSnapshot("Local note deleted or not found")
+        self.transport.assert_private()
         plain = pack_note(folder, note_id)
         digest = hashlib.sha256(plain).hexdigest()
         known = self._known_sha(note_id)
@@ -139,6 +140,7 @@ class EncryptedOutboundService:
 
     def _receive(self):
         """Import absent notes only; quarantine all divergent remote revisions."""
+        self.transport.assert_private()
         for note_id in self.transport.list_note_ids():
             encrypted, sha = self.transport.read(note_id)
             if encrypted is None or sha is None:
