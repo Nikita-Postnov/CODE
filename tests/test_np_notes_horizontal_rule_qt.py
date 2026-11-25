@@ -169,8 +169,10 @@ class HorizontalRuleTest(unittest.TestCase):
         editor.insert_horizontal_line()
         html = editor.text_edit.toHtml().lower()
         self.assertEqual(html.count("<table"), 1)
-        self.assertIn("one. two", html)
-        self.assertIn("<p>.</p>", html.replace(' style=" margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;"', ''))
+        self.assertIn(">on</p>", html)
+        self.assertIn(">e. two</p>", html)
+        self.assertIn(">.</p>", html)
+        self.assertIn(">three</p>", html)
 
     def test_legacy_dot_replacement_survives_save_and_reopen(self):
         editor = _Editor()
