@@ -1673,6 +1673,7 @@ def _setup_winapi_prototypes() -> None:
     # ── user32: окна, фокус, раскладка ──
     _proto(user32, "LoadKeyboardLayoutW", HANDLE, LPCWSTR, UINT)
     _proto(user32, "GetKeyboardLayout", HANDLE, DWORD)
+    _proto(user32, "GetKeyboardLayoutList", INT, INT, ctypes.POINTER(HANDLE))
     _proto(user32, "GetForegroundWindow", HANDLE)
     _proto(user32, "SetForegroundWindow", BOOL, HANDLE)
     _proto(user32, "BringWindowToTop", BOOL, HANDLE)
@@ -2193,6 +2194,55 @@ def _force_foreground_window(hwnd: object) -> None:
 
 _hkl_cache: dict[str, int] = {}
 
+
+def _try_win_space_language_switch(
+    expected_language: int, same_target: Callable[[], bool],
+    expected_keyboard_revision: int,
+) -> bool:
+    """Windows fallback after a failed WM_INPUTLANGCHANGEREQUEST.
+
+    Win+Space uses the OS input-language switcher (including modern text
+    services). Only send it when there are exactly two layouts, English and
+    Russian, and no physical input intervened. Never cycle unknown layouts,
+    steal a new window's focus, or synthesize events over pressed modifiers.
+    """
+    if not _IS_WINDOWS or user32 is None or not hasattr(user32, "GetKeyboardLayoutList"):
+        return False
+    if not same_target() or _keyboard_input_revision != expected_keyboard_revision:
+        return False
+    injected = False
+    try:
+        count = int(user32.GetKeyboardLayoutList(0, None))
+        if count != 2:
+            return False
+        layouts = (HANDLE * count)()
+        if int(user32.GetKeyboardLayoutList(count, layouts)) != count:
+            return False
+        languages = {_hwnd_value(layouts[i]) & 0xFFFF for i in range(count)}
+        if languages != {0x0409, 0x0419} or expected_language not in languages:
+            return False
+        if _is_any_vk_pressed(_SPACE_BLOCKING_MODIFIER_VKS):
+            return False
+        if not same_target() or _keyboard_input_revision != expected_keyboard_revision:
+            return False
+        logging.info("Punto: attempting verified Win+Space language switch")
+        injected = True
+        _send_input([
+            _key_input(VK_LWIN, False), _key_input(VK_SPACE, False),
+            _key_input(VK_SPACE, True), _key_input(VK_LWIN, True),
+        ])
+        return True
+    except Exception:
+        # A partial SendInput must never leave a synthetic Windows key down.
+        if injected:
+            try:
+                _send_input([_key_input(VK_LWIN, True)])
+            except Exception:
+                logging.warning("Punto: could not release synthetic Win key", exc_info=True)
+        logging.warning("Punto: Win+Space input-language fallback failed", exc_info=True)
+        return False
+
+
 def _count_mappable_chars(text: str) -> tuple[int, int]:
     en_like = 0
     ru_like = 0
@@ -2251,6 +2301,7 @@ def _switch_input_language_for_foreground(
         (focus, foreground) if focus else (foreground,)
     ))
     expected_langid = int(layout_id[-4:], 16)
+    keyboard_revision = _keyboard_input_revision
 
     def same_target() -> bool:
         if _hwnd_value(user32.GetForegroundWindow()) != foreground:
@@ -2272,8 +2323,23 @@ def _switch_input_language_for_foreground(
             return False
         _hkl_cache[layout_id] = hkl
 
-    # Сначала сфокусированный контрол, затем (только при прежнем фокусе)
-    # основное окно: часть приложений обрабатывает это сообщение в родителе.
+    # Системное переключение действует и в современных TSF-редакторах.
+    # Пробуем его СРАЗУ после исправления слова: через сотни миллисекунд
+    # пользователь уже может начать ввод следующего слова на старом языке.
+    # Вызывается строго один раз, только для пары установленных EN + RU.
+    if _try_win_space_language_switch(
+        expected_langid, same_target, keyboard_revision,
+    ):
+        for _ in range(6):
+            time.sleep(0.035)
+            if not same_target():
+                return False
+            if active():
+                logging.info("Punto: Win+Space input-language switch confirmed")
+                return True
+
+    # Резерв для окон, поддерживающих штатное Win32-сообщение изменения языка.
+    # Сначала сфокусированный контрол, затем основное окно приложения.
     for recipient in target_windows:
         for _ in range(2):
             if not same_target():
