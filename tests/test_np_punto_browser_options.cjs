@@ -16,6 +16,7 @@ function setup(initial = {}) {
     for (const key of [
         "enabled", "rulesEnabled", "learn", "words", "hosts", "rules",
         "ruleTest", "ruleTestResult", "testRule", "save", "clear", "status",
+        "extensionId", "copyExtensionId", "testBridge", "bridgeStatus",
     ]) {
         elements[key] = {
             value:"", checked:false, textContent:"", style:{}, handlers:{},
@@ -23,7 +24,11 @@ function setup(initial = {}) {
         };
     }
     const chrome = {
-        runtime: { lastError:null },
+        runtime: {
+            id:"abcdefghijklmnopabcdefghijklmnop",
+            lastError:null,
+            sendMessage(message,callback){callback({ok:true,status:"ready"});},
+        },
         storage: {
             local: {
                 get(defaults, callback) { callback({...defaults, ...storage}); },
@@ -131,4 +136,13 @@ test("Dashes within rule output are preserved",()=>{
     h.elements.rules.value="бт - бета-тест";
     h.click("save");
     assert.equal(h.storage.rules[0].to,"бета-тест");
+});
+
+test("Native bridge status checks without touching words or settings",()=>{
+    const h=setup({enabled:true});
+    assert.equal(h.elements.extensionId.textContent,"abcdefghijklmnopabcdefghijklmnop");
+    h.click("testBridge");
+    assert.match(h.elements.bridgeStatus.textContent,/Подключение к Windows установлено/);
+    assert.equal(h.storage.enabled,true);
+    assert.equal(h.storage.words,undefined);
 });
