@@ -72,7 +72,8 @@ jobs:
           $compiler = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
           if (-not (Test-Path $compiler)) { throw 'C# compiler missing' }
           $exe = Join-Path $env:RUNNER_TEMP 'PuntoLayoutHost.exe'
-          & $compiler /nologo /target:exe /reference:System.Web.Extensions.dll "/out:$exe" Other_dev/NP_Punto_Browser/native_host/PuntoLayoutHost.cs
+          $source = (Resolve-Path -LiteralPath 'Other_dev/NP_Punto_Browser/native_host/PuntoLayoutHost.cs').Path
+          & $compiler /nologo /target:exe /reference:System.Web.Extensions.dll "/out:$exe" $source
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & $exe --self-test
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
