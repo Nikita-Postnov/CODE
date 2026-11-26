@@ -78,8 +78,15 @@ function harness(initial, rich = false, overrides = {}) {
             return true;
         },
     };
+    const sentLayoutMessages = [];
     const chrome = {
-        runtime:{lastError:null},
+        runtime:{
+            lastError:null,
+            sendMessage(message, callback) {
+                sentLayoutMessages.push(message);
+                callback?.({ok:true,status:"switched"});
+            },
+        },
         storage:{
             local:{
                 get(defaults,cb){cb({...defaults,enabled:true,...overrides});},
@@ -144,7 +151,7 @@ function harness(initial, rich = false, overrides = {}) {
     function flushTimers() {
         while (pendingTimers.length) pendingTimers.shift()();
     }
-    return {field,node,selection,fire,fireKey,fireNative,flushTimers};
+    return {field,node,selection,fire,fireKey,fireNative,flushTimers,sentLayoutMessages};
 }
 
 test("Plain ChatGPT-like input corrects whole phrase on final punctuation",()=>{
@@ -369,3 +376,60 @@ test("NBSP after user typing never triggers replacement without matching rule",(
     h.flushTimers();
     assert.equal(h.node.data,"пища\u00a0");
 });
+
+
+test("Auto-corrected browser word requests ONLY Russian layout, never user text",()=>{
+    const h=harness("ghbdtn");
+    assert.equal(h.fire(" "),true);
+    assert.equal(h.field.value,"привет ");
+    assert.equal(h.sentLayoutMessages.length,1);
+    assert.equal(JSON.stringify(h.sentLayoutMessages[0]),
+        JSON.stringify({action:"np-punto-switch-layout",language:"ru"}));
+    assert.doesNotMatch(JSON.stringify(h.sentLayoutMessages),/ghbdtn|привет/u);
+});
+
+test("Auto-corrected rich browser editor also requests Russian layout",()=>{
+    const h=harness("ghbdtn",true);
+    assert.equal(h.fire(" "),true);
+    assert.equal(h.node.data,"привет ");
+    assert.equal(h.sentLayoutMessages.length,1);
+    assert.equal(h.sentLayoutMessages[0].language,"ru");
+});
+
+test("Normal English typing, manual conversion, and same-script rules never toggle language",()=>{
+    const h=harness("hello");
+    assert.equal(h.fire(" "),false);
+    assert.equal(h.sentLayoutMessages.length,0);
+    const manual=harness("ghbdtn");
+    assert.equal(manual.fireKey("Insert",{ctrlKey:true}),true);
+    assert.equal(manual.sentLayoutMessages.length,0);
+    const rule=harness("brb",false,{
+        enabled:false,rulesEnabled:true,rules:[{from:"brb",to:"be right back"}],
+    });
+    rule.fireNative(" ");
+    rule.flushTimers();
+    assert.equal(rule.sentLayoutMessages.length,0);
+});
+
+test("Custom browser rule that changes script requests target layout after actual replacement",()=>{
+    const h=harness("brb",false,{
+        enabled:false,rulesEnabled:true,rules:[{from:"brb",to:"вернулся"}],
+    });
+    h.fireNative(" ");
+    h.flushTimers();
+    assert.equal(h.field.value,"вернулся ");
+    assert.equal(h.sentLayoutMessages.length,1);
+    assert.equal(h.sentLayoutMessages[0].language,"ru");
+});
+
+test("Browser correction can also request English layout",()=>{
+    const h=harness("руддщ",false,{
+        enabled:false,rulesEnabled:true,rules:[{from:"руддщ",to:"hello"}],
+    });
+    h.fireNative(" ");
+    h.flushTimers();
+    assert.equal(h.field.value,"hello ");
+    assert.equal(h.sentLayoutMessages.length,1);
+    assert.equal(h.sentLayoutMessages[0].language,"en");
+});
+
