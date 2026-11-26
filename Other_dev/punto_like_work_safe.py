@@ -2206,10 +2206,11 @@ def _try_win_space_language_switch(
     Russian, and no physical input intervened. Never cycle unknown layouts,
     steal a new window's focus, or synthesize events over pressed modifiers.
     """
-    if not _IS_WINDOWS or user32 is None:
+    if not _IS_WINDOWS or user32 is None or not hasattr(user32, "GetKeyboardLayoutList"):
         return False
     if not same_target() or _keyboard_input_revision != expected_keyboard_revision:
         return False
+    injected = False
     try:
         count = int(user32.GetKeyboardLayoutList(0, None))
         if count != 2:
@@ -2225,6 +2226,7 @@ def _try_win_space_language_switch(
         if not same_target() or _keyboard_input_revision != expected_keyboard_revision:
             return False
         logging.info("Punto: attempting verified Win+Space language switch")
+        injected = True
         _send_input([
             _key_input(VK_LWIN, False), _key_input(VK_SPACE, False),
             _key_input(VK_SPACE, True), _key_input(VK_LWIN, True),
@@ -2232,10 +2234,11 @@ def _try_win_space_language_switch(
         return True
     except Exception:
         # A partial SendInput must never leave a synthetic Windows key down.
-        try:
-            _send_input([_key_input(VK_LWIN, True)])
-        except Exception:
-            logging.warning("Punto: could not release synthetic Win key", exc_info=True)
+        if injected:
+            try:
+                _send_input([_key_input(VK_LWIN, True)])
+            except Exception:
+                logging.warning("Punto: could not release synthetic Win key", exc_info=True)
         logging.warning("Punto: Win+Space input-language fallback failed", exc_info=True)
         return False
 
