@@ -17,7 +17,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         return false;
     }
     if (isPing && (
-        sender.tab || !String(sender.url || "").startsWith(chrome.runtime.getURL(""))
+        sender.id !== chrome.runtime.id ||
+        !String(sender.url || "").startsWith(chrome.runtime.getURL(""))
     )) {
         sendResponse({ ok: false, status: "unauthorized" });
         return false;
