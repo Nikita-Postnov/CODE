@@ -26,10 +26,19 @@ internal static class PuntoLayoutHost
         public IntPtr Extra;
     }
 
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct MouseInput
+    {
+        public int Dx, Dy;
+        public uint MouseData, Flags, Time;
+        public IntPtr Extra;
+    }
+
     [StructLayout(LayoutKind.Explicit)]
     internal struct InputData
     {
         [FieldOffset(0)] public KeyboardInput Keyboard;
+        [FieldOffset(0)] public MouseInput Mouse;
     }
 
     [StructLayout(LayoutKind.Sequential)]
@@ -188,6 +197,13 @@ internal static class PuntoLayoutHost
     {
         try {
             if (args.Length == 1 && args[0] == "--self-test") {
+                int actualSize = Marshal.SizeOf(typeof(NativeInput));
+                int requiredSize = IntPtr.Size == 8 ? 40 : 28;
+                if (actualSize != requiredSize) {
+                    Console.Error.WriteLine("INVALID_WIN32_INPUT_SIZE=" + actualSize + "; EXPECTED=" + requiredSize);
+                    return 1;
+                }
+                Console.WriteLine("WIN32_INPUT_SIZE=" + actualSize);
                 Console.WriteLine("NP_PUNTO_NATIVE_HOST_SELF_TEST_PASS");
                 return 0;
             }
