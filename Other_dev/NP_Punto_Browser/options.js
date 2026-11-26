@@ -105,5 +105,34 @@
                 !chrome.runtime.lastError);
         });
     });
+    const extensionId = chrome.runtime?.id || "";
+    el("extensionId").textContent = extensionId || "Не определён";
+    el("copyExtensionId").addEventListener("click", () => {
+        if (extensionId && typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
+            navigator.clipboard.writeText(extensionId).then(() => {
+                el("bridgeStatus").textContent = "ID расширения скопирован.";
+            }).catch(() => {
+                el("bridgeStatus").textContent = "Не удалось скопировать ID.";
+            });
+        }
+    });
+    el("testBridge").addEventListener("click", () => {
+        const status = el("bridgeStatus");
+        status.textContent = "Проверка локального моста...";
+        if (typeof chrome.runtime?.sendMessage !== "function") {
+            status.textContent = "Расширение не поддерживает проверку моста.";
+            return;
+        }
+        try {
+            chrome.runtime.sendMessage({ action: "np-punto-test-native" }, response => {
+                const unavailable = Boolean(chrome.runtime.lastError);
+                status.textContent = !unavailable && response?.status === "ready"
+                    ? "Подключение к Windows установлено. Текст не передаётся."
+                    : "Мост Windows не подключён. Установите его для этого ID расширения.";
+            });
+        } catch (_error) {
+            status.textContent = "Мост Windows не подключён.";
+        }
+    });
     load();
 })();

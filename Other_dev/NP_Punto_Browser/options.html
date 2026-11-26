@@ -26,6 +26,14 @@ small { color: #777; display: block; }
 <label><input id="learn" type="checkbox"> Запоминать вручную исправленные слова в локальном словаре</label>
 <small>Словарная коррекция и обучение изначально выключены. Настроенные пользовательские правила работают отдельно.</small>
 </fieldset>
+<fieldset><legend>Переключение языка Windows после исправления</legend>
+<p>После исправления слова расширение может переключить системную раскладку для следующего ввода через защищённый локальный мост NP Punto. В мост передаётся только RU или EN, без текста и адреса страницы.</p>
+<small>Требуется однократная установка Native Messaging-моста Windows. Его необходимо установить именно для этого ID расширения:</small>
+<p><strong>ID расширения:</strong> <code id="extensionId"></code>
+<button type="button" id="copyExtensionId">Скопировать ID</button></p>
+<button type="button" id="testBridge">Проверить связь с Windows</button>
+<div id="bridgeStatus" role="status" aria-live="polite"></div>
+</fieldset>
 <fieldset><legend>Словарь известных слов</legend>
 <label for="words">По одному слову на строку. Можно вставить слова из Data/punto_like_layout_words.txt</label>
 <textarea id="words" rows="10" spellcheck="false"></textarea>

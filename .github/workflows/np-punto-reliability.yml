@@ -9,6 +9,7 @@ on:
       - "Other_dev/NP_Punto_Browser/**"
       - "tests/test_np_punto_browser.cjs"
       - "tests/test_np_punto_browser_dom.cjs"
+      - "tests/test_np_punto_browser_native_bridge.cjs"
       - "tests/test_np_punto_browser_prosemirror.cjs"
       - "tests/test_np_punto_browser_options.cjs"
       - "tests/test_np_punto_browser_bridge.py"
@@ -27,6 +28,7 @@ on:
       - "Other_dev/NP_Punto_Browser/**"
       - "tests/test_np_punto_browser.cjs"
       - "tests/test_np_punto_browser_dom.cjs"
+      - "tests/test_np_punto_browser_native_bridge.cjs"
       - "tests/test_np_punto_browser_prosemirror.cjs"
       - "tests/test_np_punto_browser_options.cjs"
       - "tests/test_np_punto_browser_bridge.py"
@@ -55,12 +57,28 @@ jobs:
           python -m json.tool Other_dev/NP_Punto_Browser/manifest.json
           node --check Other_dev/NP_Punto_Browser/layout_core.js
           node --check Other_dev/NP_Punto_Browser/content.js
+          node --check Other_dev/NP_Punto_Browser/background.js
+          node --check tests/test_np_punto_browser_native_bridge.cjs
           node --check Other_dev/NP_Punto_Browser/options.js
           node --check tests/test_np_punto_browser_dom.cjs
           node --check tests/test_np_punto_browser_prosemirror.cjs
           node --check tests/test_np_punto_browser_options.cjs
       - name: Test browser layout engine
-        run: node --test tests/test_np_punto_browser.cjs tests/test_np_punto_browser_dom.cjs tests/test_np_punto_browser_prosemirror.cjs tests/test_np_punto_browser_options.cjs
+        run: node --test tests/test_np_punto_browser.cjs tests/test_np_punto_browser_dom.cjs tests/test_np_punto_browser_native_bridge.cjs tests/test_np_punto_browser_prosemirror.cjs tests/test_np_punto_browser_options.cjs
+      - name: Compile native Windows browser host
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $compiler = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
+          if (-not (Test-Path $compiler)) { throw 'C# compiler missing' }
+          $exe = Join-Path $env:RUNNER_TEMP 'PuntoLayoutHost.exe'
+          $source = (Resolve-Path -LiteralPath 'Other_dev/NP_Punto_Browser/native_host/PuntoLayoutHost.cs').Path
+          & $compiler /nologo /target:exe /reference:System.Web.Extensions.dll "/out:$exe" $source
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & $exe --self-test
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & Other_dev/NP_Punto_Browser/native_host/Test-PuntoNativeBridge.ps1 -HostExe $exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Compile NP Punto
         run: python -m py_compile Other_dev/punto_like_work_safe.py
       - name: Validate NP Punto safety
