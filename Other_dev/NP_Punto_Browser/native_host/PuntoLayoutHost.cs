@@ -111,8 +111,8 @@ internal static class PuntoLayoutHost
         );
         object raw;
         if (!manifest.TryGetValue("allowed_origins", out raw)) return false;
-        object[] allowed = raw as object[];
-        if (allowed == null) return false;
+        var allowed = raw as System.Collections.IEnumerable;
+        if (allowed == null || raw is string) return false;
         foreach (object entry in allowed) {
             if (String.Equals(entry as string, origin, StringComparison.Ordinal)) return true;
         }
