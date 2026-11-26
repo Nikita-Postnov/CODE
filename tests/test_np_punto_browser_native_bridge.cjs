@@ -13,6 +13,7 @@ function setup() {
     const sent=[];
     const chrome={
         runtime:{
+            id:"abcdefghijklmnopabcdefghijklmnop",
             lastError:null,
             getURL:()=> "chrome-extension://abcdefghijklmnopabcdefghijklmnop/",
             onMessage:{addListener(fn){listener=fn;}},
@@ -50,15 +51,50 @@ test("Background rejects inactive tabs and arbitrary layouts",()=>{
 test("Extension options can ping native host without any key events",()=>{
     const h=setup();
     const result=h.send({action:"np-punto-test-native"},
-        {url:"chrome-extension://abcdefghijklmnopabcdefghijklmnop/options.html"});
+        {id:"abcdefghijklmnopabcdefghijklmnop",
+         tab:{id:4,active:true},
+         url:"chrome-extension://abcdefghijklmnopabcdefghijklmnop/options.html"});
     assert.equal(result.waiting,true);
     assert.equal(result.response.status,"ready");
     assert.deepEqual(JSON.parse(JSON.stringify(h.sent[0].message)),{action:"ping"});
 });
+test("Native ready ping succeeds despite ok:false in native protocol",()=>{
+    const h=setup();
+    h.chrome.runtime.sendNativeMessage=(host,message,callback)=>{
+        h.sent.push({host,message});
+        callback({ok:false,status:"ready"});
+    };
+    const result=h.send({action:"np-punto-test-native"},
+        {id:"abcdefghijklmnopabcdefghijklmnop",tab:{id:7,active:true},
+         url:"chrome-extension://abcdefghijklmnopabcdefghijklmnop/options.html"});
+    assert.equal(result.waiting,true);
+    assert.equal(result.response.ok,true);
+    assert.equal(result.response.status,"ready");
+    assert.deepEqual(JSON.parse(JSON.stringify(h.sent[0].message)),{action:"ping"});
+});
+test("Internal extension page can ping without a tab",()=>{
+    const h=setup();
+    const result=h.send({action:"np-punto-test-native"},
+        {id:"abcdefghijklmnopabcdefghijklmnop",
+         url:"chrome-extension://abcdefghijklmnopabcdefghijklmnop/options.html"});
+    assert.equal(result.response.ok,true);
+    assert.equal(result.response.status,"ready");
+});
 test("A website or another extension cannot invoke the options ping",()=>{
     const h=setup();
-    const result=h.send({action:"np-punto-test-native"},{url:"https://site.example/"});
-    assert.equal(result.response.ok,false);
+    const forbiddenSenders=[
+        {url:"https://site.example/"},
+        {id:"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+         url:"chrome-extension://abcdefghijklmnopabcdefghijklmnop/options.html",
+         tab:{id:8,active:true}},
+        {id:"abcdefghijklmnopabcdefghijklmnop",url:"https://site.example/"},
+        {url:"chrome-extension://abcdefghijklmnopabcdefghijklmnop/options.html"}
+    ];
+    for (const sender of forbiddenSenders) {
+        const result=h.send({action:"np-punto-test-native"},sender);
+        assert.equal(result.response.ok,false);
+        assert.equal(result.response.status,"unauthorized");
+    }
     assert.equal(h.sent.length,0);
 });
 test("Native host failure does not block browser input",()=>{
