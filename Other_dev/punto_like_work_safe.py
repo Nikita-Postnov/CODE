@@ -2323,8 +2323,23 @@ def _switch_input_language_for_foreground(
             return False
         _hkl_cache[layout_id] = hkl
 
-    # Сначала сфокусированный контрол, затем (только при прежнем фокусе)
-    # основное окно: часть приложений обрабатывает это сообщение в родителе.
+    # Системное переключение действует и в современных TSF-редакторах.
+    # Пробуем его СРАЗУ после исправления слова: через сотни миллисекунд
+    # пользователь уже может начать ввод следующего слова на старом языке.
+    # Вызывается строго один раз, только для пары установленных EN + RU.
+    if _try_win_space_language_switch(
+        expected_langid, same_target, keyboard_revision,
+    ):
+        for _ in range(6):
+            time.sleep(0.035)
+            if not same_target():
+                return False
+            if active():
+                logging.info("Punto: Win+Space input-language switch confirmed")
+                return True
+
+    # Резерв для окон, поддерживающих штатное Win32-сообщение изменения языка.
+    # Сначала сфокусированный контрол, затем основное окно приложения.
     for recipient in target_windows:
         for _ in range(2):
             if not same_target():
@@ -2355,20 +2370,6 @@ def _switch_input_language_for_foreground(
                 if active():
                     return True
 
-    # Some modern Windows text controls do not apply synthetic
-    # WM_INPUTLANGCHANGEREQUEST messages. Ask the OS itself to switch via
-    # Win+Space only when the environment is unambiguous; never guess a
-    # direction if more than two input layouts are installed.
-    if _try_win_space_language_switch(
-        expected_langid, same_target, keyboard_revision,
-    ):
-        for _ in range(6):
-            time.sleep(0.035)
-            if not same_target():
-                return False
-            if active():
-                logging.info("Punto: Win+Space input-language fallback confirmed")
-                return True
     logging.warning(
         "Punto: unable to confirm %s layout for focused hwnd=%s (foreground=%s)",
         layout_id, focus or foreground, foreground,
