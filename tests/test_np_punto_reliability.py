@@ -307,14 +307,18 @@ class KeyboardTests(unittest.TestCase):
                 17, after_space=True, characters_after_space=2)
 
     def test_auto_layout_correction_preserves_typed_suffix(self):
-        with patch.object(punto, "_settings", punto.Settings(auto_layout_correction=True)), \
+        api = Mock()
+        api.GetForegroundWindow.return_value = 111
+        with patch.object(punto, "user32", api), \
+             patch.object(punto, "_settings", punto.Settings(auto_layout_correction=True)), \
              patch.object(punto, "_layout_words", frozenset({"привет"})), \
              patch.object(punto, "_get_collapsed_caret_from_edit", return_value=9), \
              patch.object(punto, "_read_edit_full_text", return_value="ghbdtn ab"), \
              patch.object(punto, "_replace_range_in_edit_safely", return_value=True) as replace, \
-             patch.object(punto, "_switch_layout_toward_text"):
+             patch.object(punto, "_switch_layout_toward_text") as switch:
             punto._apply_rules_in_edit(17, after_space=True, characters_after_space=2)
         replace.assert_called_once_with(17, 0, 6, "ghbdtn", "привет", 9)
+        switch.assert_called_once_with("привет", 111)
 
     def test_space_scheduler_is_separate_from_idle(self):
         self.assertIsNot(punto._space, punto._idle)
@@ -460,7 +464,10 @@ class KeyboardTests(unittest.TestCase):
         self.assertFalse(punto._is_edit_like_class("PasswordBox"))
 
     def test_auto_layout_replaces_dictionary_word_in_notepad(self):
-        with patch.object(punto, "_settings", punto.Settings(auto_layout_correction=True)), \
+        api = Mock()
+        api.GetForegroundWindow.return_value = 111
+        with patch.object(punto, "user32", api), \
+             patch.object(punto, "_settings", punto.Settings(auto_layout_correction=True)), \
              patch.object(punto, "_layout_words", frozenset({"привет"})), \
              patch.object(punto, "_get_collapsed_caret_from_edit", return_value=7), \
              patch.object(punto, "_read_edit_full_text", return_value="ghbdtn "), \
@@ -468,7 +475,7 @@ class KeyboardTests(unittest.TestCase):
              patch.object(punto, "_switch_layout_toward_text") as switch:
             punto._apply_rules_in_edit(17, after_space=True)
         replace.assert_called_once_with(17, 0, 6, "ghbdtn", "привет", 7)
-        switch.assert_called_once_with("привет")
+        switch.assert_called_once_with("привет", 111)
 
     def test_no_auto_layout_in_standard_mode(self):
         with patch.object(punto, "_settings", punto.Settings(auto_layout_correction=False)), \

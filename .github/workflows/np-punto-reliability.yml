@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - "Other_dev/punto_like_work_safe.py"
+      - "Other_dev/test_punto_input_layout_sync.py"
       - "Other_dev/NP_Punto_Browser/**"
       - "tests/test_np_punto_browser.cjs"
       - "tests/test_np_punto_browser_dom.cjs"
@@ -22,6 +23,7 @@ on:
     branches: [main]
     paths:
       - "Other_dev/punto_like_work_safe.py"
+      - "Other_dev/test_punto_input_layout_sync.py"
       - "Other_dev/NP_Punto_Browser/**"
       - "tests/test_np_punto_browser.cjs"
       - "tests/test_np_punto_browser_dom.cjs"
@@ -63,3 +65,5 @@ jobs:
         run: python -m py_compile Other_dev/punto_like_work_safe.py
       - name: Validate NP Punto safety
         run: python -m unittest -v tests.test_np_punto_reliability tests.test_np_punto_hotkey_priority tests.test_np_punto_chromium_copy tests.test_np_punto_scintilla tests.test_np_punto_scintilla_native tests.test_np_punto_raw_hotkey_diagnostic tests.test_np_punto_browser_bridge
+      - name: Verify Windows input language follows the corrected word
+        run: python Other_dev/test_punto_input_layout_sync.py -v

@@ -16,16 +16,19 @@ class FakeWindows:
         self.loaded = []
         self.posts = []
         self.on_post = None
+        self.focus_thread = 66
+        self.layout_threads = []
 
     def GetForegroundWindow(self):
         return self.foreground
 
     def GetWindowThreadProcessId(self, hwnd, _pid):
-        assert hwnd == 101, f"Should not touch unrelated hwnd={hwnd}"
-        return self.thread
+        assert hwnd in (101, 222), f"Should not touch unrelated hwnd={hwnd}"
+        return self.focus_thread if hwnd == 222 else self.thread
 
     def GetKeyboardLayout(self, tid):
-        assert tid == self.thread
+        assert tid in (self.thread, self.focus_thread)
+        self.layout_threads.append(tid)
         return self.current
 
     def LoadKeyboardLayoutW(self, name, flags):
@@ -52,6 +55,82 @@ class PuntoLayoutSyncTests(unittest.TestCase):
         ]
         for p in self.patches:p.start()
         self.addCleanup(lambda: [p.stop() for p in reversed(self.patches)])
+
+    def test_auto_correction_changes_focused_child_input_language(self):
+        """After the corrected word, the next keystroke must use its layout."""
+        self.fake.GetGUIThreadInfo = Mock(return_value=True)
+        with (patch.object(punto, "_get_focused_control_hwnd", return_value=222),
+              patch.object(punto, "_settings", Mock(auto_layout_correction=True)),
+              patch.object(punto, "_layout_words", frozenset({"привет"})),
+              patch.object(punto, "_candidate_layout_correction", return_value="привет"),
+              patch.object(punto, "_replace_range_in_edit_safely", return_value=True)):
+            def change(hwnd, msg, wparam, lparam, timeout_ms):
+                self.assertEqual(hwnd, 222, "Language request must reach focused Edit")
+                self.fake.current = lparam
+                return True
+            self.send.side_effect = change
+            self.assertTrue(punto._try_auto_layout_in_edit(222, "ghbdtn ", 6, 7))
+        self.assertEqual(self.fake.current & 0xFFFF, 0x0419)
+        self.assertEqual(self.fake.layout_threads[-1], self.fake.focus_thread)
+        self.assertEqual(self.fake.posts, [])
+
+    def test_focused_child_receives_request_before_foreground(self):
+        self.fake.GetGUIThreadInfo = Mock(return_value=True)
+        with patch.object(punto, "_get_focused_control_hwnd", return_value=222):
+            self.send.side_effect = lambda hwnd, msg, wp, lp, timeout_ms: (
+                setattr(self.fake, "current", lp) or True
+            ) if hwnd == 222 else self.fail("Unexpected parent request")
+            self.assertTrue(punto._switch_input_language_for_foreground(punto.LAYOUT_RU, 101))
+        self.assertEqual(self.send.call_args.args[0], 222)
+        self.assertEqual(self.fake.layout_threads[-1], self.fake.focus_thread)
+
+    def test_parent_fallback_when_focused_control_ignores_language_request(self):
+        self.fake.GetGUIThreadInfo = Mock(return_value=True)
+        def receive(hwnd, msg, wparam, lparam, timeout_ms):
+            if hwnd == 101:
+                self.fake.current = lparam
+            return True
+        self.send.side_effect = receive
+        with patch.object(punto, "_get_focused_control_hwnd", return_value=222):
+            self.assertTrue(punto._switch_input_language_for_foreground(punto.LAYOUT_RU, 101))
+        self.assertEqual([c.args[0] for c in self.send.call_args_list], [222, 222, 101])
+        self.assertEqual(self.fake.posts, [])
+
+    def test_focus_switch_during_delivery_aborts_even_if_foreground_is_same(self):
+        self.fake.GetGUIThreadInfo = Mock(return_value=True)
+        focus = [222]
+        def receive(hwnd, msg, wparam, lparam, timeout_ms):
+            focus[0] = 333
+            return True
+        self.send.side_effect = receive
+        with patch.object(punto, "_get_focused_control_hwnd", side_effect=lambda: focus[0]):
+            self.assertFalse(punto._switch_input_language_for_foreground(punto.LAYOUT_RU, 101))
+        self.send.assert_called_once()
+        self.assertEqual(self.fake.posts, [])
+        self.sleep.assert_not_called()
+
+    def test_unavailable_focus_uses_foreground_compatibility(self):
+        self.fake.GetGUIThreadInfo = Mock(return_value=True)
+        def receive(hwnd, msg, wparam, lparam, timeout_ms):
+            self.assertEqual(hwnd, 101)
+            self.fake.current = lparam
+            return True
+        self.send.side_effect = receive
+        with patch.object(punto, "_get_focused_control_hwnd", return_value=0):
+            self.assertTrue(punto._switch_input_language_for_foreground(punto.LAYOUT_RU, 101))
+        self.send.assert_called_once()
+        self.assertEqual(self.fake.posts, [])
+
+    def test_english_auto_layout_target_uses_english_input(self):
+        self.fake.current = 0x04190419
+        self.fake.GetGUIThreadInfo = Mock(return_value=True)
+        with patch.object(punto, "_get_focused_control_hwnd", return_value=222):
+            def receive(hwnd, msg, wp, lp, timeout_ms):
+                self.fake.current = lp
+                return True
+            self.send.side_effect = receive
+            self.assertTrue(punto._switch_layout_toward_text("hello", 101))
+        self.assertEqual(self.fake.current & 0xFFFF, 0x0409)
 
     def test_current_language_is_already_correct(self):
         self.fake.current=0x00000419

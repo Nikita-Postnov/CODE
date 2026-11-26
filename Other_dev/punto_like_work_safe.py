@@ -2215,29 +2215,53 @@ def _dominant_layout(text: str) -> Optional[str]:
 def _switch_input_language_for_foreground(
     layout_id: str, expected_foreground: Optional[int] = None,
 ) -> bool:
-    """Синхронизирует раскладку именно окна, в котором исправляли текст.
+    """После исправления слова меняет язык у реально сфокусированного поля.
 
-    PostMessageW лишь ставит запрос в очередь и не гарантирует смену языка.
-    Доставляем WM_INPUTLANGCHANGEREQUEST с ограничением времени, проверяем
-    GetKeyboardLayout потока ввода и повторяем запрос лишь при прежнем foreground.
-    Не подменяем язык соседнего приложения, если пользователь сменил окно.
+    WM_INPUTLANGCHANGEREQUEST штатно адресуется окну с keyboard focus,
+    а не обязательно верхнеуровневому foreground-окну (например, Edit
+    является дочерним HWND). Проверяем GetKeyboardLayout именно его потока.
+    Любая смена foreground или focused HWND прерывает операцию: недопустимо
+    переключать язык уже другого поля/приложения.
     """
     if layout_id not in (LAYOUT_RU, LAYOUT_EN):
         return False
-    hwnd = _hwnd_value(user32.GetForegroundWindow())
-    if not hwnd or (expected_foreground is not None and hwnd != expected_foreground):
+    foreground = _hwnd_value(user32.GetForegroundWindow())
+    if not foreground or (
+        expected_foreground is not None and foreground != expected_foreground
+    ):
         return False
-    tid = int(user32.GetWindowThreadProcessId(hwnd, None))
-    if not tid:
+
+    foreground_tid = int(user32.GetWindowThreadProcessId(foreground, None))
+    if not foreground_tid:
         return False
+
+    # Получаем HWND поля ввода, а не только рамки приложения. На некоторых
+    # приложениях GetGUIThreadInfo не выдаёт focus — тогда старый путь
+    # через foreground остаётся запасным вариантом.
+    focus = _get_focused_control_hwnd() if hasattr(user32, "GetGUIThreadInfo") else 0
+    focus = _hwnd_value(focus)
+    focus_tid = (
+        int(user32.GetWindowThreadProcessId(focus, None))
+        if focus else 0
+    )
+    if not focus_tid:
+        focus = 0
+    tid = focus_tid or foreground_tid
+    target_windows = tuple(dict.fromkeys(
+        (focus, foreground) if focus else (foreground,)
+    ))
     expected_langid = int(layout_id[-4:], 16)
 
     def same_target() -> bool:
-        return _hwnd_value(user32.GetForegroundWindow()) == hwnd
+        if _hwnd_value(user32.GetForegroundWindow()) != foreground:
+            return False
+        return not focus or _hwnd_value(_get_focused_control_hwnd()) == focus
 
     def active() -> bool:
         return (_hwnd_value(user32.GetKeyboardLayout(tid)) & 0xFFFF) == expected_langid
 
+    if not same_target():
+        return False
     if active():
         return True
     hkl = _hkl_cache.get(layout_id)
@@ -2248,31 +2272,42 @@ def _switch_input_language_for_foreground(
             return False
         _hkl_cache[layout_id] = hkl
 
-    for attempt in range(2):
-        if not same_target():
-            return False
-        delivered = _sendmsg_ok(hwnd, WM_INPUTLANGCHANGEREQUEST, 0, hkl, timeout_ms=120)
-        if not same_target():
-            return False
-        if active():
-            return True
-        # Обработка языка может завершиться асинхронно даже после доставки.
-        if delivered:
-            time.sleep(0.025)
+    # Сначала сфокусированный контрол, затем (только при прежнем фокусе)
+    # основное окно: часть приложений обрабатывает это сообщение в родителе.
+    for recipient in target_windows:
+        for _ in range(2):
+            if not same_target():
+                return False
+            delivered = _sendmsg_ok(
+                recipient, WM_INPUTLANGCHANGEREQUEST, 0, hkl, timeout_ms=120,
+            )
             if not same_target():
                 return False
             if active():
                 return True
+            if delivered:
+                time.sleep(0.025)
+                if not same_target():
+                    return False
+                if active():
+                    return True
 
-    # Резерв для окон, обрабатывающих только очередь сообщений.
-    if same_target() and user32.PostMessageW(hwnd, WM_INPUTLANGCHANGEREQUEST, 0, hkl):
-        for _ in range(4):
-            time.sleep(0.025)
-            if not same_target():
-                return False
-            if active():
-                return True
-    logging.warning("Punto: unable to confirm %s layout for foreground hwnd=%s", layout_id, hwnd)
+    # Асинхронный запасной путь для окон с собственной обработкой событий.
+    for recipient in target_windows:
+        if not same_target():
+            return False
+        if user32.PostMessageW(recipient, WM_INPUTLANGCHANGEREQUEST, 0, hkl):
+            for _ in range(4):
+                time.sleep(0.025)
+                if not same_target():
+                    return False
+                if active():
+                    return True
+
+    logging.warning(
+        "Punto: unable to confirm %s layout for focused hwnd=%s (foreground=%s)",
+        layout_id, focus or foreground, foreground,
+    )
     return False
 
 
