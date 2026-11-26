@@ -159,7 +159,8 @@ class PuntoLayoutSyncTests(unittest.TestCase):
             (punto.VK_SPACE, True), (punto.VK_LWIN, True),
         ]])
         self.assertEqual(self.fake.current & 0xFFFF, 0x0419)
-        self.assertEqual(len(self.fake.posts), 1)
+        self.send.assert_not_called()
+        self.assertEqual(self.fake.posts, [])
 
     def test_win_space_fallback_can_return_to_english(self):
         self._enable_two_windows_layouts()
@@ -200,17 +201,15 @@ class PuntoLayoutSyncTests(unittest.TestCase):
         injected.assert_not_called()
 
     def test_shortcut_fallback_skips_when_keyboard_input_has_advanced(self):
+        """Never inject a system hotkey after the user has resumed typing."""
         self._enable_two_windows_layouts()
-        with patch.object(punto, "_keyboard_input_revision", 100):
-            def user_typed_during_message(hwnd, msg, wp, lp, timeout_ms):
-                punto._keyboard_input_revision += 1
-                return False
-            self.send.side_effect = user_typed_during_message
+        with patch.object(punto, "_keyboard_input_revision", 101):
             with (patch.object(punto, "_IS_WINDOWS", True),
                   patch.object(punto, "_is_any_vk_pressed", return_value=False),
-                  patch.object(punto, "_send_input") as injected,
-                  self.assertLogs(level='WARNING')):
-                self.assertFalse(punto._switch_input_language_for_foreground(punto.LAYOUT_RU, 101))
+                  patch.object(punto, "_send_input") as injected):
+                self.assertFalse(punto._try_win_space_language_switch(
+                    0x0419, lambda: True, expected_keyboard_revision=100,
+                ))
             injected.assert_not_called()
 
     def test_shortcut_fallback_releases_win_after_partial_send_failure(self):
