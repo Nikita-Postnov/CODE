@@ -31,6 +31,28 @@
         return core.isExcludedHost(location.hostname, settings.excludedHosts);
     }
 
+    // Only the desired input language is passed to the local native bridge.
+    // No typed words, form values, URL or clipboard contents are transmitted.
+    function syncInputLayout(original, corrected) {
+        if (typeof chrome.runtime?.sendMessage !== "function") return;
+        function scriptOf(text) {
+            const en = (String(text).match(/[a-z]/gi) || []).length;
+            const ru = (String(text).match(/[а-яё]/gi) || []).length;
+            return ru && !en ? "ru" : en && !ru ? "en" : null;
+        }
+        const before = scriptOf(original);
+        const after = scriptOf(corrected);
+        if (!before || !after || before === after ||
+            (typeof document.hasFocus === "function" && !document.hasFocus())) return;
+        try {
+            chrome.runtime.sendMessage({
+                action: "np-punto-switch-layout", language: after,
+            }, () => { void chrome.runtime?.lastError; });
+        } catch (_error) {
+            // An uninstalled or stopped native host must never break typing.
+        }
+    }
+
     function editingTarget(event) {
         const path = typeof event.composedPath === "function" ? event.composedPath() : [event.target];
         const target = path.find(node => node instanceof HTMLElement &&
@@ -88,6 +110,7 @@
                 core.correctedSeparator(separator, found.before, found.replacement));
         setPlainText(field, found.start, caret, replacement);
         saveUndo(field, found.start, original, replacement);
+        syncInputLayout(found.before, found.replacement);
         return true;
     }
 
@@ -221,8 +244,10 @@
             const found = matched.found;
             const replacement = found.replacement +
                 core.correctedSeparator(separator, found.before, found.replacement);
-            return replaceEditableRange(editor, matched.range, replacement,
+            const changed = replaceEditableRange(editor, matched.range, replacement,
                 found.before + separator);
+            if (changed) syncInputLayout(found.before, found.replacement);
+            return changed;
         }
         // Совместимость с простыми одноузловыми contenteditable, включая
         // редакторы без стандартной структуры абзаца ProseMirror.
@@ -234,8 +259,10 @@
         if (!found || found.reason === "rule") return false;
         const replacement = found.replacement +
             core.correctedSeparator(separator, found.before, found.replacement);
-        return replaceInEditable(editor, info, found.start, info.range.startOffset,
+        const changed = replaceInEditable(editor, info, found.start, info.range.startOffset,
             replacement, found.before + separator);
+        if (changed) syncInputLayout(found.before, found.replacement);
+        return changed;
     }
 
     function matchesInsertedSeparator(actual, separator) {
@@ -264,6 +291,7 @@
             const original = field.value.slice(found.start, caret);
             setPlainText(field, found.start, caret, replacement);
             saveUndo(field, found.start, original, replacement);
+            syncInputLayout(found.before, found.replacement);
             return true;
         }
 
@@ -282,7 +310,9 @@
             const replacement = found.replacement +
                 (found.reason === "rule" ? separator :
                     core.correctedSeparator(separator, original.slice(0, -1), found.replacement));
-            return replaceEditableRange(field, matched.range, replacement);
+            const changed = replaceEditableRange(field, matched.range, replacement);
+            if (changed) syncInputLayout(found.before, found.replacement);
+            return changed;
         }
         const info = singleNodeSelection(field);
         if (!info || !info.range.collapsed) return false;
@@ -296,7 +326,9 @@
         const replacement = found.replacement +
             (found.reason === "rule" ? separator :
                 core.correctedSeparator(separator, found.before, found.replacement));
-        return replaceInEditable(field, info, found.start, caret, replacement);
+        const changed = replaceInEditable(field, info, found.start, caret, replacement);
+        if (changed) syncInputLayout(found.before, found.replacement);
+        return changed;
     }
 
     document.addEventListener("input", event => {
