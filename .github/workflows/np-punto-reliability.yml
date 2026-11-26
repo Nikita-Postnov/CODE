@@ -76,6 +76,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & $exe --self-test
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & Other_dev/NP_Punto_Browser/native_host/Test-PuntoNativeBridge.ps1 -HostExe $exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Compile NP Punto
         run: python -m py_compile Other_dev/punto_like_work_safe.py
       - name: Validate NP Punto safety
