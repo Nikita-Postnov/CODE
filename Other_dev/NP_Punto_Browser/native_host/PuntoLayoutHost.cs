@@ -202,9 +202,16 @@ internal static class PuntoLayoutHost
             }
             var message = new JavaScriptSerializer().Deserialize<Dictionary<string, object>>(json);
             object action, lang;
-            if (!message.TryGetValue("action", out action) ||
-                !message.TryGetValue("language", out lang) ||
-                !String.Equals(action as string, "switch", StringComparison.Ordinal)) {
+            if (!message.TryGetValue("action", out action)) {
+                Reply("invalid");
+                return 1;
+            }
+            if (String.Equals(action as string, "ping", StringComparison.Ordinal)) {
+                Reply("ready");
+                return 0;
+            }
+            if (!String.Equals(action as string, "switch", StringComparison.Ordinal) ||
+                !message.TryGetValue("language", out lang)) {
                 Reply("invalid");
                 return 1;
             }
